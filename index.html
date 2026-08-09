@@ -177,6 +177,17 @@
     </section>
 
     <section class="panel" style="margin-bottom:16px;">
+      <div class="day-panel-header"><h2>Custom theme</h2></div>
+      <p class="hint">Build your own palette here, then pick <b>Custom</b> in the Theme menu. Text colour on buttons is worked out automatically for contrast.</p>
+      <div class="ct-grid" id="ct-grid"></div>
+      <div class="set-actions" style="margin-top:14px;">
+        <button class="btn-primary" id="ct-save" style="flex:1">Save &amp; apply</button>
+        <button class="btn-ghost" id="ct-copy">Copy current theme</button>
+        <button class="btn-ghost" id="ct-reset">Reset</button>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-bottom:16px;">
       <div class="day-panel-header"><h2>Knowledge base</h2></div>
       <p class="hint">Feeds the assistant with your own reference material. It answers from these entries first and shows a confidence bar. Either commit a <b>kb.json</b> file to the site root, or paste the JSON below.</p>
       <div class="set-row">
@@ -256,11 +267,21 @@
     <div class="nb-toolbar" id="nb-toolbar">
       <button type="button" data-block="h1" title="Heading 1">H1</button>
       <button type="button" data-block="h2" title="Heading 2">H2</button>
+      <button type="button" data-block="h3" title="Heading 3">H3</button>
       <button type="button" data-block="p" title="Body text">¶</button>
       <span class="nb-tb-sep"></span>
-      <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
-      <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
+      <button type="button" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+      <button type="button" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+      <button type="button" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
       <button type="button" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+      <button type="button" data-inline="code" title="Inline code">`c`</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-hl="var(--amber)" title="Highlight amber" class="sw-a"></button>
+      <button type="button" data-hl="var(--accent2)" title="Highlight blue" class="sw-b"></button>
+      <button type="button" data-hl="var(--accent3)" title="Highlight teal" class="sw-c"></button>
+      <button type="button" data-hl="none" title="Clear highlight">⌫</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-link="1" title="Insert link">🔗</button>
       <span class="nb-tb-sep"></span>
       <button type="button" data-block="ul" title="Bullet list">•</button>
       <button type="button" data-block="ol" title="Numbered list">1.</button>
@@ -269,9 +290,26 @@
       <button type="button" data-block="quote" title="Quote">❝</button>
       <button type="button" data-block="code" title="Code block">&lt;/&gt;</button>
       <button type="button" data-block="hr" title="Divider">—</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-cmd="justifyLeft" title="Align left">⇤</button>
+      <button type="button" data-cmd="justifyCenter" title="Centre">⇔</button>
+      <button type="button" data-cmd="justifyRight" title="Align right">⇥</button>
+      <button type="button" data-cmd="removeFormat" title="Clear formatting">⌧</button>
     </div>
     <div id="notebook-canvas" contenteditable="true" data-placeholder="Type '/' for blocks, or just start writing..."></div>
     <div class="slash-menu" id="slash-menu"></div>
+    <div class="img-bar" id="img-bar">
+      <button type="button" data-w="25%">25%</button>
+      <button type="button" data-w="50%">50%</button>
+      <button type="button" data-w="75%">75%</button>
+      <button type="button" data-w="100%">Full</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-align="left" title="Align left">⇤</button>
+      <button type="button" data-align="center" title="Centre">⇔</button>
+      <button type="button" data-align="right" title="Align right">⇥</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-del="1" title="Remove image">✕</button>
+    </div>
     <div class="modal-actions">
       <button class="btn-ghost" id="notebook-close-btn" style="flex:1">Close</button>
     </div>

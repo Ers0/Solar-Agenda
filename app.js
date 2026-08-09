@@ -117,7 +117,7 @@ function makeCaseCard(c){
       <span class="chip">${prioLabel(c.prioridade)}</span>
       ${c.ticket ? `<span class="chip mono">${escapeHtml(c.ticket)}</span>` : ''}
       ${c.horario ? `<span class="chip">${c.horario}</span>` : ''}
-      ${(c.tags || []).map(t => `<span class="chip">#${escapeHtml(t)}</span>`).join('')}
+      ${(c.tags || []).map(t => `<span class="chip tag"><span class="tag-hash">#</span>${escapeHtml(t)}</span>`).join('')}
     </div>`;
   attachCardGestures(div, c);
   return div;
@@ -561,7 +561,7 @@ function initTagInput(chipsId, inputId){
     tags.forEach((tag, i) => {
       const chip = document.createElement('span');
       chip.className = 'tag-chip';
-      chip.innerHTML = `#${escapeHtml(tag)} <button type="button" aria-label="Remove tag">×</button>`;
+      chip.innerHTML = `<span class="tag-hash">#</span>${escapeHtml(tag)} <button type="button" aria-label="Remove tag">×</button>`;
       chip.querySelector('button').addEventListener('click', () => { tags.splice(i, 1); render(); });
       chipsEl.appendChild(chip);
     });
@@ -831,56 +831,156 @@ const AI_TOOLS = [
 
 
 // ===== Sound =========================================================
-// Synthesised with Web Audio — no files to host, nothing to load. Browsers
-// block audio until the first gesture, so the context is created lazily.
-let audioCtx = null;
+// A small synth rig rather than bare beeps: everything runs through a
+// convolution reverb + stereo delay so sounds sit in a space, and layers
+// are detuned/filtered to give them body. No audio files to host.
+let audioCtx = null, busDry = null, busWet = null;
 function ac(){
   if(settings.muted) return null;
   if(!audioCtx){
     const AC = window.AudioContext || window.webkitAudioContext;
     if(!AC) return null;
     audioCtx = new AC();
+
+    // master chain
+    const master = audioCtx.createGain(); master.gain.value = 0.9;
+    master.connect(audioCtx.destination);
+
+    // impulse-response reverb, generated rather than downloaded
+    const len = audioCtx.sampleRate * 2.4;
+    const ir = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+    for(let ch = 0; ch < 2; ch++){
+      const d = ir.getChannelData(ch);
+      for(let i = 0; i < len; i++){
+        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6);
+      }
+    }
+    const rev = audioCtx.createConvolver(); rev.buffer = ir;
+    const revGain = audioCtx.createGain(); revGain.gain.value = 0.55;
+    rev.connect(revGain).connect(master);
+
+    // ping-pong-ish delay for the tech shimmer
+    const dl = audioCtx.createDelay(1.0); dl.delayTime.value = 0.19;
+    const fb = audioCtx.createGain(); fb.gain.value = 0.32;
+    const dlFilter = audioCtx.createBiquadFilter();
+    dlFilter.type = 'highpass'; dlFilter.frequency.value = 700;
+    dl.connect(fb).connect(dlFilter).connect(dl);
+    const dlGain = audioCtx.createGain(); dlGain.gain.value = 0.3;
+    dl.connect(dlGain).connect(master);
+
+    busDry = audioCtx.createGain(); busDry.gain.value = 1; busDry.connect(master);
+    busWet = audioCtx.createGain(); busWet.gain.value = 1;
+    busWet.connect(rev); busWet.connect(dl);
   }
   if(audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
 }
-function tone({ freq = 440, to = null, dur = 0.12, type = 'sine', vol = 0.06, delay = 0 }){
+
+// one detuned, filtered voice
+function voice({ freq = 440, to = null, dur = 0.3, type = 'sawtooth', vol = 0.05,
+                 delay = 0, detune = 0, cut = 2600, cutTo = null, q = 6, space = 0.5 }){
   const ctx = ac(); if(!ctx) return;
   const t0 = ctx.currentTime + delay;
-  const osc = ctx.createOscillator(), g = ctx.createGain();
-  osc.type = type;
+  const osc = ctx.createOscillator();
+  osc.type = type; osc.detune.value = detune;
   osc.frequency.setValueAtTime(freq, t0);
-  if(to) osc.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+  if(to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur);
+
+  const flt = ctx.createBiquadFilter();
+  flt.type = 'lowpass'; flt.Q.value = q;
+  flt.frequency.setValueAtTime(cut, t0);
+  if(cutTo) flt.frequency.exponentialRampToValueAtTime(Math.max(80, cutTo), t0 + dur);
+
+  const g = ctx.createGain();
   g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + Math.min(0.05, dur * 0.2));
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(g).connect(ctx.destination);
-  osc.start(t0); osc.stop(t0 + dur + 0.02);
+
+  const send = ctx.createGain(); send.gain.value = space;
+  osc.connect(flt).connect(g);
+  g.connect(busDry); g.connect(send); send.connect(busWet);
+  osc.start(t0); osc.stop(t0 + dur + 0.05);
 }
-function noise({ dur = 0.5, vol = 0.03, delay = 0 }){
+
+// filtered noise, for air and transients
+function air({ dur = 0.6, vol = 0.02, delay = 0, from = 300, to = 6000, type = 'bandpass', q = 1.2, space = 0.6 }){
   const ctx = ac(); if(!ctx) return;
-  const n = Math.floor(ctx.sampleRate * dur);
+  const t0 = ctx.currentTime + delay;
+  const n = Math.max(1, Math.floor(ctx.sampleRate * dur));
   const buf = ctx.createBuffer(1, n, ctx.sampleRate);
   const d = buf.getChannelData(0);
-  for(let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  for(let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
   const src = ctx.createBufferSource(); src.buffer = buf;
-  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 0.8;
-  const g = ctx.createGain(); g.gain.value = vol;
-  src.connect(f).connect(g).connect(ctx.destination);
-  src.start(ctx.currentTime + delay);
+  const f = ctx.createBiquadFilter(); f.type = type; f.Q.value = q;
+  f.frequency.setValueAtTime(from, t0);
+  f.frequency.exponentialRampToValueAtTime(Math.max(60, to), t0 + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.25);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  const send = ctx.createGain(); send.gain.value = space;
+  src.connect(f).connect(g);
+  g.connect(busDry); g.connect(send); send.connect(busWet);
+  src.start(t0); src.stop(t0 + dur + 0.05);
 }
+
+// a chord built from stacked detuned voices
+function chord(freqs, o = {}){
+  freqs.forEach((f, i) => {
+    voice(Object.assign({ freq:f, dur:1.5, type:'sawtooth', vol:0.028, cut:900, cutTo:4200,
+                          delay:(o.delay || 0) + i * (o.stagger ?? 0.06), space:0.8 }, o.v || {}));
+    voice(Object.assign({ freq:f, dur:1.5, type:'sawtooth', vol:0.022, detune:-9, cut:900, cutTo:3600,
+                          delay:(o.delay || 0) + i * (o.stagger ?? 0.06), space:0.8 }, o.v || {}));
+  });
+}
+
 const SFX = {
-  bootStart(){ noise({ dur:0.9, vol:0.025 }); tone({ freq:90, to:420, dur:0.8, type:'sawtooth', vol:0.05 }); },
-  bootTick(i){ tone({ freq: 620 + i * 70, dur:0.07, type:'square', vol:0.028 }); },
-  bootDone(){ [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone({ freq:f, dur:0.5, type:'sine', vol:0.055, delay:i * 0.085 })); },
-  success(){ tone({ freq:660, to:990, dur:0.16, type:'triangle', vol:0.06 }); tone({ freq:990, dur:0.2, type:'sine', vol:0.04, delay:0.1 }); },
-  fail(){ tone({ freq:320, to:150, dur:0.26, type:'sawtooth', vol:0.05 }); },
-  tick(){ tone({ freq:1200, dur:0.035, type:'square', vol:0.02 }); },
-  open(){ tone({ freq:440, to:660, dur:0.09, type:'sine', vol:0.03 }); },
+  // reactor spin-up: sub sweep + rising filtered noise + shimmer arpeggio
+  bootStart(){
+    voice({ freq:38, to:110, dur:2.4, type:'sine', vol:0.11, cut:400, space:0.25 });
+    voice({ freq:70, to:220, dur:2.2, type:'sawtooth', vol:0.035, cut:200, cutTo:2600, q:9, space:0.6 });
+    air({ dur:2.2, vol:0.02, from:200, to:7000, q:0.7, space:0.7 });
+    [392, 523.25, 659.25, 784].forEach((f, i) =>
+      voice({ freq:f, dur:0.9, type:'triangle', vol:0.02, delay:0.5 + i * 0.11, cut:5200, space:1 }));
+  },
+  // each check line: a click transient plus a pitched blip that climbs
+  bootTick(i){
+    air({ dur:0.05, vol:0.02, from:2400, to:5200, q:2, space:0.3 });
+    voice({ freq:520 + i * 62, to:640 + i * 62, dur:0.13, type:'square', vol:0.022, cut:3200, q:4, space:0.55 });
+    voice({ freq:(520 + i * 62) * 2, dur:0.08, type:'sine', vol:0.012, delay:0.02, space:0.7 });
+  },
+  // handover: a rising sweep resolving into a wide major chord
+  bootDone(){
+    air({ dur:0.7, vol:0.03, from:400, to:9000, q:0.8, space:0.9 });
+    voice({ freq:110, to:440, dur:0.7, type:'sawtooth', vol:0.05, cut:600, cutTo:5000, q:8, space:0.6 });
+    chord([261.63, 392, 523.25, 659.25, 783.99], { delay:0.42, stagger:0.05, v:{ dur:2.2, vol:0.03 } });
+  },
+  success(){
+    voice({ freq:523.25, to:784, dur:0.24, type:'triangle', vol:0.05, cut:4800, space:0.7 });
+    voice({ freq:1046.5, dur:0.5, type:'sine', vol:0.025, delay:0.12, space:1 });
+    air({ dur:0.12, vol:0.012, from:3000, to:8000, q:1.4, space:0.6 });
+  },
+  fail(){
+    voice({ freq:220, to:82, dur:0.5, type:'sawtooth', vol:0.055, cut:1600, cutTo:260, q:7, space:0.5 });
+    air({ dur:0.3, vol:0.015, from:900, to:180, q:1.1, space:0.5 });
+  },
+  tick(){
+    air({ dur:0.03, vol:0.014, from:3200, to:6000, q:2.5, space:0.25 });
+    voice({ freq:1500, dur:0.045, type:'square', vol:0.012, cut:6000, space:0.4 });
+  },
+  open(){
+    voice({ freq:440, to:660, dur:0.14, type:'triangle', vol:0.026, cut:4200, space:0.7 });
+  },
   phase(night){
-    if(night){ tone({ freq:520, to:180, dur:1.0, type:'sine', vol:0.055 }); noise({ dur:0.7, vol:0.016 }); }
-    else { tone({ freq:180, to:620, dur:0.9, type:'sine', vol:0.05 });
-           [523.25, 784].forEach((f,i) => tone({ freq:f, dur:0.5, type:'triangle', vol:0.035, delay:0.45 + i*0.1 })); }
+    if(night){
+      voice({ freq:340, to:70, dur:2.0, type:'sawtooth', vol:0.05, cut:2200, cutTo:260, q:8, space:0.9 });
+      air({ dur:1.6, vol:0.018, from:5000, to:400, q:0.8, space:0.9 });
+      chord([196, 233.08, 293.66], { delay:0.5, stagger:0.09, v:{ dur:2.6, vol:0.022, cut:700, cutTo:1800 } });
+    } else {
+      voice({ freq:80, to:520, dur:1.4, type:'sawtooth', vol:0.045, cut:300, cutTo:5200, q:8, space:0.8 });
+      air({ dur:1.2, vol:0.02, from:300, to:8000, q:0.7, space:0.9 });
+      chord([261.63, 329.63, 392, 523.25], { delay:0.5, stagger:0.07, v:{ dur:2.2, vol:0.026 } });
+    }
   },
 };
 
@@ -898,6 +998,7 @@ async function loadKB(){
     if(r.ok) KB = await r.json();
   }catch(e){ KB = []; }
   renderKbStatus();
+  renderCustomTheme();
 }
 function renderKbStatus(){
   const el = document.getElementById('set-kb-status');
@@ -1197,14 +1298,21 @@ function fuzzyScore(query, text){
 function plainTextPreview(html){
   const d = document.createElement('div');
   d.innerHTML = html || '';
-  const hasImg = !!d.querySelector('img');
+  const im = d.querySelector('img');
   const text = d.textContent.trim().replace(/\s+/g, ' ');
-  return { text: text.slice(0, 140), hasImg };
+  // carry the actual image out so cards can show a picture, not the word "[image]"
+  const thumb = im ? (im.dataset.thumb || im.getAttribute('src') || '') : '';
+  return { text: text.slice(0, 140), hasImg: !!im, thumb: thumb.startsWith('data:') ? thumb : '' };
+}
+function previewBody(text, hasImg, thumb){
+  if(thumb) return `<div class="nb-thumb" style="background-image:url('${thumb}')"></div>`
+    + (text ? `<div class="nb-thumb-cap">${escapeHtml(text)}</div>` : '');
+  return escapeHtml(text) || (hasImg ? '<span class="nb-noimg">image (open to view)</span>' : '');
 }
 
 function tagChipsHtml(tags){
   if(!tags || !tags.length) return '';
-  return `<div class="nb-grid-card-tags">${tags.map(t => `<span class="chip">#${escapeHtml(t)}</span>`).join('')}</div>`;
+  return `<div class="nb-grid-card-tags">${tags.map(t => `<span class="chip tag"><span class="tag-hash">#</span>${escapeHtml(t)}</span>`).join('')}</div>`;
 }
 
 function renderNotebooksGrid(){
@@ -1230,7 +1338,7 @@ function renderNotebooksGrid(){
       return;
     }
     scored.forEach(({ n, nbTitle }) => {
-      const { text, hasImg } = plainTextPreview(n.content);
+      const { text, hasImg, thumb } = plainTextPreview(n.content);
       const card = document.createElement('div');
       card.className = 'nb-grid-card';
       card.innerHTML = `
@@ -1238,7 +1346,7 @@ function renderNotebooksGrid(){
           <div class="nb-grid-card-title">${escapeHtml(n.title || 'Untitled')}</div>
           <div class="nb-grid-card-date">${escapeHtml(nbTitle)}${n.linked_date ? ' · ' + n.linked_date : ''}</div>
         </div>
-        <div class="nb-grid-card-preview">${escapeHtml(text) || (hasImg ? '[image]' : '')}</div>
+        <div class="nb-grid-card-preview">${previewBody(text, hasImg, thumb)}</div>
         ${tagChipsHtml(n.tags)}
       `;
       card.addEventListener('click', () => { activeFolderId = n.notebook_id; openNote(n.id); });
@@ -1260,7 +1368,7 @@ function renderNotebooksGrid(){
       return;
     }
     folderNotes.forEach(n => {
-      const { text, hasImg } = plainTextPreview(n.content);
+      const { text, hasImg, thumb } = plainTextPreview(n.content);
       const card = document.createElement('div');
       card.className = 'nb-grid-card';
       card.innerHTML = `
@@ -1268,7 +1376,7 @@ function renderNotebooksGrid(){
           <div class="nb-grid-card-title">${escapeHtml(n.title || 'Untitled')}</div>
           ${n.linked_date ? `<div class="nb-grid-card-date">${n.linked_date}</div>` : ''}
         </div>
-        <div class="nb-grid-card-preview">${escapeHtml(text) || (hasImg ? '[image]' : '')}</div>
+        <div class="nb-grid-card-preview">${previewBody(text, hasImg, thumb)}</div>
         ${tagChipsHtml(n.tags)}
       `;
       card.addEventListener('click', () => openNote(n.id));
@@ -1286,7 +1394,7 @@ function renderNotebooksGrid(){
   notebooks.forEach(nb => {
     const nbNotes = notes.filter(n => n.notebook_id === nb.id);
     const latest = nbNotes[0]; // notes are already sorted by updated_at desc
-    const { text, hasImg } = plainTextPreview(latest ? latest.content : '');
+    const { text, hasImg, thumb } = plainTextPreview(latest ? latest.content : '');
     const card = document.createElement('div');
     card.className = 'nb-grid-card';
     card.innerHTML = `
@@ -1294,7 +1402,7 @@ function renderNotebooksGrid(){
         <div class="nb-grid-card-title">${escapeHtml(nb.title || 'Untitled')}</div>
         <div class="nb-grid-card-count">${nbNotes.length} note${nbNotes.length === 1 ? '' : 's'}</div>
       </div>
-      <div class="nb-grid-card-preview">${latest ? (escapeHtml(text) || (hasImg ? '[image]' : '')) : 'Empty'}</div>
+      <div class="nb-grid-card-preview">${latest ? previewBody(text, hasImg, thumb) : 'Empty'}</div>
     `;
     card.addEventListener('click', () => { activeFolderId = nb.id; renderNotebooksGrid(); });
     grid.appendChild(card);
@@ -1516,9 +1624,7 @@ function applyBlock(kind, seedText){
     scheduleNotebookSave();
     return;
   }
-  const map = {
-    h1: 'H1', h2: 'H2', p: 'P', quote: 'BLOCKQUOTE',
-  };
+  const map = { h1:'H1', h2:'H2', h3:'H3', p:'P', quote:'BLOCKQUOTE' };
   if(kind === 'ul'){ document.execCommand('insertUnorderedList'); }
   else if(kind === 'ol'){ document.execCommand('insertOrderedList'); }
   else if(map[kind]){ document.execCommand('formatBlock', false, map[kind]); }
@@ -1533,6 +1639,28 @@ document.getElementById('nb-toolbar').addEventListener('mousedown', (e) => {
   e.preventDefault();
   if(btn.dataset.cmd){ nbFocus(); document.execCommand(btn.dataset.cmd); scheduleNotebookSave(); }
   else if(btn.dataset.block){ applyBlock(btn.dataset.block); }
+  else if(btn.dataset.inline === 'code'){
+    nbFocus();
+    const sel = window.getSelection();
+    if(sel && !sel.isCollapsed){
+      const span = document.createElement('code');
+      span.className = 'inline-code';
+      try{ sel.getRangeAt(0).surroundContents(span); }catch(e){}
+      scheduleNotebookSave();
+    }
+  }
+  else if(btn.dataset.hl){
+    nbFocus();
+    const v = btn.dataset.hl;
+    document.execCommand('hiliteColor', false, v === 'none' ? 'transparent' : getComputedStyle(document.documentElement).getPropertyValue(v.replace('var(','').replace(')','')).trim() + '55');
+    scheduleNotebookSave();
+  }
+  else if(btn.dataset.link){
+    nbFocus();
+    const url = prompt('Link URL:');
+    if(url) document.execCommand('createLink', false, url);
+    scheduleNotebookSave();
+  }
 });
 
 // Clicking a checklist tick toggles it
@@ -1547,6 +1675,7 @@ nbCanvas().addEventListener('click', (e) => {
 const MD_SHORTCUTS = [
   [/^#\s$/,        'h1'],
   [/^##\s$/,       'h2'],
+  [/^###\s$/,      'h3'],
   [/^[-*]\s$/,     'ul'],
   [/^1\.\s$/,      'ol'],
   [/^\[\]\s$/,     'todo'],
@@ -1572,6 +1701,7 @@ nbCanvas().addEventListener('input', () => {
 const SLASH_ITEMS = [
   { key:'h1',    ico:'H1',  label:'Heading 1' },
   { key:'h2',    ico:'H2',  label:'Heading 2' },
+  { key:'h3',    ico:'H3',  label:'Heading 3' },
   { key:'p',     ico:'¶',   label:'Body text' },
   { key:'ul',    ico:'•',   label:'Bullet list' },
   { key:'ol',    ico:'1.',  label:'Numbered list' },
@@ -1662,6 +1792,62 @@ nbCanvas().addEventListener('keyup', (e) => {
 });
 nbCanvas().addEventListener('blur', () => setTimeout(closeSlash, 150));
 
+
+
+// ===== Image controls in the note editor =============================
+let selectedImg = null;
+function showImgBar(img){
+  selectedImg = img;
+  const bar = document.getElementById('img-bar');
+  const r = img.getBoundingClientRect();
+  bar.classList.add('open');
+  bar.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 300)) + 'px';
+  bar.style.top = (r.top - 46 < 8 ? r.bottom + 8 : r.top - 46) + 'px';
+  document.querySelectorAll('#notebook-canvas img').forEach(i => i.classList.remove('sel'));
+  img.classList.add('sel');
+}
+function hideImgBar(){
+  document.getElementById('img-bar')?.classList.remove('open');
+  document.querySelectorAll('#notebook-canvas img').forEach(i => i.classList.remove('sel'));
+  selectedImg = null;
+}
+document.getElementById('notebook-canvas').addEventListener('click', (e) => {
+  const img = e.target.closest('img');
+  if(img){ showImgBar(img); } else { hideImgBar(); }
+});
+document.getElementById('img-bar').addEventListener('mousedown', (e) => {
+  const b = e.target.closest('button'); if(!b || !selectedImg) return;
+  e.preventDefault();
+  const w = b.dataset.w, al = b.dataset.align;
+  if(w){ selectedImg.style.width = w; selectedImg.style.height = 'auto'; }
+  if(al){
+    selectedImg.style.marginLeft = al === 'center' ? 'auto' : (al === 'right' ? 'auto' : '0');
+    selectedImg.style.marginRight = al === 'center' ? 'auto' : (al === 'left' ? 'auto' : '0');
+    selectedImg.style.display = 'block';
+  }
+  if(b.dataset.del){ selectedImg.remove(); hideImgBar(); }
+  scheduleNotebookSave();
+});
+// drag the bottom-right corner to size it freely
+document.getElementById('notebook-canvas').addEventListener('pointerdown', (e) => {
+  const img = e.target.closest('img');
+  if(!img) return;
+  const r = img.getBoundingClientRect();
+  if(e.clientX < r.right - 18 || e.clientY < r.bottom - 18) return; // not on the handle
+  e.preventDefault();
+  const startX = e.clientX, startW = r.width;
+  const move = (ev) => {
+    const w = Math.max(60, startW + (ev.clientX - startX));
+    img.style.width = w + 'px'; img.style.height = 'auto';
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    scheduleNotebookSave();
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+});
 
 // ===== Media storage: local folder + Google Drive, never Supabase ======
 // A pasted image is written to a folder on this machine AND (optionally)
@@ -1821,6 +2007,54 @@ async function hydrateMedia(root){
       img.classList.add('pending'); // keeps the thumbnail visible
     }
   }
+}
+
+
+// ===== Custom theme ===================================================
+const CT_FIELDS = [
+  ['bg','Background'],['bg2','Background edge'],['panel','Panel'],['panel2','Panel highlight'],
+  ['line','Borders'],['text','Text'],['muted','Muted text'],
+  ['amber','Accent 1'],['accent2','Accent 2'],['accent3','Accent 3'],['dusk','Dusk'],
+];
+function customTheme(){
+  return Object.assign({ name:'Custom' }, THEMES.slate, settings.customTheme || {});
+}
+function renderCustomTheme(){
+  const grid = document.getElementById('ct-grid');
+  if(!grid || typeof THEMES === 'undefined') return;
+  const t = customTheme();
+  grid.innerHTML = '';
+  CT_FIELDS.forEach(([k, label]) => {
+    const row = document.createElement('label');
+    row.className = 'ct-row';
+    row.innerHTML = `<input type="color" data-k="${k}" value="${t[k]}"><span>${label}</span><code>${t[k]}</code>`;
+    row.querySelector('input').addEventListener('input', (e) => {
+      const cur = Object.assign({}, customTheme());
+      cur[k] = e.target.value;
+      settings.customTheme = cur; saveSettings();
+      row.querySelector('code').textContent = e.target.value;
+      THEMES.custom = customTheme();
+      if(localStorage.getItem(THEME_KEY) === 'custom') applyTheme('custom'); // live preview
+    });
+    grid.appendChild(row);
+  });
+}
+function initCustomThemeUI(){
+  THEMES.custom = customTheme();
+  renderCustomTheme();
+  document.getElementById('ct-save').addEventListener('click', () => {
+    THEMES.custom = customTheme(); applyTheme('custom'); SFX.open();
+    alert('Custom theme applied. It also appears in the Theme menu.');
+  });
+  document.getElementById('ct-copy').addEventListener('click', () => {
+    const cur = THEMES[localStorage.getItem(THEME_KEY) || 'slate'] || THEMES.slate;
+    settings.customTheme = Object.assign({}, cur, { name:'Custom' });
+    saveSettings(); THEMES.custom = customTheme(); renderCustomTheme();
+  });
+  document.getElementById('ct-reset').addEventListener('click', () => {
+    delete settings.customTheme; saveSettings();
+    THEMES.custom = customTheme(); renderCustomTheme();
+  });
 }
 
 // ===== Settings screen =====
@@ -2095,7 +2329,9 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 });
 document.getElementById('theme-close-btn').addEventListener('click', () => themeModalBackdrop.classList.remove('open'));
 themeModalBackdrop.addEventListener('click', (e) => { if(e.target === themeModalBackdrop) themeModalBackdrop.classList.remove('open'); });
+THEMES.custom = Object.assign({ name:'Custom' }, THEMES.slate, (JSON.parse(localStorage.getItem(SET_KEY) || '{}').customTheme) || {});
 applyTheme(localStorage.getItem(THEME_KEY) || 'slate');
+initCustomThemeUI();
 
 // --- Calendar ---
 const WEEKDAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
