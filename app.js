@@ -2444,7 +2444,8 @@ if(rainTest){
     } else {
       rainOverride = v;
       const band = v <= 0.05 ? 'dry' : v < 2 ? 'drizzle' : v < 10 ? 'steady rain' : v < 25 ? 'heavy' : 'downpour';
-      lab.textContent = `${v.toFixed(1)} mm — ${band}`;
+      const trk = rainTrackFor(v);
+      lab.textContent = `${v.toFixed(1)} mm — ${band}${trk ? ' · ' + trk + ' loop' : ''}`;
     }
     setRain();
   });
@@ -2452,6 +2453,7 @@ if(rainTest){
 document.getElementById('sfx-toggle').addEventListener('click', () => {
   settings.muted = !settings.muted; saveSettings();
   document.getElementById('set-sfx-status').textContent = settings.muted ? 'Muted' : 'On';
+  updateRainAudio();
   if(!settings.muted) SFX.open();
 });
 document.getElementById('kb-template').addEventListener('click', () => {
@@ -2848,6 +2850,97 @@ async function fetchVaultKey(){
 }
 function lockVault(){ cryptoKey = null; loadCases(); loadNotes(); renderEncStatus(); }
 
+
+// ===== Rain ambience =================================================
+// Decoded through Web Audio rather than <audio loop>, because MP3 encoder
+// padding leaves an audible gap at the loop point; an AudioBufferSourceNode
+// with loop=true is sample-accurate. Files are fetched only when it starts
+// raining, so a dry day downloads nothing.
+const RAIN_TRACKS = {
+  light:  { url: '/rain-light.mp3',  gain: 0.55 },
+  steady: { url: '/rain-steady.mp3', gain: 0.75 },
+  storm:  { url: '/rain-storm.mp3',  gain: 0.85 },
+};
+const THUNDER_URL = '/thunder.mp3';
+// Roughly 3 on a 15-point dial — present, never in the way.
+const RAIN_BASE_VOL = 0.20;
+
+let rainBuffers = {}, rainNode = null, rainGain = null, rainTrackName = null;
+let thunderBuf = null, thunderTimer = null, rainAudioReady = false;
+
+function rainTrackFor(mm){
+  if(mm <= 0.05) return null;
+  if(mm < 3) return 'light';
+  if(mm < 14) return 'steady';
+  return 'storm';
+}
+async function loadBuffer(url){
+  const ctx = ac(); if(!ctx) return null;
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('missing ' + url);
+  return ctx.decodeAudioData(await r.arrayBuffer());
+}
+function stopRainAudio(){
+  if(rainNode){ try{ rainNode.stop(); }catch(e){} rainNode.disconnect(); rainNode = null; }
+  if(thunderTimer){ clearTimeout(thunderTimer); thunderTimer = null; }
+  rainTrackName = null;
+}
+async function playRainTrack(name, mm){
+  const ctx = ac(); if(!ctx) return;
+  if(!rainBuffers[name]) rainBuffers[name] = await loadBuffer(RAIN_TRACKS[name].url);
+  const buf = rainBuffers[name]; if(!buf) return;
+
+  const target = RAIN_BASE_VOL * RAIN_TRACKS[name].gain * (0.7 + Math.min(1, mm / 30) * 0.5);
+
+  if(rainNode && rainTrackName === name){          // same track, just re-level
+    rainGain.gain.linearRampToValueAtTime(target, ctx.currentTime + 1.2);
+    return;
+  }
+  const old = rainNode, oldGain = rainGain;
+  rainGain = ctx.createGain();
+  rainGain.gain.setValueAtTime(0.0001, ctx.currentTime);
+  rainGain.connect(ctx.destination);
+  rainNode = ctx.createBufferSource();
+  rainNode.buffer = buf; rainNode.loop = true;
+  rainNode.connect(rainGain);
+  rainNode.start();
+  rainTrackName = name;
+  rainGain.gain.linearRampToValueAtTime(target, ctx.currentTime + 1.6);   // fade in
+  if(old && oldGain){                                                      // crossfade out
+    oldGain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 1.6);
+    setTimeout(() => { try{ old.stop(); }catch(e){} old.disconnect(); }, 1800);
+  }
+}
+async function scheduleThunder(mm){
+  if(thunderTimer) clearTimeout(thunderTimer);
+  if(mm < 14) return;                                   // only in a real storm
+  const ctx = ac(); if(!ctx) return;
+  const wait = 25000 + Math.random() * 55000;           // every 25-80s
+  thunderTimer = setTimeout(async () => {
+    try{
+      if(!thunderBuf) thunderBuf = await loadBuffer(THUNDER_URL);
+      if(thunderBuf && !settings.muted && !document.hidden){
+        const g = ctx.createGain();
+        g.gain.value = RAIN_BASE_VOL * 0.85;
+        g.connect(ctx.destination);
+        const s = ctx.createBufferSource();
+        s.buffer = thunderBuf; s.connect(g); s.start();
+      }
+    }catch(e){}
+    scheduleThunder(rainMMNow());
+  }, wait);
+}
+async function updateRainAudio(){
+  const mm = rainMMNow();
+  const want = settings.muted || document.hidden ? null : rainTrackFor(mm);
+  if(!want){ stopRainAudio(); return; }
+  if(!rainAudioReady) return;      // waiting on the first user gesture
+  try{ await playRainTrack(want, mm); scheduleThunder(mm); }catch(e){ /* files not hosted yet */ }
+}
+// Browsers refuse audio before an interaction, so arm on the first one.
+['pointerdown','keydown'].forEach(evt =>
+  window.addEventListener(evt, () => { rainAudioReady = true; updateRainAudio(); }, { once:true }));
+
 // ===== Rain on the wheel =============================================
 // Drop positions are normalised 0-1 so the same field can be drawn onto both
 // the wheel and the Settings preview, whatever their sizes.
@@ -2919,11 +3012,13 @@ function setRain(mm){
   if(p && !rainRAF) rainRAF = requestAnimationFrame(rainStep);
   if(!p && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null;
     rainSurfaces.forEach(({el,ctx}) => ctx.clearRect(0,0,el.width,el.height)); }
+  updateRainAudio();
 }
 window.addEventListener('resize', () => setRain());
 document.addEventListener('visibilitychange', () => {
   if(document.hidden && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null; }
   else if(!document.hidden && !rainRAF && rainProfile(rainMMNow())) rainRAF = requestAnimationFrame(rainStep);
+  updateRainAudio();      // silence it in a background tab
 });
 
 // ===== Weather: Vinhedo + the roughest spot in Brazil today ============
