@@ -179,6 +179,34 @@
     </section>
 
     <section class="panel" style="margin-bottom:16px;">
+      <div class="day-panel-header"><h2>Encryption</h2></div>
+      <p class="hint">Client names, phone numbers, ticket numbers and every note are encrypted on this device with AES-256-GCM before they are sent. The server only ever stores ciphertext, so the database is useless to anyone who reads it directly.</p>
+      <div class="set-row">
+        <div class="set-info"><b>Status</b><span id="enc-status">Off — data stored in plain text</span></div>
+        <button class="btn-ghost" id="enc-lock" style="display:none">Lock now</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info">
+          <b>Stay unlocked on this device</b>
+          <span id="enc-remember-status">On — opens automatically next session</span>
+        </div>
+        <button class="btn-ghost" id="enc-remember">Toggle</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>Key on this device</b><span id="enc-key-status">Not stored</span></div>
+        <button class="btn-ghost" id="enc-forget">Forget key</button>
+      </div>
+      <div class="field"><label>Passphrase</label><input type="password" id="enc-pass" placeholder="A long phrase you will remember" autocomplete="new-password"></div>
+      <div class="field" id="enc-confirm-wrap"><label>Confirm passphrase</label><input type="password" id="enc-pass2" placeholder="Type it again" autocomplete="new-password"></div>
+      <div class="set-actions">
+        <button class="btn-primary" id="enc-unlock" style="flex:1">Unlock / enable</button>
+        <button class="btn-ghost" id="enc-migrate">Encrypt existing data</button>
+      </div>
+      <p class="hint">Once set, the vault opens by itself on this browser — you only type the passphrase again on a new device, or after clearing browser data.</p>
+      <p class="hint enc-warn">⚠ There is no password reset. If you forget this passphrase, the encrypted cases and notes cannot be recovered by me, by Supabase, or by anyone else — that is the point of it. Write it down somewhere safe.</p>
+    </section>
+
+    <section class="panel" style="margin-bottom:16px;">
       <div class="day-panel-header"><h2>Custom theme</h2></div>
       <p class="hint">Build your own palette here, then pick <b>Custom</b> in the Theme menu. Text colour on buttons is worked out automatically for contrast.</p>
       <div class="ct-grid" id="ct-grid"></div>
@@ -198,6 +226,7 @@
       </div>
       <div class="set-row" style="display:block">
         <div class="set-info" style="margin-bottom:8px"><b>Rain animation test</b><span id="rain-test-label">Using the live forecast</span></div>
+        <div class="rain-preview-wrap"><canvas id="rain-preview"></canvas><span class="rain-preview-lab">preview</span></div>
         <input type="range" id="rain-test" min="-1" max="60" step="0.5" value="-1" class="rain-range">
         <p class="hint" style="margin:6px 0 0">Slide to preview the wheel at any rainfall. Far left returns to the real forecast.</p>
       </div>
@@ -342,6 +371,15 @@
     </div>
     <div class="field-row">
       <div class="field"><label>Ticket # (optional)</label><input type="text" id="f-ticket" placeholder="PAC-0000"></div>
+      <div class="field">
+        <label>Phone <span class="lock-hint" id="phone-lock"></span></label>
+        <div class="phone-row">
+          <input type="tel" id="f-phone" placeholder="(19) 99999-9999" autocomplete="off">
+          <a class="phone-call" id="f-phone-call" title="Call" href="#" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg>
+          </a>
+        </div>
+      </div>
       <div class="field">
         <label>Priority</label>
         <div class="select-wrap" id="f-prioridade-wrap">

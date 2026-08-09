@@ -468,6 +468,26 @@
   .wheel-g.rolling{ transition: transform 1.6s cubic-bezier(.42,.02,.24,1); }
   .arc-wrap.spinning{ box-shadow: 0 0 74px -20px var(--amber) !important; }
 
+
+  .rain-preview-wrap{ position:relative; height:92px; border-radius:9px; overflow:hidden; margin-bottom:10px;
+    border:1px solid var(--line); background: linear-gradient(160deg, var(--panel-2), var(--bg)); }
+  .rain-preview-wrap canvas{ position:absolute; inset:0; width:100%; height:100%; }
+  .rain-preview-lab{ position:absolute; left:9px; top:7px; font-size:0.58rem; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--muted); }
+
+
+  .phone-row{ display:flex; gap:8px; align-items:stretch; }
+  .phone-row input{ flex:1; }
+  .phone-call{ display:flex; align-items:center; justify-content:center; width:46px; border-radius:10px;
+    border:1px solid var(--line); background: linear-gradient(180deg, var(--panel-2), var(--bg)); color: var(--ok);
+    transition: border-color .15s, color .15s; }
+  .phone-call svg{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .phone-call:hover{ border-color: var(--ok); }
+  .phone-call.off{ opacity:.35; pointer-events:none; }
+  .chip.phone-chip{ color: var(--ok); border-color: color-mix(in srgb, var(--ok) 32%, var(--line)); }
+  .lock-hint{ float:right; font-size:0.66rem; color: var(--ok); font-weight:600; letter-spacing:.04em; }
+  .enc-warn{ border-left:3px solid var(--urgente); padding-left:10px; color:var(--muted); margin-top:12px; }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

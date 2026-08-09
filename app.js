@@ -41,6 +41,7 @@ async function doLogin(){
     session = { token: data.token, name: data.name, expires_at: data.expires_at };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     showApp();
+    await restoreVaultKey();
     await Promise.all([loadCases(), loadNotebooks(), loadNotes()]);
     loadWeather();
   }catch(err){ errEl.textContent = err.message; }
@@ -61,6 +62,7 @@ function switchView(view){
   // keep the mobile bottom bar in sync with the desktop pill tabs
   document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   SFX.tick();
+  requestAnimationFrame(() => setRain());
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if(view === "calendar") renderCalendar();
   if(view === "history") renderHistory();
@@ -74,18 +76,19 @@ document.querySelectorAll('.bn-item').forEach(b => {
 async function loadCases(){
   const resp = await fetch(FN_URL + "/agenda-cases", { headers: authHeaders() });
   if(resp.status === 401){ session = null; localStorage.removeItem(SESSION_KEY); showLogin(); return; }
-  cases = await resp.json();
+  const raw = await resp.json();
+  cases = await Promise.all((raw || []).map(openCase));
   render();
 }
 async function createCase(payload){
-  const resp = await fetch(FN_URL + "/agenda-cases", { method: "POST", headers: authHeaders(), body: JSON.stringify(payload) });
+  const resp = await fetch(FN_URL + "/agenda-cases", { method: "POST", headers: authHeaders(), body: JSON.stringify(await sealCase(payload)) });
   if(!resp.ok) throw new Error((await resp.json()).error || "Error creating case.");
-  return resp.json();
+  return openCase(await resp.json());
 }
 async function updateCase(id, payload){
-  const resp = await fetch(FN_URL + "/agenda-cases", { method: "PUT", headers: authHeaders(), body: JSON.stringify({ id, ...payload }) });
+  const resp = await fetch(FN_URL + "/agenda-cases", { method: "PUT", headers: authHeaders(), body: JSON.stringify({ id, ...(await sealCase(payload)) }) });
   if(!resp.ok) throw new Error((await resp.json()).error || "Error updating case.");
-  return resp.json();
+  return openCase(await resp.json());
 }
 async function deleteCaseApi(id){
   const resp = await fetch(FN_URL + "/agenda-cases", { method: "DELETE", headers: authHeaders(), body: JSON.stringify({ id }) });
@@ -116,6 +119,7 @@ function makeCaseCard(c){
     <div class="case-meta">
       <span class="chip">${prioLabel(c.prioridade)}</span>
       ${c.ticket ? `<span class="chip mono">${escapeHtml(c.ticket)}</span>` : ''}
+      ${c.phone ? `<span class="chip mono phone-chip">${escapeHtml(c.phone)}</span>` : ''}
       ${c.horario ? `<span class="chip">${c.horario}</span>` : ''}
       ${(c.tags || []).map(t => `<span class="chip tag"><span class="tag-hash">#</span>${escapeHtml(t)}</span>`).join('')}
     </div>`;
@@ -377,8 +381,8 @@ function renderArc(){
   }
 }
 
-// Rolling the rim: the group turns 180deg and the other half of the clock
-// travels up into view, hour by hour, in real time.
+// Rolling the rim. wheelDeg accumulates so every turn goes the same way
+// round — going back to day rolls 180->360, never backwards to 0.
 let spinning = false;
 function spinToPhase(night, silent){
   const target = night ? 'night' : 'day';
@@ -388,14 +392,16 @@ function spinToPhase(night, silent){
   wrap?.classList.add('spinning');
   if(!silent) SFX.phase(night);
 
+  const from = wheelDeg;
+  wheelDeg = from + 180;          // clockwise, always
   curPhase = target;
-  wheelDeg = night ? 180 : 0;
-  renderArc();                       // repaint with the new palette
+  renderArc();
   applyPhaseChrome(night);
+
   const g = document.getElementById('wheel-g');
   if(g){
-    // start from where it was, then let the CSS transition roll it round
-    g.style.transform = `rotate(${night ? 0 : 180}deg)`;
+    g.classList.remove('rolling');
+    g.style.transform = `rotate(${from}deg)`;      // snap back to where it was
     requestAnimationFrame(() => {
       g.classList.add('rolling');
       g.style.transform = `rotate(${wheelDeg}deg)`;
@@ -696,6 +702,8 @@ function openModal(id, presetDate){
   document.getElementById('modal-title').textContent = c ? 'Edit case' : 'New case';
   document.getElementById('f-titulo').value = c?.titulo || '';
   document.getElementById('f-ticket').value = c?.ticket || '';
+  document.getElementById('f-phone').value = c?.phone || '';
+  syncPhoneLink();
   document.getElementById('f-horario').value = c?.horario || '';
   document.getElementById('f-horario-fim').value = c?.horario_fim || '';
   document.getElementById('f-actual-end').value = c?.actual_end || '';
@@ -756,6 +764,7 @@ document.getElementById('save-btn').addEventListener('click', async () => {
   const data = {
     titulo,
     ticket: document.getElementById('f-ticket').value.trim(),
+    phone: document.getElementById('f-phone').value.trim(),
     horario: document.getElementById('f-horario').value,
     horario_fim: document.getElementById('f-horario-fim').value,
     actual_end: document.getElementById('f-actual-end').value,
@@ -784,6 +793,21 @@ document.getElementById('delete-btn').addEventListener('click', async () => {
   try{ await deleteCaseApi(editingId); cases = cases.filter(x => x.id !== editingId); closeModal(); render(); renderCalendar(); renderHistory(); }
   catch(err){ alert(err.message); }
 });
+
+
+// Keep the call button pointing at whatever is typed, and show whether the
+// field will be stored encrypted.
+function syncPhoneLink(){
+  const inp = document.getElementById('f-phone');
+  const link = document.getElementById('f-phone-call');
+  const lock = document.getElementById('phone-lock');
+  if(!inp || !link) return;
+  const digits = (inp.value || '').replace(/[^\d+]/g, '');
+  link.href = digits ? 'tel:' + digits : '#';
+  link.classList.toggle('off', !digits);
+  if(lock) lock.textContent = cryptoKey ? '🔒 encrypted' : '';
+}
+document.getElementById('f-phone')?.addEventListener('input', syncPhoneLink);
 
 // --- AI assistant ---
 const aiPanel = document.getElementById('ai-panel');
@@ -1179,7 +1203,9 @@ async function loadKB(){
     if(r.ok) KB = await r.json();
   }catch(e){ KB = []; }
   renderKbStatus();
+  renderEncStatus();
   renderCustomTheme();
+  requestAnimationFrame(() => setRain());
 }
 function renderKbStatus(){
   const el = document.getElementById('set-kb-status');
@@ -1436,19 +1462,20 @@ async function deleteNotebookApi(id){
 async function loadNotes(){
   const resp = await fetch(FN_URL + "/agenda-notes", { headers: authHeaders() });
   if(!resp.ok) return;
-  notes = await resp.json();
+  const rawN = await resp.json();
+  notes = await Promise.all((rawN || []).map(openNoteRec));
   renderNotebooksGrid();
   renderCalendar();
 }
 async function createNoteApi(payload){
-  const resp = await fetch(FN_URL + "/agenda-notes", { method: "POST", headers: authHeaders(), body: JSON.stringify(payload) });
+  const resp = await fetch(FN_URL + "/agenda-notes", { method: "POST", headers: authHeaders(), body: JSON.stringify(await sealNote(payload)) });
   if(!resp.ok) throw new Error((await resp.json()).error || 'Error creating note.');
-  return resp.json();
+  return openNoteRec(await resp.json());
 }
 async function updateNoteApi(id, payload){
-  const resp = await fetch(FN_URL + "/agenda-notes", { method: "PUT", headers: authHeaders(), body: JSON.stringify({ id, ...payload }) });
+  const resp = await fetch(FN_URL + "/agenda-notes", { method: "PUT", headers: authHeaders(), body: JSON.stringify({ id, ...(await sealNote(payload)) }) });
   if(!resp.ok) throw new Error((await resp.json()).error || 'Error saving note.');
-  return resp.json();
+  return openNoteRec(await resp.json());
 }
 async function deleteNoteApi(id){
   const resp = await fetch(FN_URL + "/agenda-notes", { method: "DELETE", headers: authHeaders(), body: JSON.stringify({ id }) });
@@ -2191,6 +2218,77 @@ async function hydrateMedia(root){
 }
 
 
+
+// ===== Encryption controls ===========================================
+function renderEncStatus(){
+  const s = document.getElementById('enc-status');
+  if(!s) return;
+  s.textContent = cryptoKey ? 'On — this session is unlocked'
+    : (settings.encOn ? 'Enabled, but locked — enter the passphrase' : 'Off — data stored in plain text');
+  s.className = cryptoKey ? 'ok' : '';
+  const lockBtn = document.getElementById('enc-lock');
+  if(lockBtn) lockBtn.style.display = cryptoKey ? 'inline-block' : 'none';
+  const cw = document.getElementById('enc-confirm-wrap');
+  if(cw) cw.style.display = settings.encOn ? 'none' : 'block';   // only confirm on first setup
+  const rs = document.getElementById('enc-remember-status');
+  if(rs) rs.textContent = settings.encAskEverySession
+    ? 'Off — passphrase required each session'
+    : 'On — opens automatically next session';
+  const ks = document.getElementById('enc-key-status');
+  if(ks){
+    const stored = !!localStorage.getItem(VAULT_KEY);
+    ks.textContent = stored ? 'Stored in this browser' : 'Not stored';
+    ks.className = stored ? 'ok' : '';
+  }
+}
+document.getElementById('enc-remember')?.addEventListener('click', async () => {
+  settings.encAskEverySession = !settings.encAskEverySession;
+  saveSettings();
+  if(settings.encAskEverySession) localStorage.removeItem(VAULT_KEY);
+  else await rememberVaultKey();
+  renderEncStatus();
+});
+document.getElementById('enc-forget')?.addEventListener('click', () => {
+  if(!confirm('Forget the key on this device? You will need the passphrase again here.')) return;
+  forgetVaultKey();
+});
+document.getElementById('enc-unlock')?.addEventListener('click', async () => {
+  const p = document.getElementById('enc-pass').value;
+  const p2 = document.getElementById('enc-pass2').value;
+  if(p.length < 8){ alert('Use at least 8 characters — longer is better.'); return; }
+  if(!settings.encOn && p !== p2){ alert('The two passphrases do not match.'); return; }
+  try{
+    await unlockVault(p);
+    document.getElementById('enc-pass').value = '';
+    document.getElementById('enc-pass2').value = '';
+    renderEncStatus();
+    alert('Unlocked. New and edited records will be encrypted from now on.');
+  }catch(err){ alert('Could not unlock: ' + err.message); }
+});
+document.getElementById('enc-lock')?.addEventListener('click', () => {
+  lockVault(); renderEncStatus();
+});
+// Re-saves everything already in the database so old plaintext rows get sealed.
+document.getElementById('enc-migrate')?.addEventListener('click', async () => {
+  if(!cryptoKey){ alert('Unlock first, then run this.'); return; }
+  if(!confirm(`Re-save ${cases.length} cases and ${notes.length} notes as encrypted? This can take a moment.`)) return;
+  const btn = document.getElementById('enc-migrate');
+  btn.disabled = true; btn.textContent = 'Encrypting...';
+  let done = 0;
+  try{
+    for(const cse of cases){
+      await updateCase(cse.id, { titulo: cse.titulo, ticket: cse.ticket, phone: cse.phone, notes_log: cse.notes_log });
+      done++;
+    }
+    for(const n of notes){
+      await updateNoteApi(n.id, { title: n.title, content: n.content, linked_date: n.linked_date, tags: n.tags });
+      done++;
+    }
+    alert(`Encrypted ${done} records.`);
+  }catch(err){ alert('Stopped after ' + done + ' records: ' + err.message); }
+  finally{ btn.disabled = false; btn.textContent = 'Encrypt existing data'; }
+});
+
 // ===== Custom theme ===================================================
 const CT_FIELDS = [
   ['bg','Background'],['bg2','Background edge'],['panel','Panel'],['panel2','Panel highlight'],
@@ -2294,7 +2392,7 @@ if(rainTest){
       const band = v <= 0.05 ? 'dry' : v < 2 ? 'drizzle' : v < 10 ? 'steady rain' : v < 25 ? 'heavy' : 'downpour';
       lab.textContent = `${v.toFixed(1)} mm — ${band}`;
     }
-    setRain(rainMM);
+    setRain();
   });
 }
 document.getElementById('sfx-toggle').addEventListener('click', () => {
@@ -2613,86 +2711,201 @@ function openDayModal(dateStr, dayCases, dayNotes){
 
 
 
+
+// ===== Client-side encryption ========================================
+// AES-256-GCM via the browser's own Web Crypto. The passphrase never leaves
+// this device and is never sent anywhere: the server only ever stores
+// ciphertext, so a leaked database (or anyone with admin access to it) yields
+// nothing readable. The trade-off is blunt and worth stating: lose the
+// passphrase and the data is gone — there is no recovery path by design.
+const ENC_PREFIX = 'enc:v1:';
+let cryptoKey = null;
+
+function bufB64(b){ return btoa(String.fromCharCode(...new Uint8Array(b))); }
+function b64Buf(s){ return Uint8Array.from(atob(s), ch => ch.charCodeAt(0)); }
+
+// Salt is derived from the account name so the same passphrase unlocks the
+// data on any device without having to move a salt file around.
+async function deriveKey(pass, who){
+  const enc = new TextEncoder();
+  const saltSrc = await crypto.subtle.digest('SHA-256', enc.encode('solar-agenda|' + (who || 'admin')));
+  const base = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name:'PBKDF2', salt: saltSrc, iterations: 210000, hash: 'SHA-256' },
+    base, { name:'AES-GCM', length:256 }, true, ['encrypt','decrypt']);
+}
+async function encStr(plain){
+  if(!cryptoKey || plain == null || plain === '') return plain;
+  if(String(plain).startsWith(ENC_PREFIX)) return plain;      // already sealed
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, cryptoKey,
+                new TextEncoder().encode(String(plain)));
+  return ENC_PREFIX + bufB64(iv) + ':' + bufB64(ct);
+}
+async function decStr(val){
+  if(val == null || typeof val !== 'string' || !val.startsWith(ENC_PREFIX)) return val; // plaintext stays readable
+  if(!cryptoKey) return '🔒 locked';
+  try{
+    const [, , ivB, ctB] = val.split(':');
+    const pt = await crypto.subtle.decrypt({ name:'AES-GCM', iv: b64Buf(ivB) }, cryptoKey, b64Buf(ctB));
+    return new TextDecoder().decode(pt);
+  }catch(e){ return '🔒 wrong passphrase'; }
+}
+
+// Which fields get sealed. Dates, times, priority and tags stay clear so the
+// calendar, sorting and filtering keep working without unlocking first.
+const CASE_SECRETS = ['titulo', 'ticket', 'phone'];
+const NOTE_SECRETS = ['title', 'content'];
+
+async function sealCase(p){
+  if(!cryptoKey) return p;
+  const o = { ...p };
+  for(const f of CASE_SECRETS) if(o[f]) o[f] = await encStr(o[f]);
+  if(Array.isArray(o.notes_log))
+    o.notes_log = await Promise.all(o.notes_log.map(async n => ({ ...n, text: await encStr(n.text) })));
+  return o;
+}
+async function openCase(c){
+  if(!c) return c;
+  const o = { ...c };
+  for(const f of CASE_SECRETS) if(o[f]) o[f] = await decStr(o[f]);
+  if(Array.isArray(o.notes_log))
+    o.notes_log = await Promise.all(o.notes_log.map(async n => ({ ...n, text: await decStr(n.text) })));
+  return o;
+}
+async function sealNote(p){
+  if(!cryptoKey) return p;
+  const o = { ...p };
+  for(const f of NOTE_SECRETS) if(o[f]) o[f] = await encStr(o[f]);
+  return o;
+}
+async function openNoteRec(n){
+  if(!n) return n;
+  const o = { ...n };
+  for(const f of NOTE_SECRETS) if(o[f]) o[f] = await decStr(o[f]);
+  return o;
+}
+
+// The key is kept on this device so the vault opens by itself next time. The
+// point of the encryption is that Supabase never holds readable data — not to
+// re-challenge you every session. Anyone who can already open this browser can
+// open the app anyway, since the login session lives in the same place.
+const VAULT_KEY = 'agenda-solar-vaultkey';
+
+async function rememberVaultKey(){
+  if(!cryptoKey || settings.encAskEverySession) return;
+  try{
+    const jwk = await crypto.subtle.exportKey('jwk', cryptoKey);
+    localStorage.setItem(VAULT_KEY, JSON.stringify(jwk));
+  }catch(e){}
+}
+async function restoreVaultKey(){
+  if(settings.encAskEverySession) return false;
+  const raw = localStorage.getItem(VAULT_KEY);
+  if(!raw) return false;
+  try{
+    cryptoKey = await crypto.subtle.importKey('jwk', JSON.parse(raw),
+                  { name:'AES-GCM', length:256 }, true, ['encrypt','decrypt']);
+    return true;
+  }catch(e){ localStorage.removeItem(VAULT_KEY); return false; }
+}
+function forgetVaultKey(){
+  localStorage.removeItem(VAULT_KEY);
+  cryptoKey = null;
+  loadCases(); loadNotes();
+  renderEncStatus();
+}
+
+async function unlockVault(pass, quiet){
+  cryptoKey = await deriveKey(pass, session?.name || 'admin');
+  settings.encOn = true; saveSettings();
+  await rememberVaultKey();
+  await Promise.all([loadCases(), loadNotebooks(), loadNotes()]);
+  renderSettings();
+  if(!quiet) SFX.open();
+}
+function lockVault(){
+  cryptoKey = null;
+  loadCases(); loadNotes();
+  renderSettings();
+}
+
 // ===== Rain on the wheel =============================================
-// Intensity comes straight from the forecast in mm. Light drizzle is a few
-// slow, faint drops; heavy rain is dense, fast and wind-slanted — busier, but
-// still low-contrast so it never fights the dial for attention.
-let rainCanvas, rainCtx, rainDrops = [], rainRAF = null, rainMM = 0, rainOverride = null;
+// Drop positions are normalised 0-1 so the same field can be drawn onto both
+// the wheel and the Settings preview, whatever their sizes.
+let rainSurfaces = [], rainDrops = [], rainRAF = null, rainMM = 0, rainOverride = null;
 
 function rainProfile(mm){
   if(mm <= 0.05) return null;
-  const i = Math.min(1, mm / 30);                 // 30mm+ counts as full intensity
-  return {
-    count: Math.round(14 + i * 150),
-    speed: 2.4 + i * 7.5,
-    len:   6 + i * 20,
-    slant: i * 2.6,
-    alpha: 0.10 + i * 0.28,
-    width: 0.7 + i * 0.9,
-  };
+  const i = Math.min(1, mm / 30);
+  return { count: Math.round(14 + i * 150), speed: 0.010 + i * 0.034,
+           len: 0.05 + i * 0.16, slant: i * 0.010,
+           alpha: 0.12 + i * 0.30, width: 0.8 + i * 1.0 };
 }
-function seedRain(){
-  const p = rainProfile(rainOverride !== null ? rainOverride : rainMM);
+function rainMMNow(){ return rainOverride !== null ? rainOverride : rainMM; }
+
+function rainAttach(){
+  rainSurfaces = ['rain-layer', 'rain-preview']
+    .map(id => document.getElementById(id))
+    .filter(Boolean)
+    .map(el => ({ el, ctx: el.getContext('2d') }));
+}
+function rainSize(){
+  rainSurfaces.forEach(({ el }) => {
+    const p = el.parentElement;
+    const w = p?.clientWidth || el.clientWidth || 0;
+    const h = p?.clientHeight || el.clientHeight || 0;
+    if(w > 0 && h > 0){ el.width = w; el.height = h; }   // skip while hidden
+  });
+}
+function rainSeed(){
+  const p = rainProfile(rainMMNow());
   rainDrops = [];
-  if(!p || !rainCanvas) return p;
-  const w = rainCanvas.width, h = rainCanvas.height;
+  if(!p) return null;
   for(let i = 0; i < p.count; i++){
-    rainDrops.push({
-      x: Math.random() * (w + 120) - 60,
-      y: Math.random() * h,
-      v: p.speed * (0.65 + Math.random() * 0.7),
-      l: p.len * (0.6 + Math.random() * 0.8),
-      a: p.alpha * (0.5 + Math.random() * 0.7),
-    });
+    rainDrops.push({ x: Math.random() * 1.2 - 0.1, y: Math.random(),
+                     v: p.speed * (0.65 + Math.random() * 0.7),
+                     l: p.len * (0.6 + Math.random() * 0.8),
+                     a: p.alpha * (0.5 + Math.random() * 0.7) });
   }
   return p;
 }
-function sizeRain(){
-  if(!rainCanvas) return;
-  const wrap = rainCanvas.parentElement;
-  rainCanvas.width = wrap.clientWidth;
-  rainCanvas.height = wrap.clientHeight;
-}
-function stepRain(){
-  const p = rainProfile(rainOverride !== null ? rainOverride : rainMM);
-  if(!p || !rainCtx){ rainRAF = null; if(rainCtx) rainCtx.clearRect(0,0,rainCanvas.width,rainCanvas.height); return; }
-  const w = rainCanvas.width, h = rainCanvas.height;
-  rainCtx.clearRect(0, 0, w, h);
-  const night = curPhase === 'night';
-  const col = night ? '160,200,255' : '190,215,245';
-  rainCtx.lineCap = 'round';
-  rainCtx.lineWidth = p.width;
-  rainDrops.forEach(d => {
-    rainCtx.strokeStyle = `rgba(${col},${d.a})`;
-    rainCtx.beginPath();
-    rainCtx.moveTo(d.x, d.y);
-    rainCtx.lineTo(d.x + p.slant * (d.l / p.len) * 3, d.y + d.l);
-    rainCtx.stroke();
-    d.y += d.v; d.x += p.slant;
-    if(d.y > h){ d.y = -d.l; d.x = Math.random() * (w + 120) - 60; }
-    if(d.x > w + 60) d.x = -60;
+function rainStep(){
+  const p = rainProfile(rainMMNow());
+  if(!p){ rainRAF = null; rainSurfaces.forEach(({el,ctx}) => ctx.clearRect(0,0,el.width,el.height)); return; }
+  const col = curPhase === 'night' ? '160,200,255' : '190,215,245';
+  rainSurfaces.forEach(({ el, ctx }) => {
+    if(!el.width || !el.height) return;
+    ctx.clearRect(0, 0, el.width, el.height);
+    ctx.lineCap = 'round'; ctx.lineWidth = p.width;
+    rainDrops.forEach(d => {
+      const x = d.x * el.width, y = d.y * el.height, l = d.l * el.height;
+      ctx.strokeStyle = `rgba(${col},${d.a})`;
+      ctx.beginPath(); ctx.moveTo(x, y);
+      ctx.lineTo(x + p.slant * el.width, y + l); ctx.stroke();
+    });
   });
-  rainRAF = requestAnimationFrame(stepRain);
+  rainDrops.forEach(d => {
+    d.y += d.v; d.x += p.slant * 0.35;
+    if(d.y > 1){ d.y = -d.l; d.x = Math.random() * 1.2 - 0.1; }
+    if(d.x > 1.1) d.x = -0.1;
+  });
+  rainRAF = requestAnimationFrame(rainStep);
 }
 function setRain(mm){
-  rainMM = mm || 0;
-  if(!rainCanvas){
-    rainCanvas = document.getElementById('rain-layer');
-    if(!rainCanvas) return;
-    rainCtx = rainCanvas.getContext('2d');
-    window.addEventListener('resize', () => { sizeRain(); seedRain(); });
-  }
-  sizeRain();
-  const p = seedRain();
-  const wrap = rainCanvas.parentElement;
-  wrap.classList.toggle('raining', !!p);
-  if(p && !rainRAF) rainRAF = requestAnimationFrame(stepRain);
-  if(!p && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null; rainCtx.clearRect(0,0,rainCanvas.width,rainCanvas.height); }
+  if(typeof mm === 'number') rainMM = mm;
+  if(!rainSurfaces.length) rainAttach();
+  rainSize();
+  const p = rainSeed();
+  document.querySelector('.arc-wrap')?.classList.toggle('raining', !!p);
+  if(p && !rainRAF) rainRAF = requestAnimationFrame(rainStep);
+  if(!p && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null;
+    rainSurfaces.forEach(({el,ctx}) => ctx.clearRect(0,0,el.width,el.height)); }
 }
-// pause when the tab is hidden so it isn't burning battery in the background
+window.addEventListener('resize', () => setRain());
 document.addEventListener('visibilitychange', () => {
   if(document.hidden && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null; }
-  else if(!document.hidden && !rainRAF && rainProfile(rainOverride !== null ? rainOverride : rainMM)) rainRAF = requestAnimationFrame(stepRain);
+  else if(!document.hidden && !rainRAF && rainProfile(rainMMNow())) rainRAF = requestAnimationFrame(rainStep);
 });
 
 // ===== Weather: Vinhedo + the roughest spot in Brazil today ============
@@ -2763,7 +2976,15 @@ async function loadWeather(){
 setInterval(loadWeather, 30 * 60 * 1000); // refresh twice an hour
 
 // --- Boot ---
-if(session){ showApp(); loadCases(); loadNotebooks(); loadNotes(); loadWeather(); }
-else { showLogin(); }
-syncPhase();
-detectHud();
+async function bootApp(){
+  if(session){
+    showApp();
+    await restoreVaultKey();               // unlock first, then fetch
+    loadCases(); loadNotebooks(); loadNotes(); loadWeather();
+  } else {
+    showLogin();
+  }
+  syncPhase();
+  detectHud();
+}
+bootApp();
