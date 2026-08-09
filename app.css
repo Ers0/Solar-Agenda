@@ -463,6 +463,11 @@
   #sticky-modal-backdrop .field{ margin-bottom:10px; }
   #sticky-lock{ margin:0 0 4px; }
 
+
+  .wheel-g{ transform-origin: 400px 190px; transform-box: view-box; }
+  .wheel-g.rolling{ transition: transform 1.6s cubic-bezier(.42,.02,.24,1); }
+  .arc-wrap.spinning{ box-shadow: 0 0 74px -20px var(--amber) !important; }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

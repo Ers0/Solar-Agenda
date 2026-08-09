@@ -235,25 +235,21 @@ function renderBlocks(){
 
 // Full 24h dial. Work hours are highlighted rather than being the whole
 // scale, so evening work from home still has somewhere to land.
-// The dial has two faces. Day shows 07h-18h; night shows 18h-07h (hours past
-// midnight are carried as 24-31 so the maths stays linear). Crossing between
-// them spins the wheel edge-on and the other face comes up.
-const PHASES = { day: { s: 7, e: 18 }, night: { s: 18, e: 31 } };
+// One continuous 24h rim. The top semicircle carries the day (07h-18h) and the
+// bottom carries the night (18h-07h); only the top is visible, so rotating the
+// wheel 180deg rolls the night hours up into place.
+const DAY_S = 7, DAY_E = 18;          // 11 hours across the top half
+const NIGHT_S = 18, NIGHT_E = 31;     // 13 hours across the bottom half (07h next day)
 const WORK_START = 8, WORK_END = 18;
 let curPhase = 'day';
-function phaseRange(){ return PHASES[curPhase]; }
+let wheelDeg = 0;                     // 0 = day up, 180 = night up
 function isNightHour(h){ return h >= 18 || h < 7; }
-// map a real clock hour onto the active face, or null if it isn't on it
-function toFaceHour(h){
-  const { s, e } = phaseRange();
-  if(h >= s && h <= e) return h;
-  if(h + 24 >= s && h + 24 <= e) return h + 24;   // early morning on the night face
-  return null;
-}
+function isDayHour(h){ return h >= DAY_S && h <= DAY_E; }
+// clock hour -> position on the rim, in radians (pi = left, 0 = right, negative = bottom)
 function hourToAngle(h){
-  const { s, e } = phaseRange();
-  const t = Math.min(1, Math.max(0, (h - s) / (e - s)));
-  return Math.PI - t * Math.PI;
+  if(h >= DAY_S && h <= DAY_E) return Math.PI - ((h - DAY_S) / (DAY_E - DAY_S)) * Math.PI;
+  const n = h < DAY_S ? h + 24 : h;   // carry early morning into 24-31
+  return -(((n - NIGHT_S) / (NIGHT_E - NIGHT_S)) * Math.PI);
 }
 function arcPoint(angle, r){ const cx = 400, cy = 190; return { x: cx + r * Math.cos(angle), y: cy - r * Math.sin(angle) }; }
 
@@ -283,13 +279,17 @@ function renderHistory(){
 
 function renderArc(){
   const svg = document.getElementById('day-arc');
-  const r = 160;
-  const { s: FS, e: FE } = phaseRange();
+  if(!svg) return;
+  const r = 160, cx = 400, cy = 190;
   const night = curPhase === 'night';
   const AC = night ? 'var(--accent2)' : 'var(--amber)';
-  let parts = [];
+  const P = (h, rad) => arcPoint(hourToAngle(h), rad);
 
-  parts.push(`<defs>
+  // hours that sit on the bottom half get pre-flipped, so once the wheel has
+  // turned 180deg their labels read upright
+  const flip = (h, x, y) => (h > DAY_E || h < DAY_S) ? ` transform="rotate(180 ${x} ${y})"` : '';
+
+  let d = [`<defs>
     <linearGradient id="arcTrack" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="${night ? 'var(--dusk)' : 'var(--amber)'}" stop-opacity="0.55"/>
       <stop offset="38%" stop-color="${night ? 'var(--accent2)' : 'var(--accent3)'}" stop-opacity="0.5"/>
@@ -305,98 +305,103 @@ function renderArc(){
       <feGaussianBlur stdDeviation="4" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-  </defs>`);
+    <clipPath id="topHalf"><rect x="0" y="-40" width="800" height="${cy}"/></clipPath>
+  </defs>`];
 
-  const pS = arcPoint(hourToAngle(FS), r), pE = arcPoint(hourToAngle(FE), r);
-  parts.push(`<path d="M ${pS.x} ${pS.y} A ${r} ${r} 0 0 1 ${pE.x} ${pE.y}" fill="none" stroke="${AC}" stroke-width="14" stroke-opacity="0.05" stroke-linecap="round"/>`);
-  parts.push(`<path d="M ${pS.x} ${pS.y} A ${r} ${r} 0 0 1 ${pE.x} ${pE.y}" fill="none" stroke="url(#arcTrack)" stroke-width="3" stroke-linecap="round"/>`);
-
-  // day: highlight the first working hour. night: highlight the evening stretch.
-  const hlS = night ? 18 : WORK_START, hlE = night ? 22 : WORK_START + 1;
-  const hS = arcPoint(hourToAngle(hlS), r), hE = arcPoint(hourToAngle(hlE), r);
-  parts.push(`<path d="M ${hS.x} ${hS.y} A ${r} ${r} 0 0 1 ${hE.x} ${hE.y}" fill="none" stroke="url(#arcFirstHour)" stroke-width="5" stroke-linecap="round" filter="url(#bloom)"/>`);
-
-  for(let h = FS; h <= FE; h++){
-    const major = (h - FS) % 2 === 0;   // every 2h on both faces, evenly spaced
-    const p = arcPoint(hourToAngle(h), r), pO = arcPoint(hourToAngle(h), r + (major ? 12 : 7));
-    parts.push(`<line x1="${p.x}" y1="${p.y}" x2="${pO.x}" y2="${pO.y}" stroke="${major ? AC : 'var(--line)'}" stroke-opacity="${major ? 0.7 : 0.35}" stroke-width="2"/>`);
-    if(major){
-      const pL = arcPoint(hourToAngle(h), r + 27);
-      parts.push(`<text x="${pL.x}" y="${pL.y + 3}" fill="var(--text)" font-size="11" text-anchor="middle" font-family="JetBrains Mono, monospace">${String(h % 24).padStart(2,'0')}h</text>`);
+  // stars sit behind the wheel and do not rotate with it
+  if(night){
+    for(let i = 0; i < 16; i++){
+      d.push(`<circle class="arc-star" cx="${60 + ((i * 137) % 690)}" cy="${-14 + ((i * 53) % 120)}" r="${0.7 + ((i * 7) % 3) * 0.35}" fill="var(--text)" opacity="0.5" style="animation-delay:${(i % 7) * 0.42}s"/>`);
     }
   }
 
-  const now = new Date();
-  const nowFace = toFaceHour(now.getHours() + now.getMinutes() / 60);
-  if(nowFace !== null){
-    const p = arcPoint(hourToAngle(nowFace), r);
-    parts.push(`<line x1="400" y1="190" x2="${p.x}" y2="${p.y}" stroke="${AC}" stroke-width="1.5" stroke-opacity="0.28" stroke-dasharray="4 5"/>`);
-    parts.push(`<circle cx="${p.x}" cy="${p.y}" r="7" fill="none" stroke="${AC}" stroke-width="2" stroke-opacity="0.5">
-      <animate attributeName="r" values="7;20;7" dur="3s" repeatCount="indefinite"/>
-      <animate attributeName="stroke-opacity" values="0.5;0;0.5" dur="3s" repeatCount="indefinite"/></circle>`);
-    parts.push(`<circle cx="${p.x}" cy="${p.y}" r="7" fill="${AC}" filter="url(#bloom)"><animate attributeName="r" values="6;9;6" dur="2.4s" repeatCount="indefinite"/></circle>`);
-    if(night) parts.push(`<circle cx="${p.x + 3}" cy="${p.y - 2.4}" r="5.4" fill="var(--panel)"/>`);
+  let w = [];   // everything that turns with the wheel
+
+  // full rim, so the track is continuous as it rolls
+  w.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${AC}" stroke-width="14" stroke-opacity="0.04"/>`);
+  const dS = P(DAY_S, r), dE = P(DAY_E, r);
+  w.push(`<path d="M ${dS.x} ${dS.y} A ${r} ${r} 0 0 1 ${dE.x} ${dE.y}" fill="none" stroke="url(#arcTrack)" stroke-width="3" stroke-linecap="round"/>`);
+  w.push(`<path d="M ${dE.x} ${dE.y} A ${r} ${r} 0 0 1 ${dS.x} ${dS.y}" fill="none" stroke="url(#arcTrack)" stroke-width="3" stroke-linecap="round"/>`);
+
+  // highlight: first working hour by day, the evening stretch by night
+  const hlS = night ? 18 : WORK_START, hlE = night ? 22 : WORK_START + 1;
+  const a = P(hlS, r), b = P(hlE, r);
+  w.push(`<path d="M ${a.x} ${a.y} A ${r} ${r} 0 0 1 ${b.x} ${b.y}" fill="none" stroke="url(#arcFirstHour)" stroke-width="5" stroke-linecap="round" filter="url(#bloom)"/>`);
+
+  // every hour of the clock, all the way round
+  for(let h = DAY_S; h < DAY_S + 24; h++){
+    const onDay = isDayHour(h);
+    const major = onDay ? (h - DAY_S) % 2 === 0 : (h - NIGHT_S) % 2 === 0;
+    const p = P(h, r), pO = P(h, r + (major ? 12 : 7));
+    w.push(`<line x1="${p.x}" y1="${p.y}" x2="${pO.x}" y2="${pO.y}" stroke="${major ? AC : 'var(--line)'}" stroke-opacity="${major ? 0.7 : 0.35}" stroke-width="2"/>`);
+    if(major){
+      const pL = P(h, r + 27);
+      w.push(`<text x="${pL.x}" y="${pL.y + 3}" fill="var(--text)" font-size="11" text-anchor="middle" font-family="JetBrains Mono, monospace"${flip(h, pL.x, pL.y + 3)}>${String(h % 24).padStart(2,'0')}h</text>`);
+    }
   }
 
-  function timeToHour(t){ const [hh, mm] = t.split(':').map(Number); return hh + (mm || 0) / 60; }
+  // cases, wherever they fall on the 24h rim
+  const th = t => { const [hh, mm] = t.split(':').map(Number); return hh + (mm || 0) / 60; };
   pendingTodaysCases().forEach(c2 => {
     if(!c2.horario) return;
-    const h = toFaceHour(timeToHour(c2.horario));
-    if(h === null) return;                       // belongs to the other face
+    const h = th(c2.horario);
     if(c2.horario_fim){
-      const hEnd = Math.max(h, Math.min(FE, toFaceHour(timeToHour(c2.horario_fim)) ?? FE));
-      const a = arcPoint(hourToAngle(h), r), b = arcPoint(hourToAngle(hEnd), r);
-      parts.push(`<g class="arc-dot" data-id="${c2.id}"><path d="M ${a.x} ${a.y} A ${r} ${r} 0 0 1 ${b.x} ${b.y}" fill="none" stroke="${prioColor(c2.prioridade)}" stroke-width="7" stroke-linecap="round" stroke-opacity="0.6" filter="url(#bloom)"/></g>`);
+      const p1 = P(h, r), p2 = P(th(c2.horario_fim), r);
+      w.push(`<g class="arc-dot" data-id="${c2.id}"><path d="M ${p1.x} ${p1.y} A ${r} ${r} 0 0 1 ${p2.x} ${p2.y}" fill="none" stroke="${prioColor(c2.prioridade)}" stroke-width="7" stroke-linecap="round" stroke-opacity="0.6" filter="url(#bloom)"/></g>`);
     } else {
-      const p = arcPoint(hourToAngle(h), r);
-      parts.push(`<g class="arc-dot" data-id="${c2.id}"><circle cx="${p.x}" cy="${p.y}" r="5.5" fill="${prioColor(c2.prioridade)}" stroke="var(--bg)" stroke-width="2" filter="url(#bloom)"/></g>`);
+      const p = P(h, r);
+      w.push(`<g class="arc-dot" data-id="${c2.id}"><circle cx="${p.x}" cy="${p.y}" r="5.5" fill="${prioColor(c2.prioridade)}" stroke="var(--bg)" stroke-width="2" filter="url(#bloom)"/></g>`);
     }
   });
 
-  if(night){
-    for(let i = 0; i < 16; i++){
-      parts.unshift(`<circle class="arc-star" cx="${60 + ((i * 137) % 690)}" cy="${-14 + ((i * 53) % 120)}" r="${0.7 + ((i * 7) % 3) * 0.35}" fill="var(--text)" opacity="0.5" style="animation-delay:${(i % 7) * 0.42}s"/>`);
-    }
-  }
+  // "now" marker travels with the wheel too
+  const now = new Date();
+  const nh = now.getHours() + now.getMinutes() / 60;
+  const np = P(nh, r);
+  w.push(`<line x1="${cx}" y1="${cy}" x2="${np.x}" y2="${np.y}" stroke="${AC}" stroke-width="1.5" stroke-opacity="0.28" stroke-dasharray="4 5"/>`);
+  w.push(`<circle cx="${np.x}" cy="${np.y}" r="7" fill="none" stroke="${AC}" stroke-width="2" stroke-opacity="0.5">
+    <animate attributeName="r" values="7;20;7" dur="3s" repeatCount="indefinite"/>
+    <animate attributeName="stroke-opacity" values="0.5;0;0.5" dur="3s" repeatCount="indefinite"/></circle>`);
+  w.push(`<circle cx="${np.x}" cy="${np.y}" r="7" fill="${AC}" filter="url(#bloom)"><animate attributeName="r" values="6;9;6" dur="2.4s" repeatCount="indefinite"/></circle>`);
+  if(night) w.push(`<circle cx="${np.x + 3}" cy="${np.y - 2.4}" r="5.4" fill="var(--panel)"/>`);
 
-  svg.innerHTML = parts.join('');
+  d.push(`<g clip-path="url(#topHalf)"><g id="wheel-g" class="wheel-g" style="transform:rotate(${wheelDeg}deg)">${w.join('')}</g></g>`);
+  svg.innerHTML = d.join('');
   svg.querySelectorAll('.arc-dot').forEach(el => el.addEventListener('click', () => openModal(el.getAttribute('data-id'))));
+
   document.getElementById('clock-label').textContent = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
   const cnt = document.getElementById('face-count');
   if(cnt){
-    const n = pendingTodaysCases().filter(x => x.horario && toFaceHour(timeToHour(x.horario)) !== null).length;
+    const n = pendingTodaysCases().filter(x => x.horario && (isDayHour(th(x.horario)) === !night)).length;
     cnt.textContent = n ? `${n} on this face` : 'nothing scheduled';
   }
 }
 
-// The wheel spins edge-on, swaps face while it is invisible, then rolls back.
+// Rolling the rim: the group turns 180deg and the other half of the clock
+// travels up into view, hour by hour, in real time.
 let spinning = false;
 function spinToPhase(night, silent){
-  const svg = document.getElementById('day-arc');
-  const wrap = document.querySelector('.arc-wrap');
   const target = night ? 'night' : 'day';
-  if(!svg || curPhase === target || spinning){ curPhase = target; renderArc(); applyPhaseChrome(night); return; }
+  if(curPhase === target && !spinning) return;
+  const wrap = document.querySelector('.arc-wrap');
   spinning = true;
   wrap?.classList.add('spinning');
   if(!silent) SFX.phase(night);
 
-  svg.style.transition = 'transform .52s cubic-bezier(.55,.06,.68,.19), filter .52s ease';
-  svg.style.transform = 'perspective(950px) rotateX(90deg)';
-  svg.style.filter = 'brightness(1.6)';
-
-  setTimeout(() => {
-    curPhase = target;
-    renderArc();
-    applyPhaseChrome(night);
-    svg.style.transition = 'none';
-    svg.style.transform = 'perspective(950px) rotateX(-90deg)';
+  curPhase = target;
+  wheelDeg = night ? 180 : 0;
+  renderArc();                       // repaint with the new palette
+  applyPhaseChrome(night);
+  const g = document.getElementById('wheel-g');
+  if(g){
+    // start from where it was, then let the CSS transition roll it round
+    g.style.transform = `rotate(${night ? 0 : 180}deg)`;
     requestAnimationFrame(() => {
-      svg.style.transition = 'transform .6s cubic-bezier(.16,.9,.3,1), filter .6s ease';
-      svg.style.transform = 'perspective(950px) rotateX(0deg)';
-      svg.style.filter = 'none';
-      setTimeout(() => { spinning = false; wrap?.classList.remove('spinning'); }, 620);
+      g.classList.add('rolling');
+      g.style.transform = `rotate(${wheelDeg}deg)`;
     });
-  }, 530);
+  }
+  setTimeout(() => { spinning = false; wrap?.classList.remove('spinning'); }, 1750);
 }
 
 function applyPhaseChrome(night){
@@ -417,7 +422,11 @@ function syncPhase(){
   const want = phaseOverride !== null ? phaseOverride : realNight;
   const first = lastRealNight === null;
   lastRealNight = realNight;
-  if(first){ curPhase = want ? 'night' : 'day'; renderArc(); applyPhaseChrome(want); return; }
+  if(first){
+    curPhase = want ? 'night' : 'day';
+    wheelDeg = want ? 180 : 0;      // start already rolled, no animation on load
+    renderArc(); applyPhaseChrome(want); return;
+  }
   if((curPhase === 'night') !== want) spinToPhase(want, false);
 }
 
@@ -429,7 +438,7 @@ document.getElementById('phase-pill').addEventListener('click', () => {
   spinToPhase(phaseOverride !== null ? phaseOverride : realNight, false);
 });
 
-setInterval(() => { syncPhase(); renderArc(); if(!document.getElementById('view-calendar').classList.contains('hidden')) renderCalendar(); }, 15000);
+setInterval(() => { syncPhase(); if(!spinning) renderArc(); if(!document.getElementById('view-calendar').classList.contains('hidden')) renderCalendar(); }, 15000);
 
 // --- HUD mode -------------------------------------------------------
 // F11 does NOT fire the Fullscreen API's fullscreenchange event, so we
