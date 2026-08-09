@@ -55,6 +55,7 @@
       <span class="user-pill" id="user-pill"></span>
       <button class="ai-toggle" id="hud-toggle" title="Fullscreen HUD (F11 also works)"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg><span class="btn-lab">HUD</span></button>
       <button class="ai-toggle" id="theme-toggle"><svg class="btn-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="9.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="14.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/></svg><span class="btn-lab">Theme</span></button>
+      <button class="ai-toggle" id="voice-toggle" title="Voice — say &quot;Hey Jarvis&quot;"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg><span class="btn-lab">Voice</span></button>
       <button class="ai-toggle" id="ai-toggle"><span class="dot"></span><span class="btn-lab">Assistant</span></button>
       <button class="logout-btn" id="logout-btn"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M15 17l5-5-5-5M20 12H9M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></svg><span class="btn-lab">Sign out</span></button>
     </div>
@@ -467,6 +468,14 @@
       <button class="btn-ghost" id="day-modal-close" style="flex:1">Close</button>
     </div>
   </div>
+</div>
+
+<div class="voice-panel" id="voice-panel">
+  <button class="voice-close" id="voice-close" aria-label="Close voice">×</button>
+  <div class="voice-orb" id="voice-orb" data-state="off"><canvas id="voice-canvas"></canvas></div>
+  <div class="voice-state" id="voice-state">voice off</div>
+  <div class="voice-hint">Say <b>“Hey Jarvis”</b> — then keep talking, no need to repeat it.</div>
+  <button class="btn-ghost voice-mute" id="voice-mute">Mute replies</button>
 </div>
 
 <div class="ai-panel" id="ai-panel">

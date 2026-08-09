@@ -309,7 +309,7 @@ function renderArc(){
       <feGaussianBlur stdDeviation="4" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <clipPath id="topHalf"><rect x="0" y="-40" width="800" height="${cy}"/></clipPath>
+    <clipPath id="topHalf"><rect x="0" y="-40" width="800" height="${cy + 40}"/></clipPath>
   </defs>`];
 
   // stars sit behind the wheel and do not rotate with it
@@ -361,13 +361,16 @@ function renderArc(){
   // "now" marker travels with the wheel too
   const now = new Date();
   const nh = now.getHours() + now.getMinutes() / 60;
-  const np = P(nh, r);
-  w.push(`<line x1="${cx}" y1="${cy}" x2="${np.x}" y2="${np.y}" stroke="${AC}" stroke-width="1.5" stroke-opacity="0.28" stroke-dasharray="4 5"/>`);
-  w.push(`<circle cx="${np.x}" cy="${np.y}" r="7" fill="none" stroke="${AC}" stroke-width="2" stroke-opacity="0.5">
-    <animate attributeName="r" values="7;20;7" dur="3s" repeatCount="indefinite"/>
-    <animate attributeName="stroke-opacity" values="0.5;0;0.5" dur="3s" repeatCount="indefinite"/></circle>`);
-  w.push(`<circle cx="${np.x}" cy="${np.y}" r="7" fill="${AC}" filter="url(#bloom)"><animate attributeName="r" values="6;9;6" dur="2.4s" repeatCount="indefinite"/></circle>`);
-  if(night) w.push(`<circle cx="${np.x + 3}" cy="${np.y - 2.4}" r="5.4" fill="var(--panel)"/>`);
+  const markerOnThisFace = isDayHour(nh) === !night;
+  if(markerOnThisFace){
+    const np = P(nh, r);
+    w.push(`<line x1="${cx}" y1="${cy}" x2="${np.x}" y2="${np.y}" stroke="${AC}" stroke-width="1.5" stroke-opacity="0.28" stroke-dasharray="4 5"/>`);
+    w.push(`<circle cx="${np.x}" cy="${np.y}" r="7" fill="none" stroke="${AC}" stroke-width="2" stroke-opacity="0.5">
+      <animate attributeName="r" values="7;20;7" dur="3s" repeatCount="indefinite"/>
+      <animate attributeName="stroke-opacity" values="0.5;0;0.5" dur="3s" repeatCount="indefinite"/></circle>`);
+    w.push(`<circle cx="${np.x}" cy="${np.y}" r="7" fill="${AC}" filter="url(#bloom)"><animate attributeName="r" values="6;9;6" dur="2.4s" repeatCount="indefinite"/></circle>`);
+    if(night) w.push(`<circle cx="${np.x + 3}" cy="${np.y - 2.4}" r="5.4" fill="var(--panel)"/>`);
+  }
 
   d.push(`<g clip-path="url(#topHalf)" opacity="${night ? 0.88 : 1}"><g id="wheel-g" class="wheel-g" style="transform:rotate(${wheelDeg}deg)">${w.join('')}</g></g>`);
   svg.innerHTML = d.join('');
@@ -809,6 +812,222 @@ function syncPhoneLink(){
 }
 document.getElementById('f-phone')?.addEventListener('input', syncPhoneLink);
 
+
+// ===== Voice assistant ===============================================
+// Wake word runs entirely in the browser via the Web Speech API — raw audio
+// never leaves the machine, and only the final transcript is sent onward.
+// After a reply the mic reopens for a follow-up, so "Hey Jarvis" is needed
+// once to start a conversation, not once per sentence.
+const WAKE_WORDS = ['hey jarvis', 'hei jarvis', 'ei jarvis', 'hey darvis', 'hey jervis', 'ok jarvis'];
+const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
+
+const VOICE = {
+  supported: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+  rec: null, state: 'off', lang: 'en-US', active: false,
+  conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
+};
+
+function detectLang(text){
+  const t = ' ' + text.toLowerCase() + ' ';
+  const pt = [' que ',' não ',' nao ',' você ',' voce ',' está ',' esta ',' para ',' com ',' uma ',' meu ',' minha ',' quais ',' quantos ',' hoje ',' amanhã ',' obrigado ',' por favor ',' agenda ',' caso ',' cliente '];
+  const hits = pt.reduce((n, w) => n + (t.includes(w) ? 1 : 0), 0);
+  return hits >= 2 ? 'pt-BR' : (hits === 1 && text.split(/\s+/).length < 8 ? 'pt-BR' : 'en-US');
+}
+
+function setVoiceState(s, detail){
+  VOICE.state = s;
+  const orb = document.getElementById('voice-orb');
+  const lab = document.getElementById('voice-state');
+  if(orb) orb.dataset.state = s;
+  if(lab){
+    const map = {
+      off:'voice off', idle:'say "Hey Jarvis"', wake:'wake word detected',
+      listening:'listening…', thinking:'thinking…', tool:'checking…',
+      speaking:'speaking', error: detail || 'error',
+    };
+    lab.textContent = map[s] || s;
+  }
+}
+
+// --- microphone level, for the reactive orb ---
+async function startMicMeter(){
+  try{
+    const ctx = ac(); if(!ctx || VOICE.analyser) return;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser(); an.fftSize = 512; an.smoothingTimeConstant = 0.75;
+    src.connect(an);
+    VOICE.analyser = an;
+    const buf = new Uint8Array(an.frequencyBinCount);
+    const tick = () => {
+      an.getByteTimeDomainData(buf);
+      let sum = 0;
+      for(let i = 0; i < buf.length; i++){ const v = (buf[i] - 128) / 128; sum += v * v; }
+      VOICE.level = Math.min(1, Math.sqrt(sum / buf.length) * 4.5);
+      drawOrb();
+      requestAnimationFrame(tick);
+    };
+    tick();
+  }catch(e){ /* meter is optional; recognition still works */ }
+}
+
+function drawOrb(){
+  const cv = document.getElementById('voice-canvas');
+  if(!cv) return;
+  const ctx2 = cv.getContext('2d');
+  const w = cv.width = cv.clientWidth, h = cv.height = cv.clientHeight;
+  ctx2.clearRect(0, 0, w, h);
+  const cx = w/2, cy = h/2;
+  const speaking = VOICE.state === 'speaking';
+  const lvl = speaking ? 0.35 + Math.sin(Date.now()/110) * 0.22 : VOICE.level;
+  const base = Math.min(w, h) * 0.26;
+  const css = getComputedStyle(document.documentElement);
+  const c1 = css.getPropertyValue('--accent2').trim() || '#4f9fd8';
+  const c2 = css.getPropertyValue('--amber').trim() || '#f2a71b';
+  for(let ring = 0; ring < 3; ring++){
+    const r = base * (1 + ring * 0.34) + lvl * base * (0.9 - ring * 0.22);
+    ctx2.beginPath();
+    for(let a = 0; a <= Math.PI * 2 + 0.01; a += 0.12){
+      const wob = 1 + Math.sin(a * (3 + ring) + Date.now()/(420 + ring*160)) * lvl * 0.20;
+      const x = cx + Math.cos(a) * r * wob, y = cy + Math.sin(a) * r * wob;
+      a === 0 ? ctx2.moveTo(x, y) : ctx2.lineTo(x, y);
+    }
+    ctx2.closePath();
+    ctx2.strokeStyle = ring === 0 ? c2 : c1;
+    ctx2.globalAlpha = 0.55 - ring * 0.15;
+    ctx2.lineWidth = ring === 0 ? 2 : 1.2;
+    ctx2.stroke();
+  }
+  ctx2.globalAlpha = 1;
+  const g = ctx2.createRadialGradient(cx, cy, 1, cx, cy, base * (0.85 + lvl * 0.5));
+  g.addColorStop(0, c2); g.addColorStop(1, 'transparent');
+  ctx2.fillStyle = g;
+  ctx2.beginPath(); ctx2.arc(cx, cy, base * (0.8 + lvl * 0.45), 0, Math.PI*2); ctx2.fill();
+}
+
+// --- speech synthesis ---
+function speak(text, lang){
+  return new Promise(resolve => {
+    if(!window.speechSynthesis || settings.voiceMuted){ resolve(); return; }
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang || VOICE.lang;
+    const voices = speechSynthesis.getVoices();
+    const pick = voices.find(v => v.lang === u.lang && /google|natural|premium/i.test(v.name))
+              || voices.find(v => v.lang === u.lang)
+              || voices.find(v => v.lang.startsWith(u.lang.slice(0,2)));
+    if(pick) u.voice = pick;
+    u.rate = 1.04; u.pitch = 0.96;
+    u.onend = resolve; u.onerror = resolve;
+    setVoiceState('speaking');
+    speechSynthesis.speak(u);
+  });
+}
+
+// --- recognition ---
+function buildRecognition(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR) return null;
+  const rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = VOICE.lang;
+
+  rec.onresult = (e) => {
+    let finalTxt = '';
+    for(let i = e.resultIndex; i < e.results.length; i++){
+      if(e.results[i].isFinal) finalTxt += e.results[i][0].transcript;
+    }
+    if(!finalTxt.trim()) return;
+    const said = finalTxt.trim();
+    const low = said.toLowerCase();
+
+    if(!VOICE.conversing){
+      const hit = WAKE_WORDS.find(w => low.includes(w));
+      if(!hit) return;                                   // ignore everything else
+      const after = said.slice(low.indexOf(hit) + hit.length).replace(/^[,.\s]+/, '');
+      VOICE.conversing = true;
+      setVoiceState('wake');
+      SFX.open();
+      if(after.length > 2) handleVoiceInput(after);
+      else { setVoiceState('listening'); armFollowUp(); }
+      return;
+    }
+    handleVoiceInput(said);
+  };
+
+  rec.onerror = (e) => {
+    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      setVoiceState('error', 'microphone blocked');
+      VOICE.active = false;
+    }
+  };
+  rec.onend = () => {
+    // the API stops on its own periodically; restart while voice mode is on
+    if(VOICE.active && !VOICE.restarting){
+      VOICE.restarting = true;
+      setTimeout(() => { VOICE.restarting = false; try{ rec.start(); }catch(e){} }, 250);
+    }
+  };
+  return rec;
+}
+
+function armFollowUp(){
+  clearTimeout(VOICE.followTimer);
+  VOICE.followTimer = setTimeout(() => {
+    VOICE.conversing = false;
+    if(VOICE.active) setVoiceState('idle');
+  }, FOLLOW_UP_MS);
+}
+
+async function handleVoiceInput(text){
+  clearTimeout(VOICE.followTimer);
+  const lang = detectLang(text);
+  if(lang !== VOICE.lang){
+    VOICE.lang = lang;
+    if(VOICE.rec){ try{ VOICE.rec.stop(); }catch(e){} VOICE.rec.lang = lang; }
+  }
+  addAiMessage('user', text);
+  setVoiceState('thinking');
+  try{
+    const reply = await runAssistantTurn(text, true);
+    await speak(reply, VOICE.lang);
+  }catch(err){
+    await speak(VOICE.lang.startsWith('pt') ? 'Desculpe, algo falhou.' : 'Sorry, something went wrong.', VOICE.lang);
+  }
+  if(VOICE.active){ setVoiceState('listening'); armFollowUp(); }
+}
+
+function startVoice(){
+  if(!VOICE.supported){
+    alert('This browser has no speech recognition. Chrome or Edge on desktop is required.');
+    return;
+  }
+  VOICE.active = true;
+  VOICE.rec = VOICE.rec || buildRecognition();
+  try{ VOICE.rec.start(); }catch(e){}
+  startMicMeter();
+  setVoiceState('idle');
+  document.getElementById('voice-panel')?.classList.add('open');
+}
+function stopVoice(){
+  VOICE.active = false; VOICE.conversing = false;
+  clearTimeout(VOICE.followTimer);
+  try{ VOICE.rec && VOICE.rec.stop(); }catch(e){}
+  speechSynthesis?.cancel();
+  setVoiceState('off');
+  document.getElementById('voice-panel')?.classList.remove('open');
+}
+document.getElementById('voice-toggle')?.addEventListener('click', () => {
+  VOICE.active ? stopVoice() : startVoice();
+});
+document.getElementById('voice-close')?.addEventListener('click', stopVoice);
+document.getElementById('voice-mute')?.addEventListener('click', () => {
+  settings.voiceMuted = !settings.voiceMuted; saveSettings();
+  if(settings.voiceMuted) speechSynthesis?.cancel();
+  document.getElementById('voice-mute').textContent = settings.voiceMuted ? 'Unmute replies' : 'Mute replies';
+});
+
 // --- AI assistant ---
 const aiPanel = document.getElementById('ai-panel');
 const aiMessages = document.getElementById('ai-messages');
@@ -860,6 +1079,18 @@ const AI_TOOLS = [
           note: { type: 'string', description: 'An initial note about the case. Optional.' },
         },
         required: ['titulo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: "Search the public web for current information, news, product specs, error codes or anything not present in the user's own data. Do not use it for the user's cases, notes or schedule — those are in the snapshot.",
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'A short search query.' } },
+        required: ['query'],
       },
     },
   },
@@ -1224,7 +1455,7 @@ function kbSearch(q, limit = 4){
 
 // The assistant sees a factual snapshot of the real data. Without this it was
 // answering schedule questions from imagination.
-function buildAiSystemPrompt(){
+function buildAiSystemPrompt(spoken){
   const today = todaysCases();
   const pending = today.filter(c => statusRank(c.status) === 0);
   const done = today.filter(c => statusRank(c.status) === 1);
@@ -1250,7 +1481,12 @@ function buildAiSystemPrompt(){
     : '(no notebooks yet)';
 
   return [
-    "You are the built-in assistant for Solar Agenda, a support-routine app used by a solar energy support technician.",
+    "You are JARVIS, the assistant built into Solar Agenda, used by a solar energy support technician.",
+    "Manner: calm, precise, quietly confident. Dry wit only when it costs nothing. Never gushing, never emoji, never 'As an AI'. Do not restate the question before answering.",
+    (spoken
+      ? "SPOKEN REPLY: this will be read aloud. One or two short sentences, under 45 words. No lists, no markdown, no URLs, no numbers read as symbols. Lead with the answer."
+      : "Written reply: brief and direct, plain text."),
+    "LANGUAGE: reply in the same language the user used. If they wrote Portuguese, answer in natural Brazilian Portuguese (você, tudo bem, agendar) — never European Portuguese (tu, ecrã, telemóvel).",
     "",
     "=== REAL DATA SNAPSHOT (the ONLY source of truth) ===",
     `Today's date: ${todayStr()}`,
@@ -1270,8 +1506,8 @@ function buildAiSystemPrompt(){
     "   - 'the first hour was not needed' / 'nothing scheduled' => do NOT create a case. Just acknowledge it; the app already shows that state on its own.",
     "   - Never create a case only so it appears in history, and never auto-complete a case you just created.",
     "4. Weather: answer from the weather block above. Vinhedo is the local forecast; Campinas is ~15 km away so the same figures apply — say so rather than refusing.",
-    "5. Knowledge base: prefer it for technical questions and name the entry you used.",
-    "6. End EVERY answer with a final line exactly like: CONFIDENCE: 85",
+    "5. Knowledge base first for technical questions; name the entry used. Use web_search for anything current or public that is not in the snapshot or knowledge base. Never invent a search result.",
+    spoken ? "6. Do NOT append a confidence line when speaking." : "6. End EVERY answer with a final line exactly like: CONFIDENCE: 85",
     "   Use 90-100 when it comes straight from the snapshot or knowledge base, 50-80 for reasoned answers, under 40 when unsure.",
     "7. Be brief and direct. Plain text, no markdown.",
   ].join('\n');
@@ -1301,6 +1537,17 @@ async function runToolCall(call){
     cases.push(created);
     render(); renderCalendar(); renderHistory();
     return `Case created: "${created.titulo}" on ${created.case_date}.`;
+  }
+
+  if(name === 'web_search'){
+    const r = await fetch(FN_URL + "/agenda-search", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ query: args.query, lang: VOICE.lang })
+    });
+    if(!r.ok) return 'Search failed.';
+    const d = await r.json();
+    if(!d.results?.length) return 'No results found for: ' + args.query;
+    return d.results.map(x => `- ${x.title}: ${x.snippet}`).join('\n').slice(0, 1800);
   }
 
   if(name === 'create_notebook'){
@@ -1336,69 +1583,78 @@ async function runToolCall(call){
 document.getElementById('ai-send').addEventListener('click', sendAiMessage);
 document.getElementById('ai-input').addEventListener('keydown', (e) => { if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendAiMessage(); } });
 
+// One pipeline for both text and voice. `spoken` only changes the persona
+// hint (shorter sentences) and skips the confidence footer, which is noise
+// when read aloud.
+async function runAssistantTurn(text, spoken){
+  lastUserQuestion = text;
+  aiHistory.push({ role: 'user', content: text });
+
+  let convo = [{ role: 'system', content: buildAiSystemPrompt(spoken) }, ...aiHistory];
+  const doneCalls = new Set();
+  let msg = await callAiAgent(convo, AI_TOOLS);
+
+  let guard = 0;
+  while(msg.tool_calls && msg.tool_calls.length && guard < 4){
+    guard++;
+    if(spoken) setVoiceState('tool');
+    convo.push(msg); aiHistory.push(msg);
+    for(const call of msg.tool_calls){
+      let result;
+      const sig = (call.function?.name || '') + '|' + (call.function?.arguments || '');
+      if(doneCalls.has(sig)){
+        result = 'Already done in this turn — not repeated.';
+        convo.push({ role:'tool', tool_call_id: call.id, content: result });
+        continue;
+      }
+      doneCalls.add(sig);
+      try{ result = await runToolCall(call); }
+      catch(err){ result = 'Failed: ' + err.message; }
+      const toolMsg = { role:'tool', tool_call_id: call.id, content: result };
+      convo.push(toolMsg); aiHistory.push(toolMsg);
+    }
+    if(spoken) setVoiceState('thinking');
+    msg = await callAiAgent(convo, null);
+  }
+
+  let reply = (msg.content || '').trim() || 'Done.';
+  let conf = null;
+  reply = reply.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i, (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();
+  if(!reply) reply = 'Done.';
+
+  const bubble = addAiMessage('assistant', reply);
+  if(conf !== null && !spoken){
+    const bar = document.createElement('div');
+    bar.className = 'conf';
+    const tone = conf >= 75 ? 'hi' : conf >= 45 ? 'mid' : 'lo';
+    bar.innerHTML = `<span class="conf-lab">confidence</span>
+      <span class="conf-track"><span class="conf-fill ${tone}" style="width:${conf}%"></span></span>
+      <span class="conf-num ${tone}">${conf}%</span>`;
+    bubble.appendChild(bar);
+  }
+  aiHistory.push({ role: 'assistant', content: reply });
+  if(aiHistory.length > 24) aiHistory = aiHistory.slice(-24);
+  aiMessages.scrollTop = aiMessages.scrollHeight;
+  return reply;
+}
+
 async function sendAiMessage(){
   const input = document.getElementById('ai-input');
   const text = input.value.trim();
   if(!text) return;
   input.value = '';
   addAiMessage('user', text);
-  const loading = addAiMessage('assistant', '...');
-
-  lastUserQuestion = text;
-  aiHistory.push({ role: 'user', content: text });
-
+  const loading = addAiMessage('assistant', '…');
   try{
-    let convo = [{ role: 'system', content: buildAiSystemPrompt() }, ...aiHistory];
-    const doneCalls = new Set(); // dedupe identical tool calls within one turn
-    let msg = await callAiAgent(convo, AI_TOOLS);
-
-    // Execute any tools it asked for, then let it summarise the result.
-    let guard = 0;
-    while(msg.tool_calls && msg.tool_calls.length && guard < 4){
-      guard++;
-      convo.push(msg);
-      aiHistory.push(msg);
-      for(const call of msg.tool_calls){
-        let result;
-        const sig = (call.function?.name || '') + '|' + (call.function?.arguments || '');
-        if(doneCalls.has(sig)){
-          result = 'Already done in this turn — not repeated.';
-          convo.push({ role:'tool', tool_call_id: call.id, content: result });
-          continue;
-        }
-        doneCalls.add(sig);
-        try{ result = await runToolCall(call); }
-        catch(err){ result = 'Failed: ' + err.message; }
-        const toolMsg = { role: 'tool', tool_call_id: call.id, content: result };
-        convo.push(toolMsg);
-        aiHistory.push(toolMsg);
-      }
-      // No tools on the follow-up turn: with them attached the model kept
-      // re-issuing the same create call, which is what duplicated cases.
-      msg = await callAiAgent(convo, null);
-    }
-
-    let reply = (msg.content || '').trim() || 'Done.';
-    // pull the confidence line out and render it as a bar
-    let conf = null;
-    reply = reply.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i, (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();
-    loading.textContent = reply || 'Done.';
-    if(conf !== null){
-      const bar = document.createElement('div');
-      bar.className = 'conf';
-      const tone = conf >= 75 ? 'hi' : conf >= 45 ? 'mid' : 'lo';
-      bar.innerHTML = `<span class="conf-lab">confidence</span>
-        <span class="conf-track"><span class="conf-fill ${tone}" style="width:${conf}%"></span></span>
-        <span class="conf-num ${tone}">${conf}%</span>`;
-      loading.appendChild(bar);
-    }
-    aiHistory.push({ role: 'assistant', content: reply });
-    if(aiHistory.length > 24) aiHistory = aiHistory.slice(-24);
+    const reply = await runAssistantTurn(text, false);
+    loading.remove();                       // runAssistantTurn adds the real bubble
+    void reply;
   }catch(err){
     loading.textContent = "Couldn't respond right now (" + err.message + ").";
   }
   aiMessages.scrollTop = aiMessages.scrollHeight;
 }
+
 document.getElementById('reformular-btn').addEventListener('click', async () => {
   const textarea = document.getElementById('f-notas');
   const original = textarea.value.trim();
@@ -2303,7 +2559,7 @@ async function generateTheme(prompt){
 
     const keys = ['bg','bg2','panel','panel2','line','text','muted','amber','accent2','accent3','dusk'];
     const base = THEMES.slate;
-    const out = { name:'Custom' };
+    const out = {};
     let bad = 0;
     keys.forEach(k => {
       const v = typeof p[k] === 'string' ? p[k].trim() : '';
@@ -2318,6 +2574,7 @@ async function generateTheme(prompt){
     out.muted = fixContrast(out.muted, out.panel, 3.6);
     out.amber = fixContrast(out.amber, out.panel, 3);
 
+    out.name = 'Custom';
     settings.customTheme = out; saveSettings();
     THEMES.custom = out;
     applyTheme('custom');
@@ -2350,7 +2607,7 @@ const CT_FIELDS = [
   ['amber','Accent 1'],['accent2','Accent 2'],['accent3','Accent 3'],['dusk','Dusk'],
 ];
 function customTheme(){
-  return Object.assign({ name:'Custom' }, THEMES.slate, settings.customTheme || {});
+  return Object.assign({}, THEMES.slate, settings.customTheme || {}, { name:'Custom' });
 }
 function renderCustomTheme(){
   const grid = document.getElementById('ct-grid');
@@ -2680,7 +2937,7 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 });
 document.getElementById('theme-close-btn').addEventListener('click', () => themeModalBackdrop.classList.remove('open'));
 themeModalBackdrop.addEventListener('click', (e) => { if(e.target === themeModalBackdrop) themeModalBackdrop.classList.remove('open'); });
-THEMES.custom = Object.assign({ name:'Custom' }, THEMES.slate, (JSON.parse(localStorage.getItem(SET_KEY) || '{}').customTheme) || {});
+THEMES.custom = Object.assign({}, THEMES.slate, (JSON.parse(localStorage.getItem(SET_KEY) || '{}').customTheme) || {}, { name:'Custom' });
 applyTheme(localStorage.getItem(THEME_KEY) || 'slate');
 initCustomThemeUI();
 
