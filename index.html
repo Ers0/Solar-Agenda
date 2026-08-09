@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Solar Agenda — Support Routine</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CradialGradient id='g' cx='35%25' cy='30%25'%3E%3Cstop offset='0' stop-color='%23fff2cc'/%3E%3Cstop offset='.5' stop-color='%23f2a71b'/%3E%3Cstop offset='1' stop-color='%234f9fd8'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='13' fill='url(%23g)'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -52,10 +53,10 @@
         <button class="nav-tab" id="tab-settings">Settings</button>
       </div>
       <span class="user-pill" id="user-pill"></span>
-      <button class="ai-toggle" id="hud-toggle" title="Fullscreen HUD (F11 also works)">⬛ HUD</button>
-      <button class="ai-toggle" id="theme-toggle">🎨 Theme</button>
-      <button class="ai-toggle" id="ai-toggle"><span class="dot"></span> Assistant</button>
-      <button class="logout-btn" id="logout-btn">Sign out</button>
+      <button class="ai-toggle" id="hud-toggle" title="Fullscreen HUD (F11 also works)"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg><span class="btn-lab">HUD</span></button>
+      <button class="ai-toggle" id="theme-toggle"><svg class="btn-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="9.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="14.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/></svg><span class="btn-lab">Theme</span></button>
+      <button class="ai-toggle" id="ai-toggle"><span class="dot"></span><span class="btn-lab">Assistant</span></button>
+      <button class="logout-btn" id="logout-btn"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M15 17l5-5-5-5M20 12H9M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></svg><span class="btn-lab">Sign out</span></button>
     </div>
   </header>
 
@@ -90,8 +91,18 @@
 
   <div id="view-agenda">
     <div class="arc-wrap">
-      <div class="arc-caption"><h2>Your day</h2><span class="clock mono" id="clock-label">--:--</span></div>
-      <svg id="day-arc" viewBox="0 0 800 210" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="arc-caption">
+        <h2>Your day</h2>
+        <div class="arc-caption-right">
+          <button class="phase-pill" id="phase-pill" title="Click to preview the other phase">
+            <svg class="phase-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          <span id="phase-label">DAY</span>
+          </button>
+          <span class="clock mono" id="clock-label">--:--</span>
+        </div>
+      </div>
+      <div class="arc-sweep" id="arc-sweep"></div>
+      <svg id="day-arc" viewBox="0 -22 800 232" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <main class="layout">
       <div class="col-left">
@@ -163,6 +174,24 @@
       <div class="field"><label>Google OAuth Client ID</label><input type="text" id="set-drive-client" placeholder="xxxxx.apps.googleusercontent.com"></div>
       <div class="field"><label>Drive folder ID (optional)</label><input type="text" id="set-drive-folder" placeholder="Paste the folder ID from its Drive URL"></div>
       <p class="hint">Create an OAuth client (type: Web application) in Google Cloud Console and add <b id="set-origin"></b> as an authorised JavaScript origin.</p>
+    </section>
+
+    <section class="panel" style="margin-bottom:16px;">
+      <div class="day-panel-header"><h2>Knowledge base</h2></div>
+      <p class="hint">Feeds the assistant with your own reference material. It answers from these entries first and shows a confidence bar. Either commit a <b>kb.json</b> file to the site root, or paste the JSON below.</p>
+      <div class="set-row">
+        <div class="set-info"><b>Interface sounds</b><span id="set-sfx-status">On</span></div>
+        <button class="btn-ghost" id="sfx-toggle">Toggle</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>Status</b><span id="set-kb-status">No entries yet</span></div>
+        <button class="btn-ghost" id="kb-template">Copy template</button>
+      </div>
+      <div class="field"><label>kb.json contents</label><textarea id="kb-json" style="min-height:150px; font-family:'JetBrains Mono',monospace; font-size:0.78rem;" placeholder='[{"title":"...","content":"...","tags":["..."]}]'></textarea></div>
+      <div class="set-actions">
+        <button class="btn-primary" id="kb-save" style="flex:1">Save knowledge base</button>
+        <button class="btn-ghost" id="kb-clear">Clear</button>
+      </div>
     </section>
 
     <section class="panel">
@@ -322,6 +351,20 @@
       <button class="btn-danger" id="delete-btn" style="display:none">Delete</button>
       <button class="btn-ghost" id="cancel-btn">Cancel</button>
       <button class="btn-primary" id="save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="sticky-modal-backdrop" style="z-index:130">
+  <div class="modal" style="max-width:440px">
+    <h2>Case note</h2>
+    <p class="hint mono" id="sticky-time" style="margin-top:-8px"></p>
+    <textarea id="sticky-text" style="min-height:180px"></textarea>
+    <p class="hint" id="sticky-lock" style="display:none">Locked — this case was resolved successfully.</p>
+    <div class="modal-actions">
+      <button class="btn-danger" id="sticky-del">Delete</button>
+      <button class="btn-ghost" id="sticky-close">Close</button>
+      <button class="btn-primary" id="sticky-save">Save</button>
     </div>
   </div>
 </div>

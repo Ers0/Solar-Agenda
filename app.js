@@ -60,6 +60,7 @@ function switchView(view){
   });
   // keep the mobile bottom bar in sync with the desktop pill tabs
   document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  SFX.tick();
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if(view === "calendar") renderCalendar();
   if(view === "history") renderHistory();
@@ -181,11 +182,13 @@ function attachCardGestures(cardEl, c){
       if(dx > THRESHOLD){
         cardEl.style.transform = `translateX(500px)`; cardEl.style.opacity = '0';
         const nowTime = new Date().toTimeString().slice(0,5);
+        SFX.success();
         try{ await updateCase(c.id, { status: 'success', actual_end: nowTime }); c.status = 'success'; c.actual_end = nowTime; }catch(err){ alert(err.message); }
         render(); renderHistory();
       } else if(dx < -THRESHOLD){
         cardEl.style.transform = `translateX(-500px)`; cardEl.style.opacity = '0';
         const nowTime = new Date().toTimeString().slice(0,5);
+        SFX.fail();
         try{ await updateCase(c.id, { status: 'failed', actual_end: nowTime }); c.status = 'failed'; c.actual_end = nowTime; }catch(err){ alert(err.message); }
         render(); renderHistory();
       } else {
@@ -230,7 +233,10 @@ function renderBlocks(){
   });
 }
 
-const ARC_START_HOUR = 7, ARC_END_HOUR = 19;
+// Full 24h dial. Work hours are highlighted rather than being the whole
+// scale, so evening work from home still has somewhere to land.
+const ARC_START_HOUR = 0, ARC_END_HOUR = 24;
+const WORK_START = 8, WORK_END = 18;
 function hourToAngle(h){ const t = Math.min(1, Math.max(0, (h - ARC_START_HOUR) / (ARC_END_HOUR - ARC_START_HOUR))); return Math.PI - t * Math.PI; }
 function arcPoint(angle, r){ const cx = 400, cy = 190; return { x: cx + r * Math.cos(angle), y: cy - r * Math.sin(angle) }; }
 
@@ -258,24 +264,56 @@ function renderHistory(){
   });
 }
 
+// Night runs from WORK_END (18h) to 07h. The dial recolours and the panel
+// cools down, with a sweep animation on the crossing itself.
+function isNightHour(h){ return h >= WORK_END || h < 7; }
+let phaseOverride = null;   // set by the pill, purely for previewing
+let lastPhaseNight = null;
+
+function applyPhase(night, animate){
+  const wrap = document.querySelector('.arc-wrap');
+  if(!wrap) return;
+  wrap.classList.toggle('night', night);
+  const lab = document.getElementById('phase-label');
+  if(lab) lab.textContent = night ? 'NIGHT' : 'DAY';
+  const ico = document.querySelector('.phase-ico');
+  if(ico) ico.innerHTML = night
+    ? '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.6 6.6 0 0 0 10.5 10.5z"/>'
+    : '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+  if(animate){
+    wrap.classList.remove('switching');
+    void wrap.offsetWidth;              // restart the CSS animation
+    wrap.classList.add('switching');
+    SFX.phase(night);
+    setTimeout(() => wrap.classList.remove('switching'), 1250);
+  }
+}
+
 function renderArc(){
   const svg = document.getElementById('day-arc');
   const r = 160;
   let parts = [];
+  const nowH = new Date().getHours() + new Date().getMinutes() / 60;
+  const night = phaseOverride !== null ? phaseOverride : isNightHour(nowH);
+  if(lastPhaseNight !== night){
+    applyPhase(night, lastPhaseNight !== null); // no animation on first paint
+    lastPhaseNight = night;
+  }
+  const AC = night ? 'var(--accent2)' : 'var(--amber)';
 
   // Reusable paint: a dawn->dusk gradient for the track and a soft bloom
   // filter so lit elements actually glow instead of sitting flat.
   parts.push(`<defs>
     <linearGradient id="arcTrack" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="var(--amber)" stop-opacity="0.55"/>
-      <stop offset="38%" stop-color="var(--accent3)" stop-opacity="0.5"/>
+      <stop offset="0%" stop-color="${night ? 'var(--dusk)' : 'var(--amber)'}" stop-opacity="0.55"/>
+      <stop offset="38%" stop-color="${night ? 'var(--accent2)' : 'var(--accent3)'}" stop-opacity="0.5"/>
       <stop offset="70%" stop-color="var(--line)" stop-opacity="0.9"/>
-      <stop offset="100%" stop-color="var(--accent2)" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="${night ? 'var(--dusk)' : 'var(--accent2)'}" stop-opacity="0.55"/>
     </linearGradient>
     <linearGradient id="arcFirstHour" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="var(--amber)"/>
-      <stop offset="55%" stop-color="var(--accent3)"/>
-      <stop offset="100%" stop-color="var(--accent2)"/>
+      <stop offset="0%" stop-color="${night ? 'var(--accent2)' : 'var(--amber)'}"/>
+      <stop offset="55%" stop-color="${night ? 'var(--dusk)' : 'var(--accent3)'}"/>
+      <stop offset="100%" stop-color="${night ? 'var(--panel-2)' : 'var(--accent2)'}"/>
     </linearGradient>
     <filter id="bloom" x="-60%" y="-60%" width="220%" height="220%">
       <feGaussianBlur stdDeviation="4" result="b"/>
@@ -285,19 +323,28 @@ function renderArc(){
 
   const pStart = arcPoint(hourToAngle(ARC_START_HOUR), r);
   const pEnd = arcPoint(hourToAngle(ARC_END_HOUR), r);
-  // faint outer halo ring behind the track
-  parts.push(`<path d="M ${pStart.x} ${pStart.y} A ${r} ${r} 0 0 1 ${pEnd.x} ${pEnd.y}" fill="none" stroke="var(--amber)" stroke-width="14" stroke-opacity="0.05" stroke-linecap="round"/>`);
+  parts.push(`<path d="M ${pStart.x} ${pStart.y} A ${r} ${r} 0 0 1 ${pEnd.x} ${pEnd.y}" fill="none" stroke="${AC}" stroke-width="14" stroke-opacity="0.05" stroke-linecap="round"/>`);
   parts.push(`<path d="M ${pStart.x} ${pStart.y} A ${r} ${r} 0 0 1 ${pEnd.x} ${pEnd.y}" fill="none" stroke="url(#arcTrack)" stroke-width="3" stroke-linecap="round"/>`);
-  const fhStart = arcPoint(hourToAngle(ARC_START_HOUR), r);
-  const fhEnd = arcPoint(hourToAngle(ARC_START_HOUR + 1), r);
+
+  // working-hours band (8h–18h) — brighter, so off-hours read as "extra"
+  const wStart = arcPoint(hourToAngle(WORK_START), r);
+  const wEnd = arcPoint(hourToAngle(WORK_END), r);
+  parts.push(`<path d="M ${wStart.x} ${wStart.y} A ${r} ${r} 0 0 1 ${wEnd.x} ${wEnd.y}" fill="none" stroke="var(--line)" stroke-width="9" stroke-opacity="0.5" stroke-linecap="round"/>`);
+
+  // first working hour keeps its highlight
+  const fhStart = arcPoint(hourToAngle(WORK_START), r);
+  const fhEnd = arcPoint(hourToAngle(WORK_START + 1), r);
   parts.push(`<path d="M ${fhStart.x} ${fhStart.y} A ${r} ${r} 0 0 1 ${fhEnd.x} ${fhEnd.y}" fill="none" stroke="url(#arcFirstHour)" stroke-width="5" stroke-linecap="round" filter="url(#bloom)"/>`);
+
   for(let h = ARC_START_HOUR; h <= ARC_END_HOUR; h++){
+    const inWork = h >= WORK_START && h <= WORK_END;
+    const major = h % 3 === 0;
     const p = arcPoint(hourToAngle(h), r);
-    const pOut = arcPoint(hourToAngle(h), r + 12);
-    parts.push(`<line x1="${p.x}" y1="${p.y}" x2="${pOut.x}" y2="${pOut.y}" stroke="var(--line)" stroke-opacity="0.6" stroke-width="2"/>`);
-    if(h % 2 === (ARC_START_HOUR % 2)){
-      const pLabel = arcPoint(hourToAngle(h), r + 26);
-      parts.push(`<text x="${pLabel.x}" y="${pLabel.y}" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="JetBrains Mono, monospace">${h}h</text>`);
+    const pOut = arcPoint(hourToAngle(h), r + (major ? 12 : 7));
+    parts.push(`<line x1="${p.x}" y1="${p.y}" x2="${pOut.x}" y2="${pOut.y}" stroke="${inWork ? AC : 'var(--line)'}" stroke-opacity="${major ? 0.7 : 0.35}" stroke-width="2"/>`);
+    if(major && h !== 24){
+      const pLabel = arcPoint(hourToAngle(h), r + 27);
+      parts.push(`<text x="${pLabel.x}" y="${pLabel.y + 3}" fill="${inWork ? 'var(--text)' : 'var(--muted)'}" font-size="11" text-anchor="middle" font-family="JetBrains Mono, monospace">${String(h).padStart(2,'0')}h</text>`);
     }
   }
   const now = new Date();
@@ -305,12 +352,15 @@ function renderArc(){
   if(hourNow >= ARC_START_HOUR && hourNow <= ARC_END_HOUR){
     const p = arcPoint(hourToAngle(hourNow), r);
     // radius line from the centre out to "now", like a sweep hand
-    parts.push(`<line x1="400" y1="190" x2="${p.x}" y2="${p.y}" stroke="var(--amber)" stroke-width="1.5" stroke-opacity="0.28" stroke-dasharray="4 5"/>`);
-    parts.push(`<circle cx="${p.x}" cy="${p.y}" r="7" fill="none" stroke="var(--amber)" stroke-width="2" stroke-opacity="0.5">
+    parts.push(`<line x1="400" y1="190" x2="${p.x}" y2="${p.y}" stroke="${AC}" stroke-width="1.5" stroke-opacity="0.28" stroke-dasharray="4 5"/>`);
+    parts.push(`<circle cx="${p.x}" cy="${p.y}" r="7" fill="none" stroke="${AC}" stroke-width="2" stroke-opacity="0.5">
       <animate attributeName="r" values="7;20;7" dur="3s" repeatCount="indefinite"/>
       <animate attributeName="stroke-opacity" values="0.5;0;0.5" dur="3s" repeatCount="indefinite"/>
     </circle>`);
-    parts.push(`<circle cx="${p.x}" cy="${p.y}" r="7" fill="var(--amber)" filter="url(#bloom)"><animate attributeName="r" values="6;9;6" dur="2.4s" repeatCount="indefinite"/></circle>`);
+    parts.push(`<circle cx="${p.x}" cy="${p.y}" r="7" fill="${AC}" filter="url(#bloom)"><animate attributeName="r" values="6;9;6" dur="2.4s" repeatCount="indefinite"/></circle>`);
+    if(night){ // crescent bite, so the marker reads as a moon after hours
+      parts.push(`<circle cx="${p.x + 3}" cy="${p.y - 2.4}" r="5.4" fill="var(--panel)"/>`);
+    }
   }
   function timeToHour(t){
     const [hh, mm] = t.split(':').map(Number);
@@ -333,10 +383,23 @@ function renderArc(){
       parts.push(`<g class="arc-dot" data-id="${c.id}"><circle cx="${p.x}" cy="${p.y}" r="5.5" fill="${prioColor(c.prioridade)}" stroke="var(--bg)" stroke-width="2" filter="url(#bloom)"/></g>`);
     }
   });
+  if(night){
+    for(let i = 0; i < 16; i++){
+      const sx = 60 + ((i * 137) % 690);
+      const sy = -14 + ((i * 53) % 120);
+      const sr = 0.7 + ((i * 7) % 3) * 0.35;
+      parts.unshift(`<circle class="arc-star" cx="${sx}" cy="${sy}" r="${sr}" fill="var(--text)" opacity="0.5" style="animation-delay:${(i % 7) * 0.42}s"/>`);
+    }
+  }
   svg.innerHTML = parts.join('');
   svg.querySelectorAll('.arc-dot').forEach(el => el.addEventListener('click', () => openModal(el.getAttribute('data-id'))));
   document.getElementById('clock-label').textContent = now.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit'});
 }
+document.getElementById('phase-pill').addEventListener('click', () => {
+  const realNight = isNightHour(new Date().getHours());
+  phaseOverride = (phaseOverride === null) ? !realNight : null;
+  renderArc();
+});
 setInterval(() => { renderArc(); if(!document.getElementById('view-calendar').classList.contains('hidden')) renderCalendar(); }, 15000);
 
 // --- HUD mode -------------------------------------------------------
@@ -396,6 +459,7 @@ function runBootSequence(){
   if(fill) fill.style.width = '0%';
   overlay.classList.remove('fading');
   overlay.classList.add('on');
+  SFX.bootStart();
 
   bootTimers.forEach(clearTimeout);
   bootTimers = [];
@@ -407,6 +471,7 @@ function runBootSequence(){
       row.className = 'boot-line';
       row.innerHTML = `<span>${label}</span><span>${state}</span>`;
       linesEl.appendChild(row);
+      SFX.bootTick(i);
       if(fill) fill.style.width = Math.round(((i + 1) / (BOOT_STEPS.length + 1)) * 100) + '%';
     }, 200 + i * STEP));
   });
@@ -417,6 +482,7 @@ function runBootSequence(){
     row.className = 'boot-line final';
     row.innerHTML = `<span>SYSTEM</span><span>ONLINE</span>`;
     linesEl.appendChild(row);
+    SFX.bootDone();
     if(fill) fill.style.width = '100%';
   }, 200 + BOOT_STEPS.length * STEP));
 
@@ -529,13 +595,57 @@ function formatNoteTime(iso){
 function renderCaseNotesLog(){
   const logEl = document.getElementById('f-notes-log');
   logEl.innerHTML = '';
-  caseNotesLog.forEach(entry => {
+  caseNotesLog.forEach((entry, i) => {
     const sticky = document.createElement('div');
     sticky.className = 'case-note-sticky';
-    sticky.innerHTML = `<div class="sticky-time">${formatNoteTime(entry.at)}</div><div class="sticky-text">${escapeHtml(entry.text)}</div>`;
+    sticky.innerHTML = `<div class="sticky-time">${formatNoteTime(entry.at)}</div><div class="sticky-text">${escapeHtml(entry.text)}</div><span class="sticky-more">open</span>`;
+    sticky.title = 'Click to read the full note';
+    sticky.addEventListener('click', () => openStickyViewer(entry, i));
     logEl.appendChild(sticky);
   });
 }
+
+
+// Case notes were being clipped inside 96px squares with no way to read them.
+function openStickyViewer(entry, idx){
+  const back = document.getElementById('sticky-modal-backdrop');
+  document.getElementById('sticky-time').textContent = formatNoteTime(entry.at);
+  const ta = document.getElementById('sticky-text');
+  ta.value = entry.text;
+  const locked = editingId && (cases.find(x => x.id === editingId) || {}).status === 'success';
+  ta.readOnly = !!locked;
+  document.getElementById('sticky-save').style.display = locked ? 'none' : 'inline-block';
+  document.getElementById('sticky-del').style.display = locked ? 'none' : 'inline-block';
+  document.getElementById('sticky-lock').style.display = locked ? 'block' : 'none';
+  back.dataset.idx = idx;
+  back.classList.add('open');
+}
+function closeSticky(){ document.getElementById('sticky-modal-backdrop').classList.remove('open'); }
+document.getElementById('sticky-close').addEventListener('click', closeSticky);
+document.getElementById('sticky-modal-backdrop').addEventListener('click', (e) => {
+  if(e.target.id === 'sticky-modal-backdrop') closeSticky();
+});
+document.getElementById('sticky-save').addEventListener('click', async () => {
+  const idx = +document.getElementById('sticky-modal-backdrop').dataset.idx;
+  const txt = document.getElementById('sticky-text').value.trim();
+  if(!txt || !editingId) return;
+  caseNotesLog[idx] = { ...caseNotesLog[idx], text: txt };
+  try{
+    const up = await updateCase(editingId, { notes_log: caseNotesLog });
+    const i = cases.findIndex(x => x.id === editingId); cases[i] = up;
+    renderCaseNotesLog(); closeSticky();
+  }catch(err){ alert(err.message); }
+});
+document.getElementById('sticky-del').addEventListener('click', async () => {
+  const idx = +document.getElementById('sticky-modal-backdrop').dataset.idx;
+  if(!editingId || !confirm('Delete this note entry?')) return;
+  caseNotesLog.splice(idx, 1);
+  try{
+    const up = await updateCase(editingId, { notes_log: caseNotesLog });
+    const i = cases.findIndex(x => x.id === editingId); cases[i] = up;
+    renderCaseNotesLog(); closeSticky();
+  }catch(err){ alert(err.message); }
+});
 
 function openModal(id, presetDate){
   editingId = id || null;
@@ -567,6 +677,7 @@ function openModal(id, presetDate){
   document.getElementById('notes-locked-hint').style.display = locked ? 'block' : 'none';
 
   backdrop.classList.add('open');
+  SFX.open();
 }
 function closeModal(){ backdrop.classList.remove('open'); editingId = null; }
 document.getElementById('add-case-btn').addEventListener('click', () => openModal(null));
@@ -717,6 +828,92 @@ const AI_TOOLS = [
   },
 ];
 
+
+
+// ===== Sound =========================================================
+// Synthesised with Web Audio — no files to host, nothing to load. Browsers
+// block audio until the first gesture, so the context is created lazily.
+let audioCtx = null;
+function ac(){
+  if(settings.muted) return null;
+  if(!audioCtx){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return null;
+    audioCtx = new AC();
+  }
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function tone({ freq = 440, to = null, dur = 0.12, type = 'sine', vol = 0.06, delay = 0 }){
+  const ctx = ac(); if(!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator(), g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if(to) osc.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g).connect(ctx.destination);
+  osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
+function noise({ dur = 0.5, vol = 0.03, delay = 0 }){
+  const ctx = ac(); if(!ctx) return;
+  const n = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 0.8;
+  const g = ctx.createGain(); g.gain.value = vol;
+  src.connect(f).connect(g).connect(ctx.destination);
+  src.start(ctx.currentTime + delay);
+}
+const SFX = {
+  bootStart(){ noise({ dur:0.9, vol:0.025 }); tone({ freq:90, to:420, dur:0.8, type:'sawtooth', vol:0.05 }); },
+  bootTick(i){ tone({ freq: 620 + i * 70, dur:0.07, type:'square', vol:0.028 }); },
+  bootDone(){ [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone({ freq:f, dur:0.5, type:'sine', vol:0.055, delay:i * 0.085 })); },
+  success(){ tone({ freq:660, to:990, dur:0.16, type:'triangle', vol:0.06 }); tone({ freq:990, dur:0.2, type:'sine', vol:0.04, delay:0.1 }); },
+  fail(){ tone({ freq:320, to:150, dur:0.26, type:'sawtooth', vol:0.05 }); },
+  tick(){ tone({ freq:1200, dur:0.035, type:'square', vol:0.02 }); },
+  open(){ tone({ freq:440, to:660, dur:0.09, type:'sine', vol:0.03 }); },
+  phase(night){
+    if(night){ tone({ freq:520, to:180, dur:1.0, type:'sine', vol:0.055 }); noise({ dur:0.7, vol:0.016 }); }
+    else { tone({ freq:180, to:620, dur:0.9, type:'sine', vol:0.05 });
+           [523.25, 784].forEach((f,i) => tone({ freq:f, dur:0.5, type:'triangle', vol:0.035, delay:0.45 + i*0.1 })); }
+  },
+};
+
+// ===== Knowledge base ================================================
+// Loaded from /kb.json at the site root, with an optional override pasted
+// in Settings. Entries are keyword-scored and the best matches are handed
+// to the assistant, which must then state how confident it is.
+let KB = [];
+async function loadKB(){
+  const local = localStorage.getItem('agenda-solar-kb');
+  if(local){ try{ KB = JSON.parse(local); }catch(e){ KB = []; } }
+  if(KB.length) { renderKbStatus(); return; }
+  try{
+    const r = await fetch('/kb.json', { cache: 'no-cache' });
+    if(r.ok) KB = await r.json();
+  }catch(e){ KB = []; }
+  renderKbStatus();
+}
+function renderKbStatus(){
+  const el = document.getElementById('set-kb-status');
+  if(el){ el.textContent = KB.length ? KB.length + ' entries loaded' : 'No entries yet'; el.className = KB.length ? 'ok' : ''; }
+}
+function kbSearch(q, limit = 4){
+  if(!KB.length || !q) return [];
+  const words = q.toLowerCase().split(/\W+/).filter(w => w.length > 2);
+  return KB.map(e => {
+    const hay = [e.title, e.content, (e.tags || []).join(' '), (e.keywords || []).join(' ')].join(' ').toLowerCase();
+    let score = 0;
+    words.forEach(w => { if(hay.includes(w)) score += hay.split(w).length - 1; });
+    return { e, score };
+  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score).slice(0, limit).map(x => x.e);
+}
+
 // The assistant sees a factual snapshot of the real data. Without this it was
 // answering schedule questions from imagination.
 function buildAiSystemPrompt(){
@@ -727,6 +924,18 @@ function buildAiSystemPrompt(){
   const caseLines = pending.length
     ? pending.map(c => `- ${c.titulo}${c.horario ? ' at ' + c.horario : ''}${c.horario_fim ? '-' + c.horario_fim : ''} [${prioLabel(c.prioridade)}, ${blocoLabel(c.bloco)}]${c.ticket ? ' ticket ' + c.ticket : ''}`).join('\n')
     : '(none — the agenda is empty for today)';
+
+  const w = wxSnapshot;
+  const wxLine = w
+    ? `Weather today — Vinhedo/Campinas region: ${w.tmin}°C to ${w.tmax}°C, `
+      + `${w.rain.toFixed(1)} mm rain (${w.prob}% chance), max wind ${Math.round(w.wind)} km/h.`
+      + (w.wettest ? ` Heaviest rain in Brazil: ${w.wettest.n} (${w.wettest.v.toFixed(0)} mm). Strongest wind: ${w.windiest.n} (${Math.round(w.windiest.v)} km/h).` : '')
+    : 'Weather: not loaded yet.';
+
+  const hits = kbSearch(lastUserQuestion || '');
+  const kbBlock = hits.length
+    ? 'Knowledge base matches:\n' + hits.map(e => `- [${e.title}] ${e.content}`).join('\n')
+    : (KB.length ? 'Knowledge base: no entry matched this question.' : 'Knowledge base: empty.');
 
   const nbLines = notebooks.length
     ? notebooks.map(nb => `- ${nb.title} (${notes.filter(n => n.notebook_id === nb.id).length} notes)`).join('\n')
@@ -742,17 +951,26 @@ function buildAiSystemPrompt(){
     `Cases already finished today: ${done.length}`,
     `Notebooks (${notebooks.length}):`,
     nbLines,
+    wxLine,
+    kbBlock,
     "=== END SNAPSHOT ===",
     "",
     "CRITICAL RULES:",
     "1. NEVER invent, assume or give example cases, notes, clients or appointments. If the snapshot shows the agenda is empty, say plainly that it is empty.",
     "2. Only describe data that literally appears in the snapshot above. If asked about something not in it, say you don't have that record.",
-    "3. Use the tools to create cases, notebooks or notes ONLY when the user explicitly asks you to create something. Never create anything just to illustrate an answer.",
-    "4. Be brief and direct. Plain text, no markdown.",
+    "3. Use the tools ONLY when the user explicitly asks you to CREATE something concrete. Statements about how the day went are NOT case requests.",
+    "   - 'the first hour was not needed' / 'nothing scheduled' => do NOT create a case. Just acknowledge it; the app already shows that state on its own.",
+    "   - Never create a case only so it appears in history, and never auto-complete a case you just created.",
+    "4. Weather: answer from the weather block above. Vinhedo is the local forecast; Campinas is ~15 km away so the same figures apply — say so rather than refusing.",
+    "5. Knowledge base: prefer it for technical questions and name the entry you used.",
+    "6. End EVERY answer with a final line exactly like: CONFIDENCE: 85",
+    "   Use 90-100 when it comes straight from the snapshot or knowledge base, 50-80 for reasoned answers, under 40 when unsure.",
+    "7. Be brief and direct. Plain text, no markdown.",
   ].join('\n');
 }
 
 let aiHistory = []; // conversation memory for this panel session
+let lastUserQuestion = '';
 
 async function runToolCall(call){
   const name = call.function?.name;
@@ -818,6 +1036,7 @@ async function sendAiMessage(){
   addAiMessage('user', text);
   const loading = addAiMessage('assistant', '...');
 
+  lastUserQuestion = text;
   aiHistory.push({ role: 'user', content: text });
 
   try{
@@ -851,8 +1070,20 @@ async function sendAiMessage(){
       msg = await callAiAgent(convo, null);
     }
 
-    const reply = (msg.content || '').trim() || 'Done.';
-    loading.textContent = reply;
+    let reply = (msg.content || '').trim() || 'Done.';
+    // pull the confidence line out and render it as a bar
+    let conf = null;
+    reply = reply.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i, (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();
+    loading.textContent = reply || 'Done.';
+    if(conf !== null){
+      const bar = document.createElement('div');
+      bar.className = 'conf';
+      const tone = conf >= 75 ? 'hi' : conf >= 45 ? 'mid' : 'lo';
+      bar.innerHTML = `<span class="conf-lab">confidence</span>
+        <span class="conf-track"><span class="conf-fill ${tone}" style="width:${conf}%"></span></span>
+        <span class="conf-num ${tone}">${conf}%</span>`;
+      loading.appendChild(bar);
+    }
     aiHistory.push({ role: 'assistant', content: reply });
     if(aiHistory.length > 24) aiHistory = aiHistory.slice(-24);
   }catch(err){
@@ -1618,11 +1849,48 @@ function renderSettings(){
   ds.className = driveToken ? 'ok' : '';
   document.getElementById('set-drive-client').value = settings.driveClientId || '';
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
+  const sx = document.getElementById('set-sfx-status');
+  if(sx) sx.textContent = settings.muted ? 'Muted' : 'On';
+  const kbBox = document.getElementById('kb-json');
+  if(kbBox && !kbBox.value && KB.length) kbBox.value = JSON.stringify(KB, null, 2);
+  renderKbStatus();
 }
 document.getElementById('set-folder-btn').addEventListener('click', pickMediaDir);
 document.getElementById('set-drive-btn').addEventListener('click', connectDrive);
 document.getElementById('set-drive-client').addEventListener('change', (e) => { settings.driveClientId = e.target.value.trim(); saveSettings(); });
 document.getElementById('set-drive-folder').addEventListener('change', (e) => { settings.driveFolderId = e.target.value.trim(); saveSettings(); });
+
+
+const KB_TEMPLATE = JSON.stringify([
+  { title: "Foxess inverter — error 21", content: "Grid overvoltage. Check AC voltage at the breaker; above 253V the inverter disconnects by regulation. Ask the utility for a tap adjustment if it persists.", tags: ["foxess","inverter","error","grid"] },
+  { title: "Deye F58 alarm", content: "Ground fault on the DC side. Inspect string insulation and MC4 connectors for moisture.", tags: ["deye","f58","alarm"] },
+  { title: "PAC opening rules", content: "Open a PAC when the fault requires a field visit or manufacturer RMA. Attach photos of the display and the plate.", tags: ["pac","process"] }
+], null, 2);
+document.getElementById('sfx-toggle').addEventListener('click', () => {
+  settings.muted = !settings.muted; saveSettings();
+  document.getElementById('set-sfx-status').textContent = settings.muted ? 'Muted' : 'On';
+  if(!settings.muted) SFX.open();
+});
+document.getElementById('kb-template').addEventListener('click', () => {
+  document.getElementById('kb-json').value = KB_TEMPLATE;
+});
+document.getElementById('kb-save').addEventListener('click', () => {
+  const raw = document.getElementById('kb-json').value.trim();
+  if(!raw){ alert('Paste some JSON first.'); return; }
+  try{
+    const parsed = JSON.parse(raw);
+    if(!Array.isArray(parsed)) throw new Error('The top level must be an array.');
+    KB = parsed;
+    localStorage.setItem('agenda-solar-kb', JSON.stringify(parsed));
+    renderKbStatus();
+    alert('Saved ' + parsed.length + ' entries.');
+  }catch(err){ alert('That is not valid JSON: ' + err.message); }
+});
+document.getElementById('kb-clear').addEventListener('click', () => {
+  if(!confirm('Clear the pasted knowledge base?')) return;
+  localStorage.removeItem('agenda-solar-kb');
+  KB = []; document.getElementById('kb-json').value = ''; renderKbStatus(); loadKB();
+});
 
 // ===== Exports =====
 function download(filename, content, mime){
@@ -1680,6 +1948,7 @@ document.getElementById('export-json').addEventListener('click', () => {
     'application/json');
 });
 
+loadKB();
 restoreMediaDir().then(() => { if(document.getElementById('view-settings')) renderSettings(); });
 
 document.getElementById('notebook-canvas').addEventListener('paste', async (e) => {
@@ -1928,6 +2197,7 @@ function wxStat(cls, ico, label, value, unit, alert){
   return `<span class="wx-stat ${cls}${alert ? ' wx-alert' : ''}">${ico}<b>${value}${unit}</b> <small>${label}</small></span>`;
 }
 
+let wxSnapshot = null;
 async function loadWeather(){
   const localEl = document.getElementById('wx-local');
   const brEl = document.getElementById('wx-brazil');
@@ -1943,6 +2213,8 @@ async function loadWeather(){
     const wind = d.wind_speed_10m_max?.[0] ?? 0;
     document.getElementById('wx-temp').textContent =
       Math.round(d.temperature_2m_min?.[0]) + '° / ' + Math.round(d.temperature_2m_max?.[0]) + '°';
+    wxSnapshot = { rain, prob, wind,
+      tmin: Math.round(d.temperature_2m_min?.[0]), tmax: Math.round(d.temperature_2m_max?.[0]) };
     localEl.innerHTML =
       wxStat('rain', ICO_RAIN, `rain · ${prob}% chance`, rain.toFixed(1), ' mm', rain >= 20) +
       wxStat('wind', ICO_WIND, 'max wind', Math.round(wind), ' km/h', wind >= 45);
@@ -1962,6 +2234,7 @@ async function loadWeather(){
       if(p > wettest.v) wettest = { v: p, n: name };
       if(w > windiest.v) windiest = { v: w, n: name };
     });
+    if(wxSnapshot){ wxSnapshot.wettest = wettest; wxSnapshot.windiest = windiest; }
     brEl.innerHTML =
       wxStat('rain', ICO_RAIN, wettest.n, wettest.v.toFixed(0), ' mm', wettest.v >= 40) +
       wxStat('wind', ICO_WIND, windiest.n, Math.round(windiest.v), ' km/h', windiest.v >= 60);

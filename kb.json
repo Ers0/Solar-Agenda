@@ -1,0 +1,29 @@
+[
+  {
+    "title": "Foxess inverter — error 21",
+    "content": "Grid overvoltage. Check AC voltage at the breaker; above 253V the inverter disconnects by regulation. Ask the utility for a tap adjustment if it persists.",
+    "tags": [
+      "foxess",
+      "inverter",
+      "error",
+      "grid"
+    ]
+  },
+  {
+    "title": "Deye F58 alarm",
+    "content": "Ground fault on the DC side. Inspect string insulation and MC4 connectors for moisture.",
+    "tags": [
+      "deye",
+      "f58",
+      "alarm"
+    ]
+  },
+  {
+    "title": "PAC opening rules",
+    "content": "Open a PAC when the fault requires a field visit or manufacturer RMA. Attach photos of the display and the plate.",
+    "tags": [
+      "pac",
+      "process"
+    ]
+  }
+]
