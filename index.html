@@ -180,35 +180,35 @@
 
     <section class="panel" style="margin-bottom:16px;">
       <div class="day-panel-header"><h2>Encryption</h2></div>
-      <p class="hint">Client names, phone numbers, ticket numbers and every note are encrypted on this device with AES-256-GCM before they are sent. The server only ever stores ciphertext, so the database is useless to anyone who reads it directly.</p>
+      <p class="hint">Client names, phone numbers, ticket numbers and every note are encrypted with AES-256-GCM before leaving this browser. The key is issued to your session by the server and is never stored in the database, so a leaked copy of the database contains nothing readable.</p>
       <div class="set-row">
-        <div class="set-info"><b>Status</b><span id="enc-status">Off — data stored in plain text</span></div>
-        <button class="btn-ghost" id="enc-lock" style="display:none">Lock now</button>
+        <div class="set-info"><b>Status</b><span id="enc-status">Checking…</span></div>
+        <button class="btn-ghost" id="enc-refresh">Re-check</button>
       </div>
       <div class="set-row">
-        <div class="set-info">
-          <b>Stay unlocked on this device</b>
-          <span id="enc-remember-status">On — opens automatically next session</span>
-        </div>
-        <button class="btn-ghost" id="enc-remember">Toggle</button>
-      </div>
-      <div class="set-row">
-        <div class="set-info"><b>Key on this device</b><span id="enc-key-status">Not stored</span></div>
-        <button class="btn-ghost" id="enc-forget">Forget key</button>
-      </div>
-      <div class="field"><label>Passphrase</label><input type="password" id="enc-pass" placeholder="A long phrase you will remember" autocomplete="new-password"></div>
-      <div class="field" id="enc-confirm-wrap"><label>Confirm passphrase</label><input type="password" id="enc-pass2" placeholder="Type it again" autocomplete="new-password"></div>
-      <div class="set-actions">
-        <button class="btn-primary" id="enc-unlock" style="flex:1">Unlock / enable</button>
+        <div class="set-info"><b>Existing records</b><span>Older rows saved before encryption are still plain text</span></div>
         <button class="btn-ghost" id="enc-migrate">Encrypt existing data</button>
       </div>
-      <p class="hint">Once set, the vault opens by itself on this browser — you only type the passphrase again on a new device, or after clearing browser data.</p>
-      <p class="hint enc-warn">⚠ There is no password reset. If you forget this passphrase, the encrypted cases and notes cannot be recovered by me, by Supabase, or by anyone else — that is the point of it. Write it down somewhere safe.</p>
+      <p class="hint">Nothing to remember and nothing to type — it unlocks automatically whenever you are signed in.</p>
     </section>
 
     <section class="panel" style="margin-bottom:16px;">
       <div class="day-panel-header"><h2>Custom theme</h2></div>
-      <p class="hint">Build your own palette here, then pick <b>Custom</b> in the Theme menu. Text colour on buttons is worked out automatically for contrast.</p>
+      <p class="hint">Describe the look you want and the assistant builds the palette. Every result is contrast-checked before it is applied, so nothing comes back unreadable. Fine-tune the swatches afterwards if you like.</p>
+      <div class="field">
+        <textarea id="ct-prompt" style="min-height:74px" placeholder="e.g. a stormy sea at dusk — deep blue-greys with a pale gold horizon"></textarea>
+      </div>
+      <div class="ct-examples" id="ct-examples">
+        <button type="button">sunset over the ocean</button>
+        <button type="button">cyberpunk neon, magenta and cyan</button>
+        <button type="button">forest at dawn, mossy greens</button>
+        <button type="button">warm terracotta and sand</button>
+        <button type="button">deep space, violet nebula</button>
+      </div>
+      <div class="set-actions" style="margin:10px 0 4px;">
+        <button class="btn-primary" id="ct-generate" style="flex:1">✦ Generate theme</button>
+      </div>
+      <p class="hint" id="ct-status" style="min-height:1.1em"></p>
       <div class="ct-grid" id="ct-grid"></div>
       <div class="set-actions" style="margin-top:14px;">
         <button class="btn-primary" id="ct-save" style="flex:1">Save &amp; apply</button>

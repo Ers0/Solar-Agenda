@@ -445,8 +445,10 @@
   .arc-wrap.spinning .arc-sweep{ animation: arcSweep 1.15s cubic-bezier(.4,.1,.3,1); }
 
 
-  .rain-layer{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
-  .arc-wrap #day-arc{ position:relative; z-index:2; }
+  /* rain sits behind the dial: the canvas is z-index 0, the SVG is lifted above it */
+  .rain-layer{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:0; }
+  .arc-wrap > .arc-caption{ position:relative; z-index:3; }
+  .arc-wrap > #day-arc{ position:relative; z-index:2; }
   .arc-wrap.raining{ --rain-tint: 1; }
 
   .rain-range{ width:100%; -webkit-appearance:none; appearance:none; height:5px; border-radius:99px;
@@ -487,6 +489,37 @@
   .chip.phone-chip{ color: var(--ok); border-color: color-mix(in srgb, var(--ok) 32%, var(--line)); }
   .lock-hint{ float:right; font-size:0.66rem; color: var(--ok); font-weight:600; letter-spacing:.04em; }
   .enc-warn{ border-left:3px solid var(--urgente); padding-left:10px; color:var(--muted); margin-top:12px; }
+
+
+  /* Day: warm, lit, a soft sun-glow above the horizon of the dial. */
+  .arc-wrap::after{
+    content:''; position:absolute; left:50%; top:12%; width:520px; height:300px; translate:-50% 0;
+    pointer-events:none; z-index:0; opacity:.5; transition: opacity 1.2s ease, background 1.2s ease;
+    background: radial-gradient(closest-side, var(--amber-soft), transparent 72%);
+  }
+  .arc-wrap.night::after{
+    opacity:.34;
+    background: radial-gradient(closest-side, color-mix(in srgb, var(--accent2) 42%, transparent), transparent 74%);
+  }
+  /* Night: colder, deeper, the panel itself dims. */
+  .arc-wrap{ transition: background .9s ease, box-shadow .9s ease, border-color .9s ease, filter .9s ease; }
+  .arc-wrap.night{ filter: brightness(.9) saturate(.88); }
+  .arc-wrap.night .arc-caption h2{ color: var(--accent2); opacity:.85; }
+  /* faint horizon band so night reads as sky rather than just a dark panel */
+  .arc-wrap.night::before{
+    content:''; position:absolute; inset:auto 0 0 0; height:46%; pointer-events:none; z-index:0;
+    background: linear-gradient(to top, color-mix(in srgb, var(--accent2) 15%, transparent), transparent);
+  }
+  .arc-star{ animation: twinkle 3.4s ease-in-out infinite; }
+
+
+  .ct-examples{ display:flex; flex-wrap:wrap; gap:6px; margin:-4px 0 4px; }
+  .ct-examples button{
+    background: var(--panel-2); border:1px solid var(--line); color:var(--muted);
+    font-size:0.7rem; padding:5px 10px; border-radius:999px; transition: color .15s, border-color .15s;
+  }
+  .ct-examples button:hover{ color: var(--amber); border-color: var(--amber); }
+  #ct-status{ color: var(--muted); font-size:0.78rem; }
 
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{

@@ -41,7 +41,7 @@ async function doLogin(){
     session = { token: data.token, name: data.name, expires_at: data.expires_at };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     showApp();
-    await restoreVaultKey();
+    await fetchVaultKey();
     await Promise.all([loadCases(), loadNotebooks(), loadNotes()]);
     loadWeather();
   }catch(err){ errEl.textContent = err.message; }
@@ -369,7 +369,7 @@ function renderArc(){
   w.push(`<circle cx="${np.x}" cy="${np.y}" r="7" fill="${AC}" filter="url(#bloom)"><animate attributeName="r" values="6;9;6" dur="2.4s" repeatCount="indefinite"/></circle>`);
   if(night) w.push(`<circle cx="${np.x + 3}" cy="${np.y - 2.4}" r="5.4" fill="var(--panel)"/>`);
 
-  d.push(`<g clip-path="url(#topHalf)"><g id="wheel-g" class="wheel-g" style="transform:rotate(${wheelDeg}deg)">${w.join('')}</g></g>`);
+  d.push(`<g clip-path="url(#topHalf)" opacity="${night ? 0.88 : 1}"><g id="wheel-g" class="wheel-g" style="transform:rotate(${wheelDeg}deg)">${w.join('')}</g></g>`);
   svg.innerHTML = d.join('');
   svg.querySelectorAll('.arc-dot').forEach(el => el.addEventListener('click', () => openModal(el.getAttribute('data-id'))));
 
@@ -2219,61 +2219,26 @@ async function hydrateMedia(root){
 
 
 
-// ===== Encryption controls ===========================================
+
+// ===== Encryption status =============================================
 function renderEncStatus(){
   const s = document.getElementById('enc-status');
   if(!s) return;
-  s.textContent = cryptoKey ? 'On — this session is unlocked'
-    : (settings.encOn ? 'Enabled, but locked — enter the passphrase' : 'Off — data stored in plain text');
+  s.textContent = cryptoKey ? 'Active — records encrypted automatically'
+                            : 'Unavailable — sign in again to fetch the key';
   s.className = cryptoKey ? 'ok' : '';
-  const lockBtn = document.getElementById('enc-lock');
-  if(lockBtn) lockBtn.style.display = cryptoKey ? 'inline-block' : 'none';
-  const cw = document.getElementById('enc-confirm-wrap');
-  if(cw) cw.style.display = settings.encOn ? 'none' : 'block';   // only confirm on first setup
-  const rs = document.getElementById('enc-remember-status');
-  if(rs) rs.textContent = settings.encAskEverySession
-    ? 'Off — passphrase required each session'
-    : 'On — opens automatically next session';
-  const ks = document.getElementById('enc-key-status');
-  if(ks){
-    const stored = !!localStorage.getItem(VAULT_KEY);
-    ks.textContent = stored ? 'Stored in this browser' : 'Not stored';
-    ks.className = stored ? 'ok' : '';
-  }
 }
-document.getElementById('enc-remember')?.addEventListener('click', async () => {
-  settings.encAskEverySession = !settings.encAskEverySession;
-  saveSettings();
-  if(settings.encAskEverySession) localStorage.removeItem(VAULT_KEY);
-  else await rememberVaultKey();
+document.getElementById('enc-refresh')?.addEventListener('click', async () => {
+  const ok = await fetchVaultKey();
+  if(ok) await Promise.all([loadCases(), loadNotebooks(), loadNotes()]);
   renderEncStatus();
 });
-document.getElementById('enc-forget')?.addEventListener('click', () => {
-  if(!confirm('Forget the key on this device? You will need the passphrase again here.')) return;
-  forgetVaultKey();
-});
-document.getElementById('enc-unlock')?.addEventListener('click', async () => {
-  const p = document.getElementById('enc-pass').value;
-  const p2 = document.getElementById('enc-pass2').value;
-  if(p.length < 8){ alert('Use at least 8 characters — longer is better.'); return; }
-  if(!settings.encOn && p !== p2){ alert('The two passphrases do not match.'); return; }
-  try{
-    await unlockVault(p);
-    document.getElementById('enc-pass').value = '';
-    document.getElementById('enc-pass2').value = '';
-    renderEncStatus();
-    alert('Unlocked. New and edited records will be encrypted from now on.');
-  }catch(err){ alert('Could not unlock: ' + err.message); }
-});
-document.getElementById('enc-lock')?.addEventListener('click', () => {
-  lockVault(); renderEncStatus();
-});
-// Re-saves everything already in the database so old plaintext rows get sealed.
+// Re-saves what is already stored so pre-encryption rows get sealed too.
 document.getElementById('enc-migrate')?.addEventListener('click', async () => {
-  if(!cryptoKey){ alert('Unlock first, then run this.'); return; }
-  if(!confirm(`Re-save ${cases.length} cases and ${notes.length} notes as encrypted? This can take a moment.`)) return;
+  if(!cryptoKey){ alert('The key has not loaded yet — try Re-check first.'); return; }
+  if(!confirm(`Re-save ${cases.length} cases and ${notes.length} notes as encrypted?`)) return;
   const btn = document.getElementById('enc-migrate');
-  btn.disabled = true; btn.textContent = 'Encrypting...';
+  btn.disabled = true; btn.textContent = 'Encrypting…';
   let done = 0;
   try{
     for(const cse of cases){
@@ -2285,8 +2250,97 @@ document.getElementById('enc-migrate')?.addEventListener('click', async () => {
       done++;
     }
     alert(`Encrypted ${done} records.`);
-  }catch(err){ alert('Stopped after ' + done + ' records: ' + err.message); }
+  }catch(err){ alert('Stopped after ' + done + ': ' + err.message); }
   finally{ btn.disabled = false; btn.textContent = 'Encrypt existing data'; }
+});
+
+
+// ===== AI theme generation ===========================================
+// The model returns a palette; we never trust it blindly. Every colour is
+// validated as a hex triplet and the text/muted tones are nudged until they
+// actually pass a contrast check against the panel they sit on.
+function hexRgb(h){ h = h.replace('#',''); return [0,2,4].map(i => parseInt(h.slice(i,i+2),16)); }
+function rgbHex(r){ return '#' + r.map(v => Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join(''); }
+function relLum(hex){
+  const f = v => { v/=255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); };
+  const [r,g,b] = hexRgb(hex).map(f);
+  return 0.2126*r + 0.7152*g + 0.0722*b;
+}
+function contrast(a, b){
+  const L1 = relLum(a), L2 = relLum(b);
+  return (Math.max(L1,L2) + 0.05) / (Math.min(L1,L2) + 0.05);
+}
+// walk a colour toward white or black until it clears the target ratio
+function fixContrast(fg, bg, target){
+  let out = fg;
+  const toward = relLum(bg) < 0.5 ? 255 : 0;
+  for(let i = 0; i < 24 && contrast(out, bg) < target; i++){
+    out = rgbHex(hexRgb(out).map(v => v + (toward - v) * 0.12));
+  }
+  return out;
+}
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+async function generateTheme(prompt){
+  const status = document.getElementById('ct-status');
+  const btn = document.getElementById('ct-generate');
+  status.textContent = 'Mixing the palette…';
+  btn.disabled = true;
+
+  const sys = [
+    "You design colour palettes for a dark dashboard interface. Reply with ONE JSON object and nothing else — no prose, no markdown fences.",
+    'Exact keys required: {"bg","bg2","panel","panel2","line","text","muted","amber","accent2","accent3","dusk"}',
+    "Every value must be a 6-digit hex string like \"#1a2b3c\".",
+    "Meaning of each: bg = darkest page background; bg2 = an even darker edge; panel = card surface; panel2 = a lighter card highlight; line = borders; text = main body text (must be very light on dark); muted = secondary text; amber = primary accent; accent2 = secondary accent (a clearly different hue); accent3 = third accent bridging the two; dusk = a muted supporting tone.",
+    "Rules: the interface is DARK, so bg/panel must stay dark and text must stay light. amber, accent2 and accent3 must be three visibly different hues. Make it match the mood described.",
+  ].join('\n');
+
+  try{
+    const raw = await callAi(prompt, sys);
+    const m = raw.match(/\{[\s\S]*\}/);
+    if(!m) throw new Error('no palette in the reply');
+    const p = JSON.parse(m[0]);
+
+    const keys = ['bg','bg2','panel','panel2','line','text','muted','amber','accent2','accent3','dusk'];
+    const base = THEMES.slate;
+    const out = { name:'Custom' };
+    let bad = 0;
+    keys.forEach(k => {
+      const v = typeof p[k] === 'string' ? p[k].trim() : '';
+      if(HEX_RE.test(v)) out[k] = v.toLowerCase();
+      else { out[k] = base[k]; bad++; }
+    });
+
+    // hard guarantees, regardless of what came back
+    if(relLum(out.panel) > 0.4) out.panel = base.panel;      // keep it a dark UI
+    if(relLum(out.bg) > 0.35) out.bg = base.bg;
+    out.text  = fixContrast(out.text,  out.panel, 7);
+    out.muted = fixContrast(out.muted, out.panel, 3.6);
+    out.amber = fixContrast(out.amber, out.panel, 3);
+
+    settings.customTheme = out; saveSettings();
+    THEMES.custom = out;
+    applyTheme('custom');
+    renderCustomTheme();
+    SFX.open();
+    status.textContent = bad
+      ? `Applied — ${bad} value${bad>1?'s were':' was'} unusable and kept from the default.`
+      : `Applied. Text contrast ${contrast(out.text, out.panel).toFixed(1)}:1.`;
+  }catch(err){
+    status.textContent = "Couldn't build that one — try describing it differently.";
+  }finally{
+    btn.disabled = false;
+  }
+}
+document.getElementById('ct-generate')?.addEventListener('click', () => {
+  const p = document.getElementById('ct-prompt').value.trim();
+  if(!p){ document.getElementById('ct-status').textContent = 'Describe the mood first.'; return; }
+  generateTheme(p);
+});
+document.getElementById('ct-examples')?.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if(!b) return;
+  document.getElementById('ct-prompt').value = b.textContent;
+  generateTheme(b.textContent);
 });
 
 // ===== Custom theme ===================================================
@@ -2724,16 +2778,6 @@ let cryptoKey = null;
 function bufB64(b){ return btoa(String.fromCharCode(...new Uint8Array(b))); }
 function b64Buf(s){ return Uint8Array.from(atob(s), ch => ch.charCodeAt(0)); }
 
-// Salt is derived from the account name so the same passphrase unlocks the
-// data on any device without having to move a salt file around.
-async function deriveKey(pass, who){
-  const enc = new TextEncoder();
-  const saltSrc = await crypto.subtle.digest('SHA-256', enc.encode('solar-agenda|' + (who || 'admin')));
-  const base = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    { name:'PBKDF2', salt: saltSrc, iterations: 210000, hash: 'SHA-256' },
-    base, { name:'AES-GCM', length:256 }, true, ['encrypt','decrypt']);
-}
 async function encStr(plain){
   if(!cryptoKey || plain == null || plain === '') return plain;
   if(String(plain).startsWith(ENC_PREFIX)) return plain;      // already sealed
@@ -2786,49 +2830,23 @@ async function openNoteRec(n){
   return o;
 }
 
-// The key is kept on this device so the vault opens by itself next time. The
-// point of the encryption is that Supabase never holds readable data — not to
-// re-challenge you every session. Anyone who can already open this browser can
-// open the app anyway, since the login session lives in the same place.
-const VAULT_KEY = 'agenda-solar-vaultkey';
-
-async function rememberVaultKey(){
-  if(!cryptoKey || settings.encAskEverySession) return;
+// The key is issued by the agenda-vault edge function after login, derived
+// server-side from a master secret that lives only in the function environment
+// plus a per-user salt in the database. Neither half is in this bundle, so a
+// database dump alone cannot decrypt anything. No passphrase to remember.
+async function fetchVaultKey(){
   try{
-    const jwk = await crypto.subtle.exportKey('jwk', cryptoKey);
-    localStorage.setItem(VAULT_KEY, JSON.stringify(jwk));
-  }catch(e){}
-}
-async function restoreVaultKey(){
-  if(settings.encAskEverySession) return false;
-  const raw = localStorage.getItem(VAULT_KEY);
-  if(!raw) return false;
-  try{
-    cryptoKey = await crypto.subtle.importKey('jwk', JSON.parse(raw),
-                  { name:'AES-GCM', length:256 }, true, ['encrypt','decrypt']);
+    const r = await fetch(FN_URL + "/agenda-vault", { method: "POST", headers: authHeaders() });
+    if(!r.ok) return false;
+    const { key } = await r.json();
+    if(!key) return false;
+    cryptoKey = await crypto.subtle.importKey('raw', b64Buf(key),
+                  { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']);
+    settings.encOn = true; saveSettings();
     return true;
-  }catch(e){ localStorage.removeItem(VAULT_KEY); return false; }
+  }catch(e){ return false; }
 }
-function forgetVaultKey(){
-  localStorage.removeItem(VAULT_KEY);
-  cryptoKey = null;
-  loadCases(); loadNotes();
-  renderEncStatus();
-}
-
-async function unlockVault(pass, quiet){
-  cryptoKey = await deriveKey(pass, session?.name || 'admin');
-  settings.encOn = true; saveSettings();
-  await rememberVaultKey();
-  await Promise.all([loadCases(), loadNotebooks(), loadNotes()]);
-  renderSettings();
-  if(!quiet) SFX.open();
-}
-function lockVault(){
-  cryptoKey = null;
-  loadCases(); loadNotes();
-  renderSettings();
-}
+function lockVault(){ cryptoKey = null; loadCases(); loadNotes(); renderEncStatus(); }
 
 // ===== Rain on the wheel =============================================
 // Drop positions are normalised 0-1 so the same field can be drawn onto both
@@ -2979,7 +2997,7 @@ setInterval(loadWeather, 30 * 60 * 1000); // refresh twice an hour
 async function bootApp(){
   if(session){
     showApp();
-    await restoreVaultKey();               // unlock first, then fetch
+    await fetchVaultKey();                 // unlock first, then fetch
     loadCases(); loadNotebooks(); loadNotes(); loadWeather();
   } else {
     showLogin();
