@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Solar Agenda — Support Routine</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<div class="boot" id="boot-overlay">
+  <div class="boot-grid"></div>
+  <div class="boot-scan"></div>
+  <div class="boot-core">
+    <div class="boot-ring"><i></i><i></i><i></i><u></u><b></b></div>
+    <div class="boot-title" data-txt="SOLAR AGENDA">SOLAR AGENDA</div>
+    <div class="boot-sub">SUPPORT ROUTINE INTERFACE</div>
+  </div>
+  <div class="boot-bar"><span id="boot-bar-fill"></span></div>
+  <div class="boot-lines" id="boot-lines"></div>
+  <div class="boot-skip">CLICK ANYWHERE TO SKIP</div>
+</div>
+
+<div class="login-screen" id="login-screen">
+  <div class="login-card">
+    <div class="brand-mark"></div>
+    <h1>Solar Agenda</h1>
+    <p class="sub">Restricted access. Sign in with a registered account.</p>
+    <div class="field"><label>Username</label><input type="text" id="login-name" autocomplete="username"></div>
+    <div class="field"><label>Password</label><input type="password" id="login-password" autocomplete="current-password"></div>
+    <button id="login-btn">Sign in</button>
+    <div class="login-error" id="login-error"></div>
+    <div class="login-hint">Demo login: admin / admin</div>
+  </div>
+</div>
+
+<div class="app hidden" id="app-root">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <h1>Solar Agenda</h1>
+        <p class="tagline">Support routine — from the first hour to end of day</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div class="nav-tabs">
+        <button class="nav-tab active" id="tab-agenda">Agenda</button>
+        <button class="nav-tab" id="tab-history">History</button>
+        <button class="nav-tab" id="tab-calendar">Calendar</button>
+        <button class="nav-tab" id="tab-notebooks">Notebooks</button>
+        <button class="nav-tab" id="tab-settings">Settings</button>
+      </div>
+      <span class="user-pill" id="user-pill"></span>
+      <button class="ai-toggle" id="hud-toggle" title="Fullscreen HUD (F11 also works)">⬛ HUD</button>
+      <button class="ai-toggle" id="theme-toggle">🎨 Theme</button>
+      <button class="ai-toggle" id="ai-toggle"><span class="dot"></span> Assistant</button>
+      <button class="logout-btn" id="logout-btn">Sign out</button>
+    </div>
+  </header>
+
+  <nav class="bottom-nav" id="bottom-nav">
+    <button class="bn-item active" data-view="agenda">
+      <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/></svg><span>Agenda</span>
+    </button>
+    <button class="bn-item" data-view="history">
+      <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg><span>History</span>
+    </button>
+    <button class="bn-item" data-view="calendar">
+      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><span>Calendar</span>
+    </button>
+    <button class="bn-item" data-view="notebooks">
+      <svg viewBox="0 0 24 24"><path d="M5 4h12a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z"/><path d="M9 4v16"/></svg><span>Notes</span>
+    </button>
+    <button class="bn-item" data-view="settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.6 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 8 2.6h.1A2 2 0 1 1 12 2.6"/></svg><span>Settings</span>
+    </button>
+  </nav>
+
+  <div class="hud-strip hud-only" id="hud-strip">
+    <div class="hud-stat"><span class="dotmark" style="background:var(--ok);color:var(--ok)"></span> <span class="hud-live">LIVE</span></div>
+    <div class="hud-stat">DATE <b id="hud-date">—</b></div>
+    <div class="hud-stat">OPEN <b id="hud-open">0</b></div>
+    <div class="hud-stat"><span class="dotmark" style="background:var(--urgente);color:var(--urgente)"></span> URGENT <b id="hud-urgent">0</b></div>
+    <div class="hud-stat">DONE TODAY <b id="hud-done">0</b></div>
+    <div class="hud-stat">NOTEBOOKS <b id="hud-nb">0</b></div>
+    <div class="hud-sep"></div>
+    <div class="hud-stat" id="hud-next">NEXT —</div>
+  </div>
+
+  <div id="view-agenda">
+    <div class="arc-wrap">
+      <div class="arc-caption"><h2>Your day</h2><span class="clock mono" id="clock-label">--:--</span></div>
+      <svg id="day-arc" viewBox="0 0 800 210" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <main class="layout">
+      <div class="col-left">
+      <section class="panel first-hour-panel">
+        <h2>First hour <span class="badge">priority</span></h2>
+        <p class="hint">From clock-in until 1h later: urgent and high priority only. Everything else waits.</p>
+        <div class="case-list" id="first-hour-list"></div>
+      </section>
+      <section class="panel weather-panel" id="weather-panel">
+        <div class="wx-head"><span class="wx-title">Vinhedo today</span><span class="wx-temp mono" id="wx-temp">—</span></div>
+        <div class="wx-row" id="wx-local"><span class="wx-load">loading forecast…</span></div>
+        <div class="wx-div"></div>
+        <div class="wx-head"><span class="wx-title">Roughest in Brazil</span></div>
+        <div class="wx-row" id="wx-brazil"></div>
+      </section>
+      </div>
+      <section class="panel day-panel">
+        <div class="day-panel-header"><h2>Today's cases</h2><button id="add-case-btn">+ New case</button></div>
+        <div id="blocks-container"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="view-history" class="hidden">
+    <section class="panel">
+      <div class="day-panel-header"><h2>Case history</h2></div>
+      <p class="hint">Resolved and failed cases land here once you swipe them off today's list.</p>
+      <div id="history-container"></div>
+    </section>
+  </div>
+
+  <div id="view-calendar" class="hidden">
+    <section class="calendar-panel">
+      <div class="calendar-header">
+        <h2 id="cal-month-label">Month</h2>
+        <div class="calendar-nav">
+          <button id="cal-prev">‹</button>
+          <button id="cal-today">Today</button>
+          <button id="cal-next">›</button>
+        </div>
+      </div>
+      <div class="cal-grid" id="cal-weekdays"></div>
+      <div class="cal-grid" id="cal-grid" style="margin-top:6px;"></div>
+    </section>
+  </div>
+
+
+  <div id="view-settings" class="hidden">
+    <section class="panel" style="margin-bottom:16px;">
+      <div class="day-panel-header"><h2>Media storage</h2></div>
+      <p class="hint">Images pasted into notes are written to your own storage instead of the app database, so Supabase never fills up. Only a tiny preview thumbnail is kept in the note itself.</p>
+
+      <div class="set-row">
+        <div class="set-info">
+          <b>Local folder</b>
+          <span id="set-folder-status">Not configured</span>
+        </div>
+        <button class="btn-ghost" id="set-folder-btn">Choose folder</button>
+      </div>
+      <p class="hint" id="set-folder-note" style="margin-top:0;"></p>
+
+      <div class="set-row">
+        <div class="set-info">
+          <b>Google Drive backup</b>
+          <span id="set-drive-status">Not connected</span>
+        </div>
+        <button class="btn-ghost" id="set-drive-btn">Connect</button>
+      </div>
+      <div class="field"><label>Google OAuth Client ID</label><input type="text" id="set-drive-client" placeholder="xxxxx.apps.googleusercontent.com"></div>
+      <div class="field"><label>Drive folder ID (optional)</label><input type="text" id="set-drive-folder" placeholder="Paste the folder ID from its Drive URL"></div>
+      <p class="hint">Create an OAuth client (type: Web application) in Google Cloud Console and add <b id="set-origin"></b> as an authorised JavaScript origin.</p>
+    </section>
+
+    <section class="panel">
+      <div class="day-panel-header"><h2>Export data</h2></div>
+      <p class="hint">Downloads everything currently loaded — cases, notebooks and notes.</p>
+      <div class="set-actions">
+        <button class="btn-ghost" id="export-xls">⬇ Excel (.xls)</button>
+        <button class="btn-ghost" id="export-doc">⬇ Word (.doc)</button>
+        <button class="btn-ghost" id="export-json">⬇ JSON backup</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="view-notebooks" class="hidden">
+    <div class="notebooks-toolbar">
+      <input type="text" id="notebook-search" placeholder="Search notes...">
+      <button id="new-notebook-btn">+ New notebook</button>
+    </div>
+    <div class="notebooks-breadcrumb hidden" id="notebooks-breadcrumb">
+      <button id="notebooks-back-btn">‹ Notebooks</button>
+      <span id="notebooks-current-title"></span>
+      <button id="delete-notebook-btn" class="btn-danger" style="padding:6px 12px; font-size:0.78rem;">Delete notebook</button>
+      <button id="new-note-btn" class="ai-toggle" style="margin-left:auto">+ New note</button>
+    </div>
+    <div class="notebooks-grid" id="notebooks-grid"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="theme-modal-backdrop">
+  <div class="modal">
+    <h2>Choose a theme</h2>
+    <div class="theme-grid" id="theme-grid"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="theme-close-btn" style="flex:1">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="new-notebook-modal-backdrop">
+  <div class="modal">
+    <h2>New notebook</h2>
+    <div class="field"><label>Name</label><input type="text" id="new-notebook-title" placeholder="e.g. Client sites, Ideas, Troubleshooting log"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="new-notebook-cancel" style="flex:1">Cancel</button>
+      <button class="btn-primary" id="new-notebook-confirm">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop notebook-modal" id="notebook-modal-backdrop">
+  <div class="modal">
+    <div class="notebook-editor-header">
+      <input type="text" id="nb-title-input" placeholder="Untitled">
+      <input type="date" id="nb-date-input" title="Link to a calendar date">
+      <button class="btn-danger" id="nb-delete-btn" style="display:none">Delete</button>
+    </div>
+    <span class="notebook-status" id="notebook-status">Saved</span>
+    <div class="tag-input-wrap" id="nb-tags-wrap" style="margin-top:10px;">
+      <div class="tag-chips" id="nb-tags-chips"></div>
+      <input type="text" id="nb-tags-input" placeholder="Add a tag, press Enter">
+    </div>
+    <div class="nb-toolbar" id="nb-toolbar">
+      <button type="button" data-block="h1" title="Heading 1">H1</button>
+      <button type="button" data-block="h2" title="Heading 2">H2</button>
+      <button type="button" data-block="p" title="Body text">¶</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
+      <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
+      <button type="button" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-block="ul" title="Bullet list">•</button>
+      <button type="button" data-block="ol" title="Numbered list">1.</button>
+      <button type="button" data-block="todo" title="Checklist">☑</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-block="quote" title="Quote">❝</button>
+      <button type="button" data-block="code" title="Code block">&lt;/&gt;</button>
+      <button type="button" data-block="hr" title="Divider">—</button>
+    </div>
+    <div id="notebook-canvas" contenteditable="true" data-placeholder="Type '/' for blocks, or just start writing..."></div>
+    <div class="slash-menu" id="slash-menu"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="notebook-close-btn" style="flex:1">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal">
+    <h2 id="modal-title">New case</h2>
+    <input type="hidden" id="case-id">
+    <div class="field"><label>Client / subject</label><input type="text" id="f-titulo" placeholder="e.g. Integrator XPTO — inverter won't connect"></div>
+    <div class="field-row">
+      <div class="field"><label>Date</label><input type="date" id="f-date"></div>
+      <div class="field"><label>Start time (optional)</label><input type="time" id="f-horario"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>End time (optional)</label><input type="time" id="f-horario-fim"></div>
+      <div class="field" id="f-actual-end-wrap" style="display:none;"><label>Actually finished at</label><input type="time" id="f-actual-end"></div>
+    </div>
+    <div class="field" id="ai-time-suggest-wrap" style="display:none;">
+      <button type="button" class="reformular-btn" id="suggest-time-btn">✦ Suggest a better time estimate</button>
+      <div id="time-suggestion-text" class="hint" style="margin-top:6px;"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Ticket # (optional)</label><input type="text" id="f-ticket" placeholder="PAC-0000"></div>
+      <div class="field">
+        <label>Priority</label>
+        <div class="select-wrap" id="f-prioridade-wrap">
+          <button type="button" class="select-trigger" id="f-prioridade-trigger">
+            <span class="select-trigger-label">Medium</span>
+            <svg width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="select-panel" id="f-prioridade-panel">
+            <div class="select-option" data-value="urgente">Urgent</div>
+            <div class="select-option" data-value="alta">High</div>
+            <div class="select-option" data-value="media">Medium</div>
+            <div class="select-option" data-value="baixa">Low</div>
+          </div>
+          <input type="hidden" id="f-prioridade" value="media">
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Time block</label>
+      <div class="select-wrap" id="f-bloco-wrap">
+        <button type="button" class="select-trigger" id="f-bloco-trigger">
+          <span class="select-trigger-label">Morning</span>
+          <svg width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="select-panel" id="f-bloco-panel">
+          <div class="select-option" data-value="primeira-hora">First hour</div>
+          <div class="select-option" data-value="manha">Morning</div>
+          <div class="select-option" data-value="tarde">Afternoon</div>
+          <div class="select-option" data-value="fim-do-dia">End of day</div>
+        </div>
+        <input type="hidden" id="f-bloco" value="manha">
+      </div>
+    </div>
+    <div class="field">
+      <label>Tags</label>
+      <div class="tag-input-wrap" id="f-tags-wrap">
+        <div class="tag-chips" id="f-tags-chips"></div>
+        <input type="text" id="f-tags-input" placeholder="Add a tag, press Enter">
+      </div>
+    </div>
+    <div class="field">
+      <div class="notes-row"><label style="margin:0">Case notes</label></div>
+      <div class="case-notes-log" id="f-notes-log"></div>
+      <div id="notes-editable-wrap">
+        <div class="notes-row"><span></span><button type="button" class="reformular-btn" id="reformular-btn">✦ Rephrase with AI</button></div>
+        <textarea id="f-notas" placeholder="Add a note about this case..."></textarea>
+        <button type="button" class="btn-ghost" id="add-note-entry-btn" style="width:100%; margin-top:8px;">+ Add to history</button>
+      </div>
+      <p class="hint" id="notes-locked-hint" style="display:none;">Notes are locked — this case was resolved successfully.</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-danger" id="delete-btn" style="display:none">Delete</button>
+      <button class="btn-ghost" id="cancel-btn">Cancel</button>
+      <button class="btn-primary" id="save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="day-modal-backdrop">
+  <div class="modal">
+    <h2 id="day-modal-title">Day</h2>
+    <div class="day-modal-section">
+      <h3>Cases</h3>
+      <div id="day-modal-cases"></div>
+    </div>
+    <div class="day-modal-section">
+      <h3>Notes</h3>
+      <div id="day-modal-notebooks"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="day-modal-close" style="flex:1">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="ai-panel" id="ai-panel">
+  <div class="ai-panel-header"><span>Assistant</span><button id="ai-close">×</button></div>
+  <div class="ai-messages" id="ai-messages">
+    <div class="ai-msg hint">Ask about today's agenda, or tell me to create a case, notebook or note — e.g. "add an urgent case for Integrator XPTO at 14:00".</div>
+  </div>
+  <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button id="ai-send">Send</button></div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
