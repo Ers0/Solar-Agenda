@@ -317,7 +317,7 @@ function renderArc(){
   parts.push(`<path d="M ${hS.x} ${hS.y} A ${r} ${r} 0 0 1 ${hE.x} ${hE.y}" fill="none" stroke="url(#arcFirstHour)" stroke-width="5" stroke-linecap="round" filter="url(#bloom)"/>`);
 
   for(let h = FS; h <= FE; h++){
-    const major = (h % 24) % 3 === 0 || h === FS || h === FE;
+    const major = (h - FS) % 2 === 0;   // every 2h on both faces, evenly spaced
     const p = arcPoint(hourToAngle(h), r), pO = arcPoint(hourToAngle(h), r + (major ? 12 : 7));
     parts.push(`<line x1="${p.x}" y1="${p.y}" x2="${pO.x}" y2="${pO.y}" stroke="${major ? AC : 'var(--line)'}" stroke-opacity="${major ? 0.7 : 0.35}" stroke-width="2"/>`);
     if(major){
@@ -420,6 +420,14 @@ function syncPhase(){
   if(first){ curPhase = want ? 'night' : 'day'; renderArc(); applyPhaseChrome(want); return; }
   if((curPhase === 'night') !== want) spinToPhase(want, false);
 }
+
+// Preview the opposite face on demand — otherwise you'd wait until 18:00 to
+// find out whether the spin works.
+document.getElementById('phase-pill').addEventListener('click', () => {
+  const realNight = isNightHour(new Date().getHours());
+  phaseOverride = (phaseOverride === null) ? !realNight : null;
+  spinToPhase(phaseOverride !== null ? phaseOverride : realNight, false);
+});
 
 setInterval(() => { syncPhase(); renderArc(); if(!document.getElementById('view-calendar').classList.contains('hidden')) renderCalendar(); }, 15000);
 
@@ -2264,6 +2272,22 @@ const KB_TEMPLATE = JSON.stringify([
   { title: "Deye F58 alarm", content: "Ground fault on the DC side. Inspect string insulation and MC4 connectors for moisture.", tags: ["deye","f58","alarm"] },
   { title: "PAC opening rules", content: "Open a PAC when the fault requires a field visit or manufacturer RMA. Attach photos of the display and the plate.", tags: ["pac","process"] }
 ], null, 2);
+const rainTest = document.getElementById('rain-test');
+if(rainTest){
+  rainTest.addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    const lab = document.getElementById('rain-test-label');
+    if(v < 0){
+      rainOverride = null;
+      lab.textContent = 'Using the live forecast';
+    } else {
+      rainOverride = v;
+      const band = v <= 0.05 ? 'dry' : v < 2 ? 'drizzle' : v < 10 ? 'steady rain' : v < 25 ? 'heavy' : 'downpour';
+      lab.textContent = `${v.toFixed(1)} mm — ${band}`;
+    }
+    setRain(rainMM);
+  });
+}
 document.getElementById('sfx-toggle').addEventListener('click', () => {
   settings.muted = !settings.muted; saveSettings();
   document.getElementById('set-sfx-status').textContent = settings.muted ? 'Muted' : 'On';
@@ -2579,6 +2603,89 @@ function openDayModal(dateStr, dayCases, dayNotes){
 }
 
 
+
+// ===== Rain on the wheel =============================================
+// Intensity comes straight from the forecast in mm. Light drizzle is a few
+// slow, faint drops; heavy rain is dense, fast and wind-slanted — busier, but
+// still low-contrast so it never fights the dial for attention.
+let rainCanvas, rainCtx, rainDrops = [], rainRAF = null, rainMM = 0, rainOverride = null;
+
+function rainProfile(mm){
+  if(mm <= 0.05) return null;
+  const i = Math.min(1, mm / 30);                 // 30mm+ counts as full intensity
+  return {
+    count: Math.round(14 + i * 150),
+    speed: 2.4 + i * 7.5,
+    len:   6 + i * 20,
+    slant: i * 2.6,
+    alpha: 0.10 + i * 0.28,
+    width: 0.7 + i * 0.9,
+  };
+}
+function seedRain(){
+  const p = rainProfile(rainOverride !== null ? rainOverride : rainMM);
+  rainDrops = [];
+  if(!p || !rainCanvas) return p;
+  const w = rainCanvas.width, h = rainCanvas.height;
+  for(let i = 0; i < p.count; i++){
+    rainDrops.push({
+      x: Math.random() * (w + 120) - 60,
+      y: Math.random() * h,
+      v: p.speed * (0.65 + Math.random() * 0.7),
+      l: p.len * (0.6 + Math.random() * 0.8),
+      a: p.alpha * (0.5 + Math.random() * 0.7),
+    });
+  }
+  return p;
+}
+function sizeRain(){
+  if(!rainCanvas) return;
+  const wrap = rainCanvas.parentElement;
+  rainCanvas.width = wrap.clientWidth;
+  rainCanvas.height = wrap.clientHeight;
+}
+function stepRain(){
+  const p = rainProfile(rainOverride !== null ? rainOverride : rainMM);
+  if(!p || !rainCtx){ rainRAF = null; if(rainCtx) rainCtx.clearRect(0,0,rainCanvas.width,rainCanvas.height); return; }
+  const w = rainCanvas.width, h = rainCanvas.height;
+  rainCtx.clearRect(0, 0, w, h);
+  const night = curPhase === 'night';
+  const col = night ? '160,200,255' : '190,215,245';
+  rainCtx.lineCap = 'round';
+  rainCtx.lineWidth = p.width;
+  rainDrops.forEach(d => {
+    rainCtx.strokeStyle = `rgba(${col},${d.a})`;
+    rainCtx.beginPath();
+    rainCtx.moveTo(d.x, d.y);
+    rainCtx.lineTo(d.x + p.slant * (d.l / p.len) * 3, d.y + d.l);
+    rainCtx.stroke();
+    d.y += d.v; d.x += p.slant;
+    if(d.y > h){ d.y = -d.l; d.x = Math.random() * (w + 120) - 60; }
+    if(d.x > w + 60) d.x = -60;
+  });
+  rainRAF = requestAnimationFrame(stepRain);
+}
+function setRain(mm){
+  rainMM = mm || 0;
+  if(!rainCanvas){
+    rainCanvas = document.getElementById('rain-layer');
+    if(!rainCanvas) return;
+    rainCtx = rainCanvas.getContext('2d');
+    window.addEventListener('resize', () => { sizeRain(); seedRain(); });
+  }
+  sizeRain();
+  const p = seedRain();
+  const wrap = rainCanvas.parentElement;
+  wrap.classList.toggle('raining', !!p);
+  if(p && !rainRAF) rainRAF = requestAnimationFrame(stepRain);
+  if(!p && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null; rainCtx.clearRect(0,0,rainCanvas.width,rainCanvas.height); }
+}
+// pause when the tab is hidden so it isn't burning battery in the background
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null; }
+  else if(!document.hidden && !rainRAF && rainProfile(rainOverride !== null ? rainOverride : rainMM)) rainRAF = requestAnimationFrame(stepRain);
+});
+
 // ===== Weather: Vinhedo + the roughest spot in Brazil today ============
 // Open-Meteo needs no key and allows browser calls. Rain + wind only, kept
 // deliberately small so it reads as a status line, not a weather widget.
@@ -2613,6 +2720,7 @@ async function loadWeather(){
     const wind = d.wind_speed_10m_max?.[0] ?? 0;
     document.getElementById('wx-temp').textContent =
       Math.round(d.temperature_2m_min?.[0]) + '° / ' + Math.round(d.temperature_2m_max?.[0]) + '°';
+    setRain(rain);
     wxSnapshot = { rain, prob, wind,
       tmin: Math.round(d.temperature_2m_min?.[0]), tmax: Math.round(d.temperature_2m_max?.[0]) };
     localEl.innerHTML =

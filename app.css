@@ -444,6 +444,25 @@
   .arc-wrap.spinning{ box-shadow: 0 0 70px -20px var(--amber) !important; }
   .arc-wrap.spinning .arc-sweep{ animation: arcSweep 1.15s cubic-bezier(.4,.1,.3,1); }
 
+
+  .rain-layer{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
+  .arc-wrap #day-arc{ position:relative; z-index:2; }
+  .arc-wrap.raining{ --rain-tint: 1; }
+
+  .rain-range{ width:100%; -webkit-appearance:none; appearance:none; height:5px; border-radius:99px;
+    background: linear-gradient(90deg, var(--line), var(--accent2), var(--amber)); outline:none; }
+  .rain-range::-webkit-slider-thumb{ -webkit-appearance:none; width:18px; height:18px; border-radius:50%;
+    background: var(--amber); border:2px solid var(--panel); box-shadow:0 0 10px var(--glow); cursor:pointer; }
+  .rain-range::-moz-range-thumb{ width:18px; height:18px; border-radius:50%; background: var(--amber);
+    border:2px solid var(--panel); cursor:pointer; }
+
+  /* case-note viewer: was falling back to raw browser styling */
+  #sticky-modal-backdrop .modal h2{ margin-bottom:6px; }
+  .sticky-stamp{ font-size:0.7rem; color:var(--amber); letter-spacing:.06em; margin:0 0 12px; }
+  #sticky-text{ min-height:190px; line-height:1.55; resize:vertical; }
+  #sticky-modal-backdrop .field{ margin-bottom:10px; }
+  #sticky-lock{ margin:0 0 4px; }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

@@ -102,6 +102,7 @@
           <span class="clock mono" id="clock-label">--:--</span>
         </div>
       </div>
+      <canvas class="rain-layer" id="rain-layer"></canvas>
       <div class="arc-sweep" id="arc-sweep"></div>
       <svg id="day-arc" viewBox="0 -22 800 232" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
@@ -194,6 +195,11 @@
       <div class="set-row">
         <div class="set-info"><b>Interface sounds</b><span id="set-sfx-status">On</span></div>
         <button class="btn-ghost" id="sfx-toggle">Toggle</button>
+      </div>
+      <div class="set-row" style="display:block">
+        <div class="set-info" style="margin-bottom:8px"><b>Rain animation test</b><span id="rain-test-label">Using the live forecast</span></div>
+        <input type="range" id="rain-test" min="-1" max="60" step="0.5" value="-1" class="rain-range">
+        <p class="hint" style="margin:6px 0 0">Slide to preview the wheel at any rainfall. Far left returns to the real forecast.</p>
       </div>
       <div class="set-row">
         <div class="set-info"><b>Status</b><span id="set-kb-status">No entries yet</span></div>
@@ -397,8 +403,8 @@
 <div class="modal-backdrop" id="sticky-modal-backdrop" style="z-index:130">
   <div class="modal" style="max-width:440px">
     <h2>Case note</h2>
-    <p class="hint mono" id="sticky-time" style="margin-top:-8px"></p>
-    <textarea id="sticky-text" style="min-height:180px"></textarea>
+    <p class="sticky-stamp mono" id="sticky-time"></p>
+    <div class="field"><textarea id="sticky-text"></textarea></div>
     <p class="hint" id="sticky-lock" style="display:none">Locked — this case was resolved successfully.</p>
     <div class="modal-actions">
       <button class="btn-danger" id="sticky-del">Delete</button>
