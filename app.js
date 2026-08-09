@@ -449,8 +449,14 @@ const BOOT_STEPS = [
   ['SYNCING NOTEBOOKS', 'OK'],
   ['ASSISTANT UPLINK', 'READY'],
   ['WEATHER FEED', 'OK'],
+  ['DIAGNOSTICS', 'PASS'],
 ];
 let bootTimers = [];
+// Timings lifted straight from the reference analysis, so the visuals land on
+// the audio: lines run through the riser (1.0s -> 2.2s), the confirmation hits
+// the activation burst (2.75s), and the overlay clears while the tail decays.
+const BOOT_T = { firstLine: 1.0, step: 0.24, online: 2.75, end: 3.55 };
+
 function runBootSequence(){
   const overlay = document.getElementById('boot-overlay');
   const linesEl = document.getElementById('boot-lines');
@@ -459,12 +465,11 @@ function runBootSequence(){
   if(fill) fill.style.width = '0%';
   overlay.classList.remove('fading');
   overlay.classList.add('on');
-  SFX.bootStart();
 
   bootTimers.forEach(clearTimeout);
   bootTimers = [];
+  SFX.bootStart();
 
-  const STEP = 260;
   BOOT_STEPS.forEach(([label, state], i) => {
     bootTimers.push(setTimeout(() => {
       const row = document.createElement('div');
@@ -472,21 +477,20 @@ function runBootSequence(){
       row.innerHTML = `<span>${label}</span><span>${state}</span>`;
       linesEl.appendChild(row);
       SFX.bootTick(i);
-      if(fill) fill.style.width = Math.round(((i + 1) / (BOOT_STEPS.length + 1)) * 100) + '%';
-    }, 200 + i * STEP));
+      if(fill) fill.style.width = Math.round(((i + 1) / BOOT_STEPS.length) * 85) + '%';
+    }, (BOOT_T.firstLine + i * BOOT_T.step) * 1000));
   });
 
-  // final confirmation line, then hand over to the HUD
   bootTimers.push(setTimeout(() => {
     const row = document.createElement('div');
     row.className = 'boot-line final';
     row.innerHTML = `<span>SYSTEM</span><span>ONLINE</span>`;
     linesEl.appendChild(row);
-    SFX.bootDone();
     if(fill) fill.style.width = '100%';
-  }, 200 + BOOT_STEPS.length * STEP));
+    document.querySelector('.boot-core')?.classList.add('surge');
+  }, BOOT_T.online * 1000));
 
-  bootTimers.push(setTimeout(endBootSequence, 200 + BOOT_STEPS.length * STEP + 620));
+  bootTimers.push(setTimeout(endBootSequence, BOOT_T.end * 1000));
 }
 function endBootSequence(){
   const overlay = document.getElementById('boot-overlay');
@@ -494,7 +498,8 @@ function endBootSequence(){
   bootTimers.forEach(clearTimeout);
   bootTimers = [];
   overlay.classList.add('fading');
-  setTimeout(() => { overlay.classList.remove('on', 'fading'); }, 500);
+  setTimeout(() => { overlay.classList.remove('on', 'fading');
+    document.querySelector('.boot-core')?.classList.remove('surge'); }, 550);
 }
 document.getElementById('boot-overlay').addEventListener('click', endBootSequence);
 
@@ -835,6 +840,7 @@ const AI_TOOLS = [
 // convolution reverb + stereo delay so sounds sit in a space, and layers
 // are detuned/filtered to give them body. No audio files to host.
 let audioCtx = null, busDry = null, busWet = null;
+let bootUsedFile = false;
 function ac(){
   if(settings.muted) return null;
   if(!audioCtx){
@@ -897,8 +903,11 @@ function voice({ freq = 440, to = null, dur = 0.3, type = 'sawtooth', vol = 0.05
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
 
   const send = ctx.createGain(); send.gain.value = space;
+  const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+  if(pan) pan.pan.value = arguments[0].pan || 0;
   osc.connect(flt).connect(g);
-  g.connect(busDry); g.connect(send); send.connect(busWet);
+  const outNode = pan ? (g.connect(pan), pan) : g;
+  outNode.connect(busDry); outNode.connect(send); send.connect(busWet);
   osc.start(t0); osc.stop(t0 + dur + 0.05);
 }
 
@@ -919,8 +928,11 @@ function air({ dur = 0.6, vol = 0.02, delay = 0, from = 300, to = 6000, type = '
   g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.25);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   const send = ctx.createGain(); send.gain.value = space;
+  const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+  if(pan) pan.pan.value = arguments[0].pan || 0;
   src.connect(f).connect(g);
-  g.connect(busDry); g.connect(send); send.connect(busWet);
+  const outNode = pan ? (g.connect(pan), pan) : g;
+  outNode.connect(busDry); outNode.connect(send); send.connect(busWet);
   src.start(t0); src.stop(t0 + dur + 0.05);
 }
 
@@ -934,27 +946,158 @@ function chord(freqs, o = {}){
   });
 }
 
+
+// Reverse swell — amplitude climbs then cuts dead, the classic "something is
+// about to happen" riser. Real records do this by reversing a cymbal; here the
+// envelope shape does the same job.
+function reverseSwell({ dur = 2.2, delay = 0, vol = 0.05, from = 600, to = 9000, pan = 0 }){
+  const ctx = ac(); if(!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const n = Math.floor(ctx.sampleRate * dur);
+  const buf = ctx.createBuffer(2, n, ctx.sampleRate);
+  for(let ch = 0; ch < 2; ch++){
+    const d = buf.getChannelData(ch);
+    for(let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(i / n, 2.2);
+  }
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.1;
+  f.frequency.setValueAtTime(from, t0);
+  f.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+  const g = ctx.createGain(); g.gain.value = vol;
+  const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+  if(p) p.pan.value = pan;
+  src.connect(f).connect(g);
+  const out = p ? (g.connect(p), p) : g;
+  out.connect(busDry); out.connect(busWet);
+  src.start(t0); src.stop(t0 + dur + 0.05);
+}
+
+// Modal ring: noise through a bank of very resonant bandpass filters, which is
+// how you get glass/metal without a sample.
+function metal({ base = 900, partials = [1, 2.76, 5.4, 8.9], dur = 1.6, delay = 0, vol = 0.035, pan = 0 }){
+  const ctx = ac(); if(!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const n = Math.floor(ctx.sampleRate * 0.02);
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+  if(p) p.pan.value = pan;
+  partials.forEach((mult, i) => {
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = base * mult; f.Q.value = 55 - i * 6;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol / (i + 1), t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur * (1 - i * 0.14));
+    src.connect(f).connect(g);
+    const out = p ? (g.connect(p), p) : g;
+    out.connect(busDry); out.connect(busWet);
+    src.start(t0); src.stop(t0 + dur + 0.1);
+  });
+}
+
+// Cinematic impact: sub drop + body + noise crack.
+function impact({ delay = 0, vol = 0.13 }){
+  voice({ freq:150, to:32, dur:1.5, type:'sine', vol:vol, cut:300, delay, space:0.35 });
+  voice({ freq:70, to:28, dur:1.9, type:'triangle', vol:vol*0.6, cut:180, delay:delay+0.01, space:0.3 });
+  air({ dur:0.5, vol:0.05, from:2200, to:120, q:0.6, delay, space:0.9 });
+  metal({ base:420, dur:2.2, delay:delay+0.01, vol:0.03 });
+}
+
+// Telemetry chatter — short randomised blips, panned around the field.
+function chatter({ count = 22, spread = 1.9, delay = 0, vol = 0.011 }){
+  for(let i = 0; i < count; i++){
+    const t = delay + Math.random() * spread;
+    const f = 1400 + Math.random() * 2600;
+    voice({ freq:f, to:f * (0.8 + Math.random() * 0.5), dur:0.03 + Math.random() * 0.04,
+            type:'square', vol:vol, cut:7000, q:2, delay:t, space:0.8,
+            pan:(Math.random() * 2 - 1) * 0.85 });
+  }
+}
+
+// Servo whirr, for mechanical presence under the swell.
+function servo({ delay = 0, dur = 1.6, vol = 0.022 }){
+  const ctx = ac(); if(!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator(); osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(140, t0);
+  osc.frequency.linearRampToValueAtTime(320, t0 + dur * 0.7);
+  osc.frequency.linearRampToValueAtTime(180, t0 + dur);
+  const lfo = ctx.createOscillator(); lfo.frequency.value = 26;
+  const lfoG = ctx.createGain(); lfoG.gain.value = 22;
+  lfo.connect(lfoG).connect(osc.frequency);
+  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1100; f.Q.value = 3.5;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.25);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(f).connect(g);
+  g.connect(busDry); g.connect(busWet);
+  osc.start(t0); osc.stop(t0 + dur + 0.05);
+  lfo.start(t0); lfo.stop(t0 + dur + 0.05);
+}
+
 const SFX = {
-  // reactor spin-up: sub sweep + rising filtered noise + shimmer arpeggio
+  // Composed against the supplied reference, measured frame by frame:
+  //   0.00s  impact — sub-dominant (29% of energy below 120Hz)
+  //   0.30s  dark rumble, spectral centroid dips to ~1.1kHz
+  //   0.82s  secondary onset (measured)
+  //   1.00s  riser — centroid climbs 1.6k -> 3.8kHz as mid yields to highs
+  //   2.20s  activation burst — onsets at 2.20 / 2.45 / 2.62 / 2.80
+  //   2.75s  peak, then decay to silence by ~4.0s
+  bootCue(){
+    impact({ delay:0, vol:0.12 });
+    voice({ freq:62, to:34, dur:0.55, type:'sine', vol:0.12, cut:320, space:0.35 });
+    air({ dur:0.14, vol:0.04, from:5200, to:600, q:0.7, space:0.5 });
+
+    voice({ freq:74, to:150, dur:1.05, type:'sawtooth', vol:0.05, delay:0.28, cut:300, cutTo:900, q:5, space:0.5 });
+    servo({ delay:0.3, dur:0.9, vol:0.018 });
+
+    impact({ delay:0.82, vol:0.07 });
+    air({ dur:0.1, vol:0.022, delay:0.82, from:3000, to:900, q:1.2, space:0.5 });
+
+    reverseSwell({ dur:1.25, delay:1.0, vol:0.05, from:420, to:7400 });
+    voice({ freq:130, to:900, dur:1.25, type:'sawtooth', vol:0.038, delay:1.0, cut:800, cutTo:6000, q:7, space:0.7 });
+    voice({ freq:260, to:1800, dur:1.2, type:'square', vol:0.016, delay:1.05, cut:1200, cutTo:7000, q:5, space:0.8 });
+    chatter({ count:15, spread:1.15, delay:1.05, vol:0.010 });
+
+    [[2.20, 660], [2.45, 880], [2.62, 1046.5], [2.80, 1320]].forEach(([d, f], i) => {
+      air({ dur:0.07, vol:0.028, delay:d, from:6500, to:2000, q:1.6, space:0.6, pan:(i % 2 ? 0.35 : -0.35) });
+      metal({ base:f, dur:0.65, delay:d, vol:0.024, pan:(i % 2 ? 0.4 : -0.4) });
+      voice({ freq:f, dur:0.42, type:'triangle', vol:0.038, delay:d, cut:7000, q:3, space:0.95 });
+      impact({ delay:d, vol:0.055 - i * 0.008 });
+    });
+
+    chord([261.63, 392, 523.25, 659.25, 783.99],
+          { delay:2.75, stagger:0.03, v:{ dur:1.35, vol:0.028, cut:1200, cutTo:5200 } });
+    metal({ base:523.25, dur:1.3, delay:2.75, vol:0.022 });
+    reverseSwell({ dur:0.5, delay:2.72, vol:0.03, from:2000, to:9000 });
+    air({ dur:1.15, vol:0.02, delay:2.9, from:7000, to:2200, q:0.8, space:1 });
+  },
+
+  // Prefers the real recording when it is hosted at /hud-boot.mp3; otherwise
+  // the synthesised cue above stands in, matched to the same timeline.
   bootStart(){
-    voice({ freq:38, to:110, dur:2.4, type:'sine', vol:0.11, cut:400, space:0.25 });
-    voice({ freq:70, to:220, dur:2.2, type:'sawtooth', vol:0.035, cut:200, cutTo:2600, q:9, space:0.6 });
-    air({ dur:2.2, vol:0.02, from:200, to:7000, q:0.7, space:0.7 });
-    [392, 523.25, 659.25, 784].forEach((f, i) =>
-      voice({ freq:f, dur:0.9, type:'triangle', vol:0.02, delay:0.5 + i * 0.11, cut:5200, space:1 }));
+    if(settings.muted) return;
+    bootUsedFile = false;
+    try{
+      const a = new Audio('/hud-boot.mp3');
+      a.volume = 0.8;
+      const p = a.play();
+      if(p && p.then) p.then(() => { bootUsedFile = true; }).catch(() => SFX.bootCue());
+      else bootUsedFile = true;
+    }catch(e){ SFX.bootCue(); }
   },
-  // each check line: a click transient plus a pitched blip that climbs
+
+  // Lines ride on top of the cue, so these stay almost subliminal.
   bootTick(i){
-    air({ dur:0.05, vol:0.02, from:2400, to:5200, q:2, space:0.3 });
-    voice({ freq:520 + i * 62, to:640 + i * 62, dur:0.13, type:'square', vol:0.022, cut:3200, q:4, space:0.55 });
-    voice({ freq:(520 + i * 62) * 2, dur:0.08, type:'sine', vol:0.012, delay:0.02, space:0.7 });
+    if(bootUsedFile) return;
+    voice({ freq:1400 + i * 90, dur:0.03, type:'square', vol:0.008, cut:8000, space:0.5,
+            pan:(i % 2 ? 0.3 : -0.3) });
   },
-  // handover: a rising sweep resolving into a wide major chord
-  bootDone(){
-    air({ dur:0.7, vol:0.03, from:400, to:9000, q:0.8, space:0.9 });
-    voice({ freq:110, to:440, dur:0.7, type:'sawtooth', vol:0.05, cut:600, cutTo:5000, q:8, space:0.6 });
-    chord([261.63, 392, 523.25, 659.25, 783.99], { delay:0.42, stagger:0.05, v:{ dur:2.2, vol:0.03 } });
-  },
+  bootDone(){ /* the peak lives inside the cue / recording */ },
+
   success(){
     voice({ freq:523.25, to:784, dur:0.24, type:'triangle', vol:0.05, cut:4800, space:0.7 });
     voice({ freq:1046.5, dur:0.5, type:'sine', vol:0.025, delay:0.12, space:1 });

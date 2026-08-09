@@ -686,6 +686,10 @@
   .boot-line span:last-child{ color:var(--amber); font-weight:700; letter-spacing:.08em; }
   .boot-line.final span:last-child{ color: var(--ok); }
   @keyframes bootLine{ from{ opacity:0; transform:translateX(-8px); } to{ opacity:1; transform:none; } }
+  .boot-core.surge .boot-ring b{ animation: bootSurge .7s cubic-bezier(.2,.8,.3,1); }
+  .boot-core.surge .boot-title{ animation: bootTitleSurge .7s ease; }
+  @keyframes bootSurge{ 0%{ transform:scale(1);} 35%{ transform:scale(1.5); filter:brightness(1.7);} 100%{ transform:scale(1);} }
+  @keyframes bootTitleSurge{ 0%{ letter-spacing:.3em;} 40%{ letter-spacing:.46em; text-shadow:0 0 42px var(--amber);} 100%{ letter-spacing:.3em;} }
   .boot-skip{ color:var(--muted); font-size:0.66rem; letter-spacing:0.16em; opacity:0.45; z-index:2; }
 
   /* Panels fade up when the HUD engages */
