@@ -831,8 +831,8 @@ const WAKE_WORDS = ['hey jarvis', 'hei jarvis', 'ei jarvis', 'hey darvis', 'hey 
 const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 
 const VOICE = {
-  supported: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
-  rec: null, state: 'off', lang: 'en-US', active: false,
+  supported: !!(window.MediaRecorder && navigator.mediaDevices?.getUserMedia),
+  state: 'off', lang: 'en-US', active: false,
   conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
 };
 
@@ -859,10 +859,10 @@ function setVoiceState(s, detail){
 }
 
 // --- microphone level, for the reactive orb ---
-async function startMicMeter(){
+async function startMicMeter(stream){
   try{
     const ctx = ac(); if(!ctx || VOICE.analyser) return;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    if(!stream) stream = await navigator.mediaDevices.getUserMedia({ audio:true });
     const src = ctx.createMediaStreamSource(stream);
     const an = ctx.createAnalyser(); an.fftSize = 512; an.smoothingTimeConstant = 0.75;
     src.connect(an);
@@ -925,81 +925,174 @@ function primeVoices(){
 }
 
 // --- speech synthesis ---
+// Chrome has two long-standing quirks here: speak() right after cancel() can
+// produce silence, and the queue quietly pauses itself. Hence the delay, the
+// resume keep-alive, and a watchdog that retries without a forced voice.
+let ttsKeepAlive = null;
 function speak(text, lang){
   return new Promise(resolve => {
-    if(!window.speechSynthesis || settings.voiceMuted){ resolve(); return; }
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = lang || VOICE.lang;
-    const voices = speechSynthesis.getVoices();
-    const saved = settings.voiceName && voices.find(v => v.name === settings.voiceName && v.lang.startsWith(u.lang.slice(0,2)));
-    // JARVIS is a measured British male, so prefer en-GB male voices, then any
-    // male, then anything matching the language.
-    const prefer = [
-      v => v.lang === 'en-GB' && /male|daniel|arthur|george|oliver/i.test(v.name),
-      v => v.lang === 'en-GB',
-      v => v.lang === u.lang && /male|luciana|felipe|ricardo|daniel/i.test(v.name),
-      v => v.lang === u.lang && /google|natural|premium/i.test(v.name),
-      v => v.lang === u.lang,
-      v => v.lang.startsWith(u.lang.slice(0,2)),
-    ];
-    let pick = saved;
-    if(!pick && u.lang.startsWith('pt')) prefer.shift(), prefer.shift();   // don't force English on Portuguese
-    for(const f of prefer){ if(pick) break; pick = voices.find(f); }
-    if(pick) u.voice = pick;
-    u.rate = 0.98; u.pitch = 0.82;      // lower and unhurried
-    u.onend = resolve; u.onerror = resolve;
-    setVoiceState('speaking');
-    speechSynthesis.speak(u);
+    if(!window.speechSynthesis || settings.voiceMuted || !text){ resolve(); return; }
+    try{ speechSynthesis.cancel(); }catch(e){}
+
+    const say = (forceDefault) => {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = lang || VOICE.lang;
+      const voices = speechSynthesis.getVoices();
+      if(!forceDefault && voices.length){
+        const saved = settings.voiceName && voices.find(v => v.name === settings.voiceName);
+        const pt = u.lang.startsWith('pt');
+        const prefer = pt ? [
+          v => v.lang.startsWith('pt') && /google|natural|premium/i.test(v.name),
+          v => v.lang.startsWith('pt'),
+        ] : [
+          v => v.lang === 'en-GB' && /male|daniel|arthur|george|oliver|ryan/i.test(v.name),
+          v => v.lang === 'en-GB',
+          v => v.lang.startsWith('en') && /google|natural|premium/i.test(v.name),
+          v => v.lang.startsWith('en'),
+        ];
+        let pick = saved;
+        for(const f of prefer){ if(pick) break; pick = voices.find(f); }
+        if(pick){ u.voice = pick; u.lang = pick.lang; }
+      }
+      u.rate = 0.98; u.pitch = 0.84;
+
+      let started = false;
+      u.onstart = () => {
+        started = true;
+        setVoiceState('speaking');
+        clearInterval(ttsKeepAlive);
+        // resume() every few seconds or Chrome stalls on longer sentences
+        ttsKeepAlive = setInterval(() => { try{ speechSynthesis.resume(); }catch(e){} }, 4000);
+      };
+      const done = () => { clearInterval(ttsKeepAlive); resolve(); };
+      u.onend = done;
+      u.onerror = done;
+
+      try{ speechSynthesis.resume(); }catch(e){}
+      speechSynthesis.speak(u);
+
+      // if nothing starts, retry once with the platform default voice
+      setTimeout(() => {
+        if(!started && !forceDefault){
+          try{ speechSynthesis.cancel(); }catch(e){}
+          say(true);
+        } else if(!started){ resolve(); }
+      }, 900);
+    };
+
+    setTimeout(() => say(false), 130);   // breathing room after cancel()
   });
 }
 
-// --- recognition ---
-function buildRecognition(){
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!SR) return null;
-  const rec = new SR();
-  rec.continuous = true;
-  rec.interimResults = true;
-  rec.lang = VOICE.lang;
+// --- capture: local voice-activity detection + Groq Whisper -----------
+// The browser's own recogniser was unreliable, so speech is detected locally
+// (RMS on the mic) and only the resulting clip is sent for transcription.
+// Whisper also detects the language itself, which is how English and
+// Portuguese switch with no setting.
+const VAD = {
+  speakThresh: 0.055,     // rises above this = speech
+  silenceThresh: 0.032,   // falls below this = pause
+  minSpeechMs: 260,       // ignore coughs and clicks
+  silenceMs: 850,         // pause that ends an utterance
+  maxClipMs: 14000,       // hard stop so nothing runs away
+};
+let recorder = null, chunks = [], speaking = false, speechStart = 0, lastLoud = 0, clipTimer = null;
 
-  rec.onresult = (e) => {
-    let finalTxt = '';
-    for(let i = e.resultIndex; i < e.results.length; i++){
-      if(e.results[i].isFinal) finalTxt += e.results[i][0].transcript;
-    }
-    if(!finalTxt.trim()) return;
-    const said = finalTxt.trim();
-    const low = said.toLowerCase();
+function pickMime(){
+  const opts = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+  return opts.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+}
 
-    if(!VOICE.conversing){
-      const hit = WAKE_WORDS.find(w => low.includes(w));
-      if(!hit) return;                                   // ignore everything else
-      const after = said.slice(low.indexOf(hit) + hit.length).replace(/^[,.\s]+/, '');
-      VOICE.conversing = true;
-      setVoiceState('wake');
-      SFX.open();
-      if(after.length > 2) handleVoiceInput(after);
-      else { setVoiceState('listening'); armFollowUp(); }
-      return;
-    }
-    handleVoiceInput(said);
-  };
+function beginClip(){
+  if(!recorder || recorder.state === 'recording') return;
+  chunks = [];
+  try{ recorder.start(); }catch(e){ return; }
+  speechStart = Date.now();
+  setVoiceState(VOICE.conversing ? 'listening' : 'wake');
+  clearTimeout(clipTimer);
+  clipTimer = setTimeout(endClip, VAD.maxClipMs);
+}
+function endClip(){
+  clearTimeout(clipTimer);
+  if(recorder && recorder.state === 'recording'){ try{ recorder.stop(); }catch(e){} }
+}
 
-  rec.onerror = (e) => {
-    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
-      setVoiceState('error', 'microphone blocked');
-      VOICE.active = false;
-    }
+async function transcribe(blob){
+  const buf = await blob.arrayBuffer();
+  let bin = '';
+  const bytes = new Uint8Array(buf);
+  for(let i = 0; i < bytes.length; i += 0x8000){
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  const r = await fetch(FN_URL + "/agenda-stt", {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ audio: btoa(bin), mime: blob.type || 'audio/webm', lang: 'auto' }),
+  });
+  if(!r.ok) throw new Error('transcription failed');
+  return r.json();
+}
+
+async function onClipReady(blob){
+  if(!VOICE.active || blob.size < 2000) { if(VOICE.active) setVoiceState(VOICE.conversing ? 'listening' : 'idle'); return; }
+  setVoiceState('thinking');
+  let said = '', detected = null;
+  try{
+    const d = await transcribe(blob);
+    said = (d.text || '').trim();
+    detected = d.language;
+  }catch(err){
+    setVoiceState(VOICE.conversing ? 'listening' : 'idle');
+    return;
+  }
+  if(!said || said.length < 2){ setVoiceState(VOICE.conversing ? 'listening' : 'idle'); return; }
+
+  // Whisper reports the language; fall back to the text heuristic if absent.
+  VOICE.lang = detected && detected.startsWith('pt') ? 'pt-BR'
+             : detected && detected.startsWith('en') ? 'en-US'
+             : detectLang(said);
+
+  const low = said.toLowerCase();
+  if(!VOICE.conversing){
+    const hit = WAKE_WORDS.find(w => low.includes(w));
+    if(!hit){ setVoiceState('idle'); return; }
+    VOICE.conversing = true;
+    const after = said.slice(low.indexOf(hit) + hit.length).replace(/^[,.\s!?]+/, '');
+    SFX.open();
+    if(after.length > 2) return handleVoiceInput(after);
+    setVoiceState('listening'); armFollowUp();
+    return;
+  }
+  handleVoiceInput(said);
+}
+
+function startCapture(stream){
+  const mime = pickMime();
+  if(!window.MediaRecorder){ setVoiceState('error', 'recording unsupported'); return; }
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  recorder.ondataavailable = ev => { if(ev.data && ev.data.size) chunks.push(ev.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+    chunks = [];
+    onClipReady(blob);
   };
-  rec.onend = () => {
-    // the API stops on its own periodically; restart while voice mode is on
-    if(VOICE.active && !VOICE.restarting){
-      VOICE.restarting = true;
-      setTimeout(() => { VOICE.restarting = false; try{ rec.start(); }catch(e){} }, 250);
-    }
-  };
-  return rec;
+}
+
+// the VAD loop rides on the same analyser that drives the orb
+function vadTick(){
+  if(!VOICE.active) return;
+  const now = Date.now();
+  const lvl = VOICE.level;
+  if(VOICE.state === 'speaking' || VOICE.state === 'thinking'){
+    speaking = false;                       // never record our own voice
+  } else if(lvl > VAD.speakThresh){
+    lastLoud = now;
+    if(!speaking){ speaking = true; beginClip(); }
+  } else if(speaking && lvl < VAD.silenceThresh && now - lastLoud > VAD.silenceMs){
+    speaking = false;
+    if(now - speechStart > VAD.minSpeechMs) endClip();
+    else { clearTimeout(clipTimer); try{ recorder.stop(); }catch(e){} chunks = []; }
+  }
+  requestAnimationFrame(vadTick);
 }
 
 function armFollowUp(){
@@ -1012,11 +1105,6 @@ function armFollowUp(){
 
 async function handleVoiceInput(text){
   clearTimeout(VOICE.followTimer);
-  const lang = detectLang(text);
-  if(lang !== VOICE.lang){
-    VOICE.lang = lang;
-    if(VOICE.rec){ try{ VOICE.rec.stop(); }catch(e){} VOICE.rec.lang = lang; }
-  }
   addAiMessage('user', text);
   setVoiceState('thinking');
   try{
@@ -1030,7 +1118,7 @@ async function handleVoiceInput(text){
 
 async function startVoice(){
   if(!VOICE.supported){
-    alert('This browser has no speech recognition — Chrome or Edge on desktop is required. The typed assistant still works.');
+    alert('This browser cannot record audio. Chrome, Edge or Safari is required. The typed assistant still works.');
     return;
   }
   document.getElementById('voice-panel')?.classList.add('open');
@@ -1044,17 +1132,19 @@ async function startVoice(){
     return;
   }
   VOICE.active = true;
-  VOICE.rec = VOICE.rec || buildRecognition();
-  try{ VOICE.rec.start(); }
-  catch(e){ try{ VOICE.rec.stop(); setTimeout(() => VOICE.rec.start(), 300); }catch(e2){} }
-  startMicMeter();
+  let stream;
+  try{ stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } }); }
+  catch(e){ setVoiceState('error', 'microphone blocked'); return; }
+  startMicMeter(stream);
+  startCapture(stream);
   primeVoices();
   setVoiceState('idle');
+  requestAnimationFrame(vadTick);
 }
 function stopVoice(){
   VOICE.active = false; VOICE.conversing = false;
-  clearTimeout(VOICE.followTimer);
-  try{ VOICE.rec && VOICE.rec.stop(); }catch(e){}
+  clearTimeout(VOICE.followTimer); clearTimeout(clipTimer);
+  try{ recorder && recorder.state === 'recording' && recorder.stop(); }catch(e){}
   speechSynthesis?.cancel();
   setVoiceState('off');
   document.getElementById('voice-panel')?.classList.remove('open');
