@@ -726,7 +726,16 @@ function openModal(id, presetDate){
   document.getElementById('time-suggestion-text').textContent = '';
 
   // Notes stay editable until the case is swiped right (resolved successfully).
-  const locked = c && c.status === 'success';
+  // A finished case is a record of what happened — it should not be rewritten.
+  const closed = c && statusRank(c.status) === 1;
+  const locked = closed;
+  ['f-titulo','f-ticket','f-phone','f-horario','f-horario-fim','f-date','f-notas','f-tags-input']
+    .forEach(id => { const el = document.getElementById(id); if(el){ el.readOnly = !!closed; el.disabled = !!closed; } });
+  document.getElementById('f-prioridade-wrap')?.classList.toggle('is-locked', !!closed);
+  document.getElementById('f-bloco-wrap')?.classList.toggle('is-locked', !!closed);
+  document.getElementById('save-btn').style.display = closed ? 'none' : 'inline-block';
+  document.getElementById('f-actual-end').disabled = false;   // still correctable
+  document.getElementById('closed-banner').style.display = closed ? 'flex' : 'none';
   document.getElementById('notes-editable-wrap').style.display = locked ? 'none' : 'block';
   document.getElementById('notes-locked-hint').style.display = locked ? 'block' : 'none';
 
@@ -905,6 +914,16 @@ function drawOrb(){
   ctx2.beginPath(); ctx2.arc(cx, cy, base * (0.8 + lvl * 0.45), 0, Math.PI*2); ctx2.fill();
 }
 
+// Chrome populates getVoices() asynchronously — warm it up or the first
+// utterance falls back to a default voice, or plays with none at all.
+let voicesReady = false;
+function primeVoices(){
+  if(!window.speechSynthesis) return;
+  const load = () => { voicesReady = speechSynthesis.getVoices().length > 0; renderVoiceList(); };
+  load();
+  speechSynthesis.onvoiceschanged = load;
+}
+
 // --- speech synthesis ---
 function speak(text, lang){
   return new Promise(resolve => {
@@ -913,11 +932,22 @@ function speak(text, lang){
     const u = new SpeechSynthesisUtterance(text);
     u.lang = lang || VOICE.lang;
     const voices = speechSynthesis.getVoices();
-    const pick = voices.find(v => v.lang === u.lang && /google|natural|premium/i.test(v.name))
-              || voices.find(v => v.lang === u.lang)
-              || voices.find(v => v.lang.startsWith(u.lang.slice(0,2)));
+    const saved = settings.voiceName && voices.find(v => v.name === settings.voiceName && v.lang.startsWith(u.lang.slice(0,2)));
+    // JARVIS is a measured British male, so prefer en-GB male voices, then any
+    // male, then anything matching the language.
+    const prefer = [
+      v => v.lang === 'en-GB' && /male|daniel|arthur|george|oliver/i.test(v.name),
+      v => v.lang === 'en-GB',
+      v => v.lang === u.lang && /male|luciana|felipe|ricardo|daniel/i.test(v.name),
+      v => v.lang === u.lang && /google|natural|premium/i.test(v.name),
+      v => v.lang === u.lang,
+      v => v.lang.startsWith(u.lang.slice(0,2)),
+    ];
+    let pick = saved;
+    if(!pick && u.lang.startsWith('pt')) prefer.shift(), prefer.shift();   // don't force English on Portuguese
+    for(const f of prefer){ if(pick) break; pick = voices.find(f); }
     if(pick) u.voice = pick;
-    u.rate = 1.04; u.pitch = 0.96;
+    u.rate = 0.98; u.pitch = 0.82;      // lower and unhurried
     u.onend = resolve; u.onerror = resolve;
     setVoiceState('speaking');
     speechSynthesis.speak(u);
@@ -998,17 +1028,28 @@ async function handleVoiceInput(text){
   if(VOICE.active){ setVoiceState('listening'); armFollowUp(); }
 }
 
-function startVoice(){
+async function startVoice(){
   if(!VOICE.supported){
-    alert('This browser has no speech recognition. Chrome or Edge on desktop is required.');
+    alert('This browser has no speech recognition — Chrome or Edge on desktop is required. The typed assistant still works.');
+    return;
+  }
+  document.getElementById('voice-panel')?.classList.add('open');
+  setVoiceState('thinking');
+  // Explicit permission first: without it Chrome can fail silently and never fire an event.
+  try{
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+  }catch(err){
+    setVoiceState('error', 'microphone blocked');
+    alert('Microphone access was refused. Allow it in the padlock menu beside the address bar, then try again.');
     return;
   }
   VOICE.active = true;
   VOICE.rec = VOICE.rec || buildRecognition();
-  try{ VOICE.rec.start(); }catch(e){}
+  try{ VOICE.rec.start(); }
+  catch(e){ try{ VOICE.rec.stop(); setTimeout(() => VOICE.rec.start(), 300); }catch(e2){} }
   startMicMeter();
+  primeVoices();
   setVoiceState('idle');
-  document.getElementById('voice-panel')?.classList.add('open');
 }
 function stopVoice(){
   VOICE.active = false; VOICE.conversing = false;
@@ -1022,6 +1063,18 @@ document.getElementById('voice-toggle')?.addEventListener('click', () => {
   VOICE.active ? stopVoice() : startVoice();
 });
 document.getElementById('voice-close')?.addEventListener('click', stopVoice);
+function renderVoiceList(){
+  const sel = document.getElementById('voice-select');
+  if(!sel || !window.speechSynthesis) return;
+  const voices = speechSynthesis.getVoices();
+  if(!voices.length) return;
+  sel.innerHTML = '<option value="">Automatic voice</option>' +
+    voices.map(v => `<option value="${v.name}"${settings.voiceName === v.name ? ' selected' : ''}>${v.name} · ${v.lang}</option>`).join('');
+}
+document.getElementById('voice-select')?.addEventListener('change', (e) => {
+  settings.voiceName = e.target.value || null; saveSettings();
+  speak(settings.voiceName ? 'Voice set.' : 'Automatic voice.', VOICE.lang);
+});
 document.getElementById('voice-mute')?.addEventListener('click', () => {
   settings.voiceMuted = !settings.voiceMuted; saveSettings();
   if(settings.voiceMuted) speechSynthesis?.cancel();
@@ -1779,6 +1832,106 @@ function tagChipsHtml(tags){
   return `<div class="nb-grid-card-tags">${tags.map(t => `<span class="chip tag"><span class="tag-hash">#</span>${escapeHtml(t)}</span>`).join('')}</div>`;
 }
 
+
+// ===== Card colour + drag-to-arrange =================================
+const CARD_COLORS = [
+  ['', 'Default'], ['#e15b4c','Red'], ['#f2a71b','Amber'], ['#4caf82','Green'],
+  ['#4f9fd8','Blue'], ['#7c6cf5','Indigo'], ['#d391c9','Pink'], ['#6d7f92','Slate'],
+];
+let dragCard = null, dragHoldTimer = null, dragKind = null;
+
+function applyCardColor(el, color){
+  if(color){
+    el.style.borderColor = color;
+    el.style.boxShadow = `inset 3px 0 0 ${color}`;
+    el.style.background = `linear-gradient(160deg, ${color}22, var(--panel) 62%, var(--bg))`;
+  }
+}
+
+function openColorPicker(kind, id, anchor){
+  document.querySelectorAll('.color-pop').forEach(p => p.remove());
+  const pop = document.createElement('div');
+  pop.className = 'color-pop';
+  CARD_COLORS.forEach(([hex, name]) => {
+    const b = document.createElement('button');
+    b.title = name;
+    b.style.background = hex || 'var(--panel-2)';
+    if(!hex) b.textContent = '∅';
+    b.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      pop.remove();
+      try{
+        if(kind === 'notebook'){
+          const up = await updateNotebookApi(id, { color: hex || null });
+          const i = notebooks.findIndex(x => x.id === id); if(i>-1) notebooks[i] = up;
+        } else {
+          const up = await updateNoteApi(id, { color: hex || null });
+          const i = notes.findIndex(x => x.id === id); if(i>-1) notes[i] = up;
+        }
+        renderNotebooksGrid(); SFX.tick();
+      }catch(err){ alert(err.message); }
+    });
+    pop.appendChild(b);
+  });
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.min(r.left, window.innerWidth - 190) + 'px';
+  pop.style.top = (r.bottom + 6) + 'px';
+  document.body.appendChild(pop);
+  setTimeout(() => document.addEventListener('click', () => pop.remove(), { once:true }), 0);
+}
+
+async function updateNotebookApi(id, payload){
+  const r = await fetch(FN_URL + "/agenda-notebooks", { method:"PUT", headers: authHeaders(), body: JSON.stringify({ id, ...payload }) });
+  if(!r.ok) throw new Error((await r.json()).error || 'Error saving notebook.');
+  return r.json();
+}
+
+// Press and hold to pick a card up, then drag it over its neighbours.
+function makeDraggable(el, kind, id){
+  el.addEventListener('pointerdown', (e) => {
+    if(e.target.closest('.card-tools')) return;
+    dragHoldTimer = setTimeout(() => {
+      dragCard = el; dragKind = kind;
+      el.classList.add('dragging');
+      el.setPointerCapture?.(e.pointerId);
+      SFX.tick();
+    }, 380);                                   // hold, so a tap still opens it
+  });
+  el.addEventListener('pointerup', () => clearTimeout(dragHoldTimer));
+  el.addEventListener('pointercancel', () => clearTimeout(dragHoldTimer));
+  el.addEventListener('pointermove', (e) => {
+    if(!dragCard || dragCard !== el) return;
+    const grid = document.getElementById('notebooks-grid');
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('.nb-grid-card');
+    if(over && over !== el && over.parentElement === grid){
+      const cards = [...grid.children];
+      cards.indexOf(over) < cards.indexOf(el) ? grid.insertBefore(el, over) : grid.insertBefore(el, over.nextSibling);
+    }
+  });
+  el.addEventListener('lostpointercapture', persistOrder);
+  el.addEventListener('pointerup', persistOrder);
+}
+
+async function persistOrder(){
+  if(!dragCard) return;
+  const grid = document.getElementById('notebooks-grid');
+  dragCard.classList.remove('dragging');
+  const kind = dragKind;
+  dragCard = null; dragKind = null;
+  const ids = [...grid.children].map(el => el.dataset.id).filter(Boolean);
+  try{
+    for(let i = 0; i < ids.length; i++){
+      if(kind === 'notebook'){
+        const up = await updateNotebookApi(ids[i], { position: i });
+        const j = notebooks.findIndex(x => x.id === ids[i]); if(j>-1) notebooks[j] = up;
+      } else {
+        const up = await updateNoteApi(ids[i], { position: i });
+        const j = notes.findIndex(x => x.id === ids[i]); if(j>-1) notes[j] = up;
+      }
+    }
+  }catch(e){ /* order is cosmetic; a failure just leaves it as it was */ }
+}
+
 function renderNotebooksGrid(){
   const grid = document.getElementById('notebooks-grid');
   const crumb = document.getElementById('notebooks-breadcrumb');
@@ -1826,7 +1979,7 @@ function renderNotebooksGrid(){
     crumb.classList.remove('hidden');
     document.getElementById('notebooks-current-title').textContent = folder.title;
 
-    const folderNotes = notes.filter(n => n.notebook_id === activeFolderId);
+    const folderNotes = notes.filter(n => n.notebook_id === activeFolderId).sort((a,b) => (a.position||0) - (b.position||0));
     if(folderNotes.length === 0){
       grid.innerHTML = '<div class="nb-grid-empty">No notes in this notebook yet — add one to get started.</div>';
       return;
@@ -1843,7 +1996,12 @@ function renderNotebooksGrid(){
         <div class="nb-grid-card-preview">${previewBody(text, hasImg, thumb)}</div>
         ${tagChipsHtml(n.tags)}
       `;
-      card.addEventListener('click', () => openNote(n.id));
+      card.dataset.id = n.id;
+      applyCardColor(card, n.color);
+      card.insertAdjacentHTML('beforeend', '<span class="card-tools"><button class="card-color" title="Colour">◑</button></span>');
+      card.querySelector('.card-color').addEventListener('click', (ev) => { ev.stopPropagation(); openColorPicker('note', n.id, ev.target); });
+      makeDraggable(card, 'note', n.id);
+      card.addEventListener('click', () => { if(!dragCard) openNote(n.id); });
       grid.appendChild(card);
     });
     return;
@@ -1855,7 +2013,7 @@ function renderNotebooksGrid(){
     grid.innerHTML = '<div class="nb-grid-empty">No notebooks yet — create one to get started.</div>';
     return;
   }
-  notebooks.forEach(nb => {
+  [...notebooks].sort((a,b) => (a.position||0) - (b.position||0)).forEach(nb => {
     const nbNotes = notes.filter(n => n.notebook_id === nb.id);
     const latest = nbNotes[0]; // notes are already sorted by updated_at desc
     const { text, hasImg, thumb } = plainTextPreview(latest ? latest.content : '');
@@ -1868,7 +2026,12 @@ function renderNotebooksGrid(){
       </div>
       <div class="nb-grid-card-preview">${latest ? previewBody(text, hasImg, thumb) : 'Empty'}</div>
     `;
-    card.addEventListener('click', () => { activeFolderId = nb.id; renderNotebooksGrid(); });
+    card.dataset.id = nb.id;
+    applyCardColor(card, nb.color);
+    card.insertAdjacentHTML('beforeend', '<span class="card-tools"><button class="card-color" title="Colour">◑</button></span>');
+    card.querySelector('.card-color').addEventListener('click', (ev) => { ev.stopPropagation(); openColorPicker('notebook', nb.id, ev.target); });
+    makeDraggable(card, 'notebook', nb.id);
+    card.addEventListener('click', () => { if(!dragCard){ activeFolderId = nb.id; renderNotebooksGrid(); } });
     grid.appendChild(card);
   });
 }
@@ -1877,6 +2040,22 @@ document.getElementById('notebook-search').addEventListener('input', (e) => {
   notebookSearchQuery = e.target.value.trim();
   renderNotebooksGrid();
 });
+
+// Search stays a single icon until asked for, so the toolbar reads clean.
+const searchShell = document.getElementById('search-shell');
+document.getElementById('search-btn')?.addEventListener('click', () => {
+  const open = searchShell.classList.toggle('open');
+  if(open) setTimeout(() => document.getElementById('notebook-search').focus(), 120);
+  else {
+    document.getElementById('notebook-search').value = '';
+    notebookSearchQuery = ''; renderNotebooksGrid();
+  }
+  SFX.tick();
+});
+document.getElementById('notebook-search')?.addEventListener('keydown', (e) => {
+  if(e.key === 'Escape'){ searchShell.classList.remove('open'); e.target.value = ''; notebookSearchQuery=''; renderNotebooksGrid(); }
+});
+
 document.getElementById('notebooks-back-btn').addEventListener('click', () => { activeFolderId = null; renderNotebooksGrid(); });
 document.getElementById('delete-notebook-btn').addEventListener('click', async () => {
   if(!activeFolderId) return;

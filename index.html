@@ -255,7 +255,12 @@
 
   <div id="view-notebooks" class="hidden">
     <div class="notebooks-toolbar">
-      <input type="text" id="notebook-search" placeholder="Search notes...">
+      <div class="search-shell" id="search-shell">
+        <button class="search-btn" id="search-btn" aria-label="Search notes">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+        </button>
+        <input type="text" id="notebook-search" placeholder="Search notes…">
+      </div>
       <button id="new-notebook-btn">+ New notebook</button>
     </div>
     <div class="notebooks-breadcrumb hidden" id="notebooks-breadcrumb">
@@ -356,6 +361,10 @@
 <div class="modal-backdrop" id="modal-backdrop">
   <div class="modal">
     <h2 id="modal-title">New case</h2>
+    <div class="closed-banner" id="closed-banner" style="display:none">
+      <svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      <span>This case is closed — kept as a record and no longer editable.</span>
+    </div>
     <input type="hidden" id="case-id">
     <div class="field"><label>Client / subject</label><input type="text" id="f-titulo" placeholder="e.g. Integrator XPTO — inverter won't connect"></div>
     <div class="field-row">
@@ -429,7 +438,7 @@
         <textarea id="f-notas" placeholder="Add a note about this case..."></textarea>
         <button type="button" class="btn-ghost" id="add-note-entry-btn" style="width:100%; margin-top:8px;">+ Add to history</button>
       </div>
-      <p class="hint" id="notes-locked-hint" style="display:none;">Notes are locked — this case was resolved successfully.</p>
+      <p class="hint" id="notes-locked-hint" style="display:none;">Notes are locked — this case is closed.</p>
     </div>
     <div class="modal-actions">
       <button class="btn-danger" id="delete-btn" style="display:none">Delete</button>
@@ -475,6 +484,7 @@
   <div class="voice-orb" id="voice-orb" data-state="off"><canvas id="voice-canvas"></canvas></div>
   <div class="voice-state" id="voice-state">voice off</div>
   <div class="voice-hint">Say <b>“Hey Jarvis”</b> — then keep talking, no need to repeat it.</div>
+  <select class="voice-select" id="voice-select" title="Speaking voice"></select>
   <button class="btn-ghost voice-mute" id="voice-mute">Mute replies</button>
 </div>
 
