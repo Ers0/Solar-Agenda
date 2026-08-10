@@ -656,6 +656,7 @@
     border:1px solid var(--line); background: linear-gradient(150deg, var(--panel-2), var(--panel)); }
   .src-kind{ font-family:"JetBrains Mono",monospace; font-size:.56rem; letter-spacing:.08em;
     padding:2px 6px; border-radius:5px; background:var(--bg); color:var(--muted); flex:0 0 auto; }
+  .src-card.mem .src-kind{ color:var(--amber); }
   .src-card.kb .src-kind{ color:var(--accent3); } .src-card.web .src-kind{ color:var(--accent2); }
   .src-label{ font-size:.74rem; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 

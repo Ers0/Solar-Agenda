@@ -1426,6 +1426,27 @@ const AI_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'remember',
+      description: "Store a fact the user explicitly asked you to remember ('remember that...', 'lembre que...'). Never on your own initiative, and never passwords, keys, tokens or card numbers.",
+      parameters: { type: 'object',
+        properties: { content: { type: 'string', description: 'The fact, as a short standalone sentence.' } },
+        required: ['content'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'forget',
+      description: "Delete a stored memory the user asks you to forget. If several match you will be told, and must ask which one. Never delete several at once.",
+      parameters: { type: 'object',
+        properties: { query: { type:'string', description:'What the user wants forgotten.' },
+                      id: { type:'string', description:'Exact memory id once the user has chosen.' } },
+        required: ['query'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'web_search',
       description: "Search the public web for current information, news, product specs, error codes or anything not present in the user's own data. Do not use it for the user's cases, notes or schedule — those are in the snapshot.",
       parameters: {
@@ -1767,6 +1788,76 @@ const SFX = {
   },
 };
 
+
+// ===== MemoryProvider ================================================
+// Explicit, user-requested memories. Deliberately NOT merged with the
+// knowledge base (reference material) or settings (device preferences) —
+// three different lifetimes, three different retrieval rules.
+const SECRET_RE = [
+  /\b(password|passwd|senha)\b\s*(is|:|=)/i,
+  /\b(api[\s_-]?key|secret[\s_-]?key|access[\s_-]?token|bearer|chave)\b/i,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bssh-(rsa|ed25519)\b/,
+  /\b(?:\d[ -]*?){13,16}\b/,
+  /\b(cvv|cvc)\b\s*(is|:|=)?\s*\d{3,4}/i,
+  /\bsk-[A-Za-z0-9]{16,}/, /\bgsk_[A-Za-z0-9]{20,}/,
+];
+function looksLikeSecret(t){ return SECRET_RE.some(r => r.test(String(t || ''))); }
+
+const Memory = {
+  cache: null,
+  async all(force){
+    if(this.cache && !force) return this.cache;
+    try{
+      const r = await fetch(FN_URL + "/agenda-memory", { headers: authHeaders() });
+      if(!r.ok) throw new Error('memory unavailable');
+      const d = await r.json();
+      this.cache = await Promise.all((d.memories || []).map(async m => ({ ...m, content: await decStr(m.content) })));
+    }catch(e){ this.cache = this.cache || []; }
+    return this.cache;
+  },
+  async save(text){
+    const content = String(text || '').trim();
+    if(!content) return { ok:false, reason:'empty' };
+    if(looksLikeSecret(content)) return { ok:false, reason:'secret' };
+    const keywords = content.toLowerCase().replace(/[^\p{L}\s]/gu, ' ')
+      .split(/\s+/).filter(w => w.length > 3).slice(0, 24).join(' ');
+    const r = await fetch(FN_URL + "/agenda-memory", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ content: await encStr(content), keywords }),
+    });
+    if(!r.ok){
+      const d = await r.json().catch(() => ({}));
+      return { ok:false, reason: d.code === 'secret_refused' ? 'secret' : (d.code || 'error') };
+    }
+    const d = await r.json();
+    this.cache = [{ ...d.memory, content }, ...(this.cache || [])];
+    return { ok:true, memory: { ...d.memory, content } };
+  },
+  async remove(id){
+    const r = await fetch(FN_URL + "/agenda-memory", {
+      method:'DELETE', headers: authHeaders(), body: JSON.stringify({ id }),
+    });
+    if(!r.ok) return false;
+    this.cache = (this.cache || []).filter(m => m.id !== id);
+    return true;
+  },
+  async search(query, limit = 5){
+    const all = await this.all();
+    if(!all.length) return [];
+    const words = String(query || '').toLowerCase().split(/\W+/).filter(w => w.length > 3);
+    if(!words.length) return [];
+    return all.map(m => {
+      const hay = (m.content + ' ' + (m.keywords || '')).toLowerCase();
+      let score = 0;
+      words.forEach(w => { if(hay.includes(w)) score += 1; });
+      return { m, score };
+    }).filter(x => x.score > 0).sort((a,b) => b.score - a.score)
+      .slice(0, limit).map(x => x.m);
+  },
+};
+let lastMemHits = [];
+
 // ===== Knowledge base ================================================
 // Loaded from /kb.json at the site root, with an optional override pasted
 // in Settings. Entries are keyword-scored and the best matches are handed
@@ -1944,6 +2035,10 @@ function buildAiSystemPrompt(spoken){
       + (w.wettest ? ` Heaviest rain in Brazil: ${w.wettest.n} (${w.wettest.v.toFixed(0)} mm). Strongest wind: ${w.windiest.n} (${Math.round(w.windiest.v)} km/h).` : '')
     : 'Weather: not loaded yet.';
 
+  const memBlock = lastMemHits.length
+    ? 'Things you were asked to remember (relevant ones only):\n' + lastMemHits.map(m => '- ' + m.content).join('\n')
+    : 'No stored memories match this request.';
+
   // Only the matching entries are sent, never the whole knowledge base.
   lastKbHits = kbSearch(lastUserQuestion || '');
   const kbBlock = lastKbHits.length
@@ -1967,6 +2062,7 @@ function buildAiSystemPrompt(spoken){
     nbLines,
     wxLine,
     kbBlock,
+    memBlock,
     "=== END SNAPSHOT ===",
     "",
     "RULES:",
@@ -1974,6 +2070,7 @@ function buildAiSystemPrompt(spoken){
     "2. Only describe what appears above. If it is not there, say you have no record of it.",
     "3. Tools are for explicit creation requests only. Remarks about how the day went are not requests. Never create a record to illustrate a point, and never auto-complete one you just created.",
     "4. Weather comes from the block above. Vinhedo and Campinas are ~15 km apart, so the same figures apply — say so rather than refusing.",
+    "5b. MEMORY: the memory block holds facts the user explicitly asked you to keep. Use them naturally. Save one only when asked outright, never volunteer. Never store credentials - say a password manager is the right place.",
     "5. Knowledge base first for technical questions, and name the entry used (e.g. 'per KB2'). web_search only for public or current information. Never invent a search result.",
     spoken
       ? "6. Do not append a confidence line when speaking."
@@ -2006,6 +2103,30 @@ async function runToolCall(call){
     cases.push(created);
     render(); renderCalendar(); renderHistory();
     return `Case created: "${created.titulo}" on ${created.case_date}.`;
+  }
+
+  if(name === 'remember'){
+    const res = await Memory.save(args.content);
+    if(res.ok) return 'Stored: "' + res.memory.content + '"';
+    if(res.reason === 'secret')
+      return "REFUSED - that looks like a credential. Tell the user plainly you will not store passwords, keys or card numbers, and that a password manager is the right place. Do not repeat the value back.";
+    if(res.reason === 'empty') return 'Nothing to store.';
+    return 'The memory store is unavailable - say you could not save it.';
+  }
+
+  if(name === 'forget'){
+    if(args.id){
+      const ok = await Memory.remove(args.id);
+      return ok ? 'Memory deleted.' : 'That memory no longer exists.';
+    }
+    const hits = await Memory.search(args.query, 6);
+    if(!hits.length) return 'No memory matches that - say you have nothing stored about it.';
+    if(hits.length > 1){
+      return 'AMBIGUOUS - several memories match. Ask which one, listing them briefly:\\n'
+        + hits.map((m, i) => (i + 1) + '. [id ' + m.id + '] ' + m.content).join('\\n');
+    }
+    const ok = await Memory.remove(hits[0].id);
+    return ok ? 'Forgotten: "' + hits[0].content + '"' : 'Could not delete that one.';
   }
 
   if(name === 'web_search'){
@@ -2085,6 +2206,7 @@ async function runAssistantTurn(text, spoken){
   }
 
   lastUserQuestion = text;
+  lastMemHits = await Memory.search(text);   // relevant only, never the whole store
   aiHistory.push({ role: 'user', content: text });
 
   // Only a bounded slice of history goes over the wire.
@@ -2144,6 +2266,7 @@ async function runAssistantTurn(text, spoken){
 
   // Knowledge entries actually fed into this turn become citable sources.
   (lastKbHits || []).forEach((e, i) => sources.push({ type:'kb', label: e.title, id: 'KB' + (i + 1) }));
+  (lastMemHits || []).forEach(m => sources.push({ type:'mem', label: String(m.content).slice(0, 60), id: 'MEM' }));
 
   const res = {
     spoken: toSpoken(display),
@@ -2167,7 +2290,7 @@ function renderTurn(res){
     s.className = 'msg-sources';
     s.innerHTML = '<div class="src-head">Sources</div>' + res.sources.map(x => `
       <div class="src-card ${x.type}">
-        <span class="src-kind">${x.type === 'web' ? 'WEB' : x.id || 'KB'}</span>
+        <span class="src-kind">${x.type === 'web' ? 'WEB' : x.type === 'mem' ? 'MEMORY' : (x.id || 'KB')}</span>
         <span class="src-label">${escapeHtml(x.label || '')}</span>
       </div>`).join('');
     bubble.appendChild(s);
