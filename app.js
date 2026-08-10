@@ -832,7 +832,7 @@ const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 
 const VOICE = {
   supported: !!(window.MediaRecorder && navigator.mediaDevices?.getUserMedia),
-  state: 'off', lang: 'en-US', active: false,
+  state: 'off', lang: 'en-US', active: false, bargeStart: 0, greeted: false,
   conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
 };
 
@@ -850,7 +850,7 @@ function setVoiceState(s, detail){
   if(orb) orb.dataset.state = s;
   if(lab){
     const map = {
-      off:'voice off', idle:'say "Hey Jarvis"', wake:'wake word detected',
+      off:'voice off', calibrating:'reading the room…', idle:'say "Hey Jarvis"', wake:'wake word detected',
       listening:'listening…', thinking:'thinking…', tool:'checking…',
       speaking:'speaking', error: detail || 'error',
     };
@@ -861,7 +861,7 @@ function setVoiceState(s, detail){
 // --- microphone level, for the reactive orb ---
 async function startMicMeter(stream){
   try{
-    const ctx = ac(); if(!ctx || VOICE.analyser) return;
+    const ctx = acAlways(); if(!ctx || VOICE.analyser) return;
     if(!stream) stream = await navigator.mediaDevices.getUserMedia({ audio:true });
     const src = ctx.createMediaStreamSource(stream);
     const an = ctx.createAnalyser(); an.fftSize = 512; an.smoothingTimeConstant = 0.75;
@@ -887,8 +887,15 @@ function drawOrb(){
   const w = cv.width = cv.clientWidth, h = cv.height = cv.clientHeight;
   ctx2.clearRect(0, 0, w, h);
   const cx = w/2, cy = h/2;
-  const speaking = VOICE.state === 'speaking';
-  const lvl = speaking ? 0.35 + Math.sin(Date.now()/110) * 0.22 : VOICE.level;
+  const speaking = VOICE.state === VSTATE.SPEAKING;
+  // Real level when we have one: mic while listening, output while speaking.
+  // Only when neither analyser is available do we fall back to a idle drift,
+  // and the caption says so.
+  const outLvl = speaking ? AudioOut.level() : null;
+  const measured = speaking ? outLvl : VOICE.level;
+  const lvl = measured !== null && measured !== undefined
+    ? measured
+    : (speaking ? 0.22 + Math.sin(Date.now()/240) * 0.06 : 0.02 + Math.sin(Date.now()/900) * 0.015);
   const base = Math.min(w, h) * 0.26;
   const css = getComputedStyle(document.documentElement);
   const c1 = css.getPropertyValue('--accent2').trim() || '#4f9fd8';
@@ -925,63 +932,170 @@ function primeVoices(){
 }
 
 // --- speech synthesis ---
-// Chrome has two long-standing quirks here: speak() right after cancel() can
-// produce silence, and the queue quietly pauses itself. Hence the delay, the
-// resume keep-alive, and a watchdog that retries without a forced voice.
-let ttsKeepAlive = null;
-function speak(text, lang){
-  return new Promise(resolve => {
-    if(!window.speechSynthesis || settings.voiceMuted || !text){ resolve(); return; }
-    try{ speechSynthesis.cancel(); }catch(e){}
+// ===== Voice state machine ===========================================
+// One owner for voice state. Nothing else sets it directly.
+const VSTATE = {
+  OFF:'off', IDLE:'idle', LISTENING:'listening', PROCESSING:'processing',
+  THINKING:'thinking', SPEAKING:'speaking', INTERRUPTED:'interrupted', ERROR:'error',
+};
 
-    const say = (forceDefault) => {
+// ===== Audio playback controller =====================================
+// Replaces speechSynthesis. One utterance at a time, always interruptible.
+const AudioOut = {
+  el: null, url: null, abort: null, playing: false,
+  srcNode: null, outAnalyser: null, outBuf: null,
+
+  // Routes playback through an analyser so the orb reacts to the actual
+  // waveform rather than pretending to.
+  _wireAnalyser(){
+    if(this.outAnalyser || !this.el) return;
+    try{
+      const ctx = acAlways(); if(!ctx) return;
+      this.srcNode = ctx.createMediaElementSource(this.el);
+      this.outAnalyser = ctx.createAnalyser();
+      this.outAnalyser.fftSize = 512;
+      this.outAnalyser.smoothingTimeConstant = 0.8;
+      this.outBuf = new Uint8Array(this.outAnalyser.frequencyBinCount);
+      this.srcNode.connect(this.outAnalyser);
+      this.outAnalyser.connect(ctx.destination);
+    }catch(e){ this.outAnalyser = null; }   // playback still works without it
+  },
+  level(){
+    if(!this.outAnalyser || !this.isPlaying()) return null;
+    this.outAnalyser.getByteTimeDomainData(this.outBuf);
+    let sum = 0;
+    for(let i = 0; i < this.outBuf.length; i++){ const v = (this.outBuf[i] - 128) / 128; sum += v * v; }
+    return Math.min(1, Math.sqrt(sum / this.outBuf.length) * 4.2);
+  },
+
+  _element(){
+    if(!this.el){
+      this.el = new Audio();
+      this.el.preload = 'auto';
+      this.el.addEventListener('ended', () => { this.playing = false; });
+      this.el.addEventListener('error', () => { this.playing = false; });
+      this._wireAnalyser();
+    }
+    return this.el;
+  },
+  isPlaying(){ return this.playing && this.el && !this.el.paused; },
+  pause(){ if(this.isPlaying()) this.el.pause(); },
+  resume(){ if(this.el && this.el.paused && this.playing) this.el.play().catch(() => {}); },
+  stop(){
+    this.playing = false;
+    try{ this.abort?.abort(); }catch(e){}
+    this.abort = null;
+    if(this.el){ try{ this.el.pause(); }catch(e){} this.el.removeAttribute('src'); this.el.load(); }
+    if(this.url){ URL.revokeObjectURL(this.url); this.url = null; }
+  },
+  interrupt(){ this.stop(); },
+
+  // Streams from the edge function and starts playing on the first chunk
+  // rather than waiting for the whole file.
+  async play(text, lang){
+    this.stop();
+    if(!text) return;
+    const a = this._element();
+    this.abort = new AbortController();
+    const r = await fetch(FN_URL + "/agenda-tts", {
+      method:'POST', headers: authHeaders(), signal: this.abort.signal,
+      body: JSON.stringify({ text, voiceId: settings.ttsVoiceId || undefined, modelId: settings.ttsModelId || undefined }),
+    });
+    if(!r.ok){
+      const d = await r.json().catch(() => ({}));
+      const err = new Error(JARVIS.errorFor(d.code)); err.code = d.code || 'unknown';
+      throw err;
+    }
+
+    // MediaSource gives true streaming; if unavailable, fall back to buffering
+    // the response and playing that instead.
+    const canStream = 'MediaSource' in window && MediaSource.isTypeSupported('audio/mpeg');
+    this.playing = true;
+
+    if(!canStream){
+      const blob = await r.blob();
+      this.url = URL.createObjectURL(blob);
+      a.src = this.url;
+      await a.play().catch(() => {});
+      return new Promise(res => { a.onended = res; a.onerror = res; });
+    }
+
+    const ms = new MediaSource();
+    this.url = URL.createObjectURL(ms);
+    a.src = this.url;
+    await new Promise(res => ms.addEventListener('sourceopen', res, { once:true }));
+    const sb = ms.addSourceBuffer('audio/mpeg');
+    const reader = r.body.getReader();
+    let started = false;
+
+    const pump = async () => {
+      for(;;){
+        const { done, value } = await reader.read();
+        if(done) break;
+        await new Promise(res => {
+          if(!sb.updating) return res();
+          sb.addEventListener('updateend', res, { once:true });
+        });
+        try{ sb.appendBuffer(value); }catch(e){ break; }
+        if(!started){ started = true; a.play().catch(() => {}); }
+      }
+      await new Promise(res => { if(!sb.updating) return res(); sb.addEventListener('updateend', res, { once:true }); });
+      try{ ms.endOfStream(); }catch(e){}
+    };
+    pump().catch(() => {});
+    return new Promise(res => { a.onended = res; a.onerror = res; });
+  },
+};
+
+// Browser speech is kept only as a stopgap when ElevenLabs is not configured,
+// so the assistant is never silently mute.
+function speakFallback(text, lang){
+  return new Promise(resolve => {
+    if(!window.speechSynthesis || !text){ resolve(); return; }
+    try{ speechSynthesis.cancel(); }catch(e){}
+    setTimeout(() => {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = lang || VOICE.lang;
       const voices = speechSynthesis.getVoices();
-      if(!forceDefault && voices.length){
-        const saved = settings.voiceName && voices.find(v => v.name === settings.voiceName);
-        const pt = u.lang.startsWith('pt');
-        const prefer = pt ? [
-          v => v.lang.startsWith('pt') && /google|natural|premium/i.test(v.name),
-          v => v.lang.startsWith('pt'),
-        ] : [
-          v => v.lang === 'en-GB' && /male|daniel|arthur|george|oliver|ryan/i.test(v.name),
-          v => v.lang === 'en-GB',
-          v => v.lang.startsWith('en') && /google|natural|premium/i.test(v.name),
-          v => v.lang.startsWith('en'),
-        ];
-        let pick = saved;
-        for(const f of prefer){ if(pick) break; pick = voices.find(f); }
-        if(pick){ u.voice = pick; u.lang = pick.lang; }
-      }
+      const pt = u.lang.startsWith('pt');
+      const pick = voices.find(v => pt ? v.lang.startsWith('pt') : (v.lang === 'en-GB' && /male|daniel|ryan|george/i.test(v.name)))
+                || voices.find(v => v.lang.startsWith(u.lang.slice(0,2)));
+      if(pick){ u.voice = pick; u.lang = pick.lang; }
       u.rate = 0.98; u.pitch = 0.84;
-
-      let started = false;
-      u.onstart = () => {
-        started = true;
-        setVoiceState('speaking');
-        clearInterval(ttsKeepAlive);
-        // resume() every few seconds or Chrome stalls on longer sentences
-        ttsKeepAlive = setInterval(() => { try{ speechSynthesis.resume(); }catch(e){} }, 4000);
-      };
-      const done = () => { clearInterval(ttsKeepAlive); resolve(); };
-      u.onend = done;
-      u.onerror = done;
-
+      u.onend = resolve; u.onerror = resolve;
       try{ speechSynthesis.resume(); }catch(e){}
       speechSynthesis.speak(u);
-
-      // if nothing starts, retry once with the platform default voice
-      setTimeout(() => {
-        if(!started && !forceDefault){
-          try{ speechSynthesis.cancel(); }catch(e){}
-          say(true);
-        } else if(!started){ resolve(); }
-      }, 900);
-    };
-
-    setTimeout(() => say(false), 130);   // breathing room after cancel()
+      setTimeout(() => { if(speechSynthesis.speaking === false) resolve(); }, 800);
+    }, 120);
   });
+}
+
+let ttsConfigured = null;
+async function probeTts(){
+  try{
+    const r = await fetch(FN_URL + "/agenda-tts", { method:'POST', headers: authHeaders(), body: JSON.stringify({ probe:true }) });
+    const d = await r.json();
+    ttsConfigured = !!d.configured;
+  }catch(e){ ttsConfigured = false; }
+  const el = document.getElementById('tts-status');
+  if(el){
+    el.textContent = ttsConfigured ? 'ElevenLabs active' : 'Not configured — using the browser voice';
+    el.className = ttsConfigured ? 'ok' : '';
+  }
+  return ttsConfigured;
+}
+
+async function speak(text, lang){
+  if(settings.voiceMuted || !text) return;
+  if(ttsConfigured === null) await probeTts();
+  setVoiceState(VSTATE.SPEAKING);
+  try{
+    if(ttsConfigured) await AudioOut.play(text, lang);
+    else await speakFallback(text, lang);
+  }catch(err){
+    if(err.code === 'tts_unconfigured'){ ttsConfigured = false; await speakFallback(text, lang); }
+    else { showHeard(err.message || 'Speech failed.'); await speakFallback(text, lang); }
+  }
 }
 
 // --- capture: local voice-activity detection + Groq Whisper -----------
@@ -990,12 +1104,30 @@ function speak(text, lang){
 // Whisper also detects the language itself, which is how English and
 // Portuguese switch with no setting.
 const VAD = {
-  speakThresh: 0.055,     // rises above this = speech
-  silenceThresh: 0.032,   // falls below this = pause
-  minSpeechMs: 260,       // ignore coughs and clicks
-  silenceMs: 850,         // pause that ends an utterance
-  maxClipMs: 14000,       // hard stop so nothing runs away
+  speakThresh: 0.055, silenceThresh: 0.032,
+  minSpeechMs: 260, silenceMs: 850,
+  maxClipMs: 8000,          // shorter: a wake phrase is never 14 seconds
+  floor: 0, calibrated: false,
 };
+// Thresholds are set from the room, not guessed. We watch the noise floor for
+// ~1.2s before arming, so a loud office and a silent one both work.
+function calibrateVAD(){
+  VAD.calibrated = false;
+  const samples = [];
+  const t0 = Date.now();
+  const step = () => {
+    samples.push(VOICE.level);
+    if(Date.now() - t0 < 1200){ requestAnimationFrame(step); return; }
+    samples.sort((a,b) => a-b);
+    const floor = samples[Math.floor(samples.length * 0.6)] || 0.01;
+    VAD.floor = floor;
+    VAD.speakThresh   = Math.max(0.045, floor * 2.4);
+    VAD.silenceThresh = Math.max(0.022, floor * 1.5);
+    VAD.calibrated = true;
+    setVoiceState('idle');
+  };
+  requestAnimationFrame(step);
+}
 let recorder = null, chunks = [], speaking = false, speechStart = 0, lastLoud = 0, clipTimer = null;
 
 function pickMime(){
@@ -1008,7 +1140,7 @@ function beginClip(){
   chunks = [];
   try{ recorder.start(); }catch(e){ return; }
   speechStart = Date.now();
-  setVoiceState(VOICE.conversing ? 'listening' : 'wake');
+  setVoiceState('listening');
   clearTimeout(clipTimer);
   clipTimer = setTimeout(endClip, VAD.maxClipMs);
 }
@@ -1034,16 +1166,18 @@ async function transcribe(blob){
 
 async function onClipReady(blob){
   if(!VOICE.active || blob.size < 2000) { if(VOICE.active) setVoiceState(VOICE.conversing ? 'listening' : 'idle'); return; }
-  setVoiceState('thinking');
+  setVoiceState(VSTATE.PROCESSING);
   let said = '', detected = null;
   try{
     const d = await transcribe(blob);
     said = (d.text || '').trim();
     detected = d.language;
   }catch(err){
+    showHeard('(could not transcribe)');
     setVoiceState(VOICE.conversing ? 'listening' : 'idle');
     return;
   }
+  showHeard(said);
   if(!said || said.length < 2){ setVoiceState(VOICE.conversing ? 'listening' : 'idle'); return; }
 
   // Whisper reports the language; fall back to the text heuristic if absent.
@@ -1056,6 +1190,7 @@ async function onClipReady(blob){
     const hit = WAKE_WORDS.find(w => low.includes(w));
     if(!hit){ setVoiceState('idle'); return; }
     VOICE.conversing = true;
+    setVoiceState('wake');
     const after = said.slice(low.indexOf(hit) + hit.length).replace(/^[,.\s!?]+/, '');
     SFX.open();
     if(after.length > 2) return handleVoiceInput(after);
@@ -1080,10 +1215,26 @@ function startCapture(stream){
 // the VAD loop rides on the same analyser that drives the orb
 function vadTick(){
   if(!VOICE.active) return;
+  if(!VAD.calibrated){ requestAnimationFrame(vadTick); return; }
   const now = Date.now();
   const lvl = VOICE.level;
-  if(VOICE.state === 'speaking' || VOICE.state === 'thinking'){
-    speaking = false;                       // never record our own voice
+  if(VOICE.state === VSTATE.SPEAKING){
+    // Barge-in: a clearly louder-than-playback voice cuts JARVIS off. The
+    // threshold is raised so echo of our own output cannot trigger it.
+    if(lvl > VAD.speakThresh * 1.9){
+      if(!VOICE.bargeStart) VOICE.bargeStart = now;
+      if(now - VOICE.bargeStart > 220){
+        AudioOut.interrupt();
+        try{ speechSynthesis.cancel(); }catch(e){}
+        VOICE.bargeStart = 0;
+        setVoiceState(VSTATE.INTERRUPTED);
+        VOICE.conversing = true;
+        setTimeout(() => { if(VOICE.active) setVoiceState(VSTATE.LISTENING); }, 220);
+      }
+    } else if(now - (VOICE.bargeStart || now) > 400){ VOICE.bargeStart = 0; }
+    speaking = false;
+  } else if(VOICE.state === VSTATE.THINKING || VOICE.state === VSTATE.PROCESSING){
+    speaking = false;                       // never record our own turn
   } else if(lvl > VAD.speakThresh){
     lastLoud = now;
     if(!speaking){ speaking = true; beginClip(); }
@@ -1108,10 +1259,13 @@ async function handleVoiceInput(text){
   addAiMessage('user', text);
   setVoiceState('thinking');
   try{
-    const reply = await runAssistantTurn(text, true);
-    await speak(reply, VOICE.lang);
+    const res = await runAssistantTurn(text, true);
+    renderTurn(res);
+    await speak(res.spoken, VOICE.lang);
   }catch(err){
-    await speak(VOICE.lang.startsWith('pt') ? 'Desculpe, algo falhou.' : 'Sorry, something went wrong.', VOICE.lang);
+    renderTurn({ display: err.message, spoken: err.message, sources: [], actions: [],
+                 metadata: { confidence: null, latency_ms: 0 } });
+    await speak(err.message, VOICE.lang);
   }
   if(VOICE.active){ setVoiceState('listening'); armFollowUp(); }
 }
@@ -1138,21 +1292,50 @@ async function startVoice(){
   startMicMeter(stream);
   startCapture(stream);
   primeVoices();
-  setVoiceState('idle');
+  setVoiceState('thinking');
+  calibrateVAD();
   requestAnimationFrame(vadTick);
 }
 function stopVoice(){
   VOICE.active = false; VOICE.conversing = false;
   clearTimeout(VOICE.followTimer); clearTimeout(clipTimer);
   try{ recorder && recorder.state === 'recording' && recorder.stop(); }catch(e){}
-  speechSynthesis?.cancel();
-  setVoiceState('off');
+  AudioOut.stop();
+  try{ speechSynthesis?.cancel(); }catch(e){}
+  setVoiceState(VSTATE.OFF);
   document.getElementById('voice-panel')?.classList.remove('open');
 }
 document.getElementById('voice-toggle')?.addEventListener('click', () => {
   VOICE.active ? stopVoice() : startVoice();
 });
 document.getElementById('voice-close')?.addEventListener('click', stopVoice);
+
+function showHeard(t){
+  const el = document.getElementById('voice-heard');
+  if(el) el.textContent = t ? '“' + t.slice(0, 90) + '”' : '';
+}
+// Click the orb to talk without the wake phrase — a guaranteed way in if the
+// room is too noisy or too quiet for reliable detection.
+document.getElementById('voice-orb')?.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.currentTarget.click(); }
+});
+document.getElementById('voice-orb')?.addEventListener('click', () => {
+  if(!VOICE.active) return;
+  VOICE.conversing = true;
+  armFollowUp();
+  setVoiceState('listening');
+  SFX.open();
+});
+// live level bar, so it is obvious whether the mic is picking anything up
+function paintLevel(){
+  const bar = document.getElementById('voice-level-fill');
+  if(bar){
+    bar.style.width = Math.min(100, VOICE.level * 220) + '%';
+    bar.classList.toggle('over', VOICE.level > VAD.speakThresh);
+  }
+  requestAnimationFrame(paintLevel);
+}
+requestAnimationFrame(paintLevel);
 function renderVoiceList(){
   const sel = document.getElementById('voice-select');
   if(!sel || !window.speechSynthesis) return;
@@ -1167,7 +1350,7 @@ document.getElementById('voice-select')?.addEventListener('change', (e) => {
 });
 document.getElementById('voice-mute')?.addEventListener('click', () => {
   settings.voiceMuted = !settings.voiceMuted; saveSettings();
-  if(settings.voiceMuted) speechSynthesis?.cancel();
+  if(settings.voiceMuted){ AudioOut.stop(); try{ speechSynthesis?.cancel(); }catch(e){} }
   document.getElementById('voice-mute').textContent = settings.voiceMuted ? 'Unmute replies' : 'Mute replies';
 });
 
@@ -1193,11 +1376,26 @@ async function callAi(message, system){
 }
 // Full agent turn: sends conversation + tool definitions, returns the raw message
 // (which may contain tool_calls instead of content).
-async function callAiAgent(messages, tools){
+let lastLatency = null;
+async function callAiAgent(messages, tools, opts){
   const body = tools && tools.length ? { messages, tools } : { messages };
-  const resp = await fetch(FN_URL + "/agenda-ai", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) });
-  const data = await resp.json();
-  if(!resp.ok) throw new Error(data.error || "Couldn't reach the assistant.");
+  Object.assign(body, opts || {});
+  let data;
+  try{
+    const resp = await fetch(FN_URL + "/agenda-ai", { method:"POST", headers: authHeaders(), body: JSON.stringify(body) });
+    data = await resp.json().catch(() => ({}));
+    if(!resp.ok){
+      const err = new Error(JARVIS.errorFor(data.code));
+      err.code = data.code || 'unknown';
+      throw err;
+    }
+  }catch(e){
+    if(e.code) throw e;
+    const err = new Error(JARVIS.errorFor('network'));  // fetch itself failed
+    err.code = 'network';
+    throw err;
+  }
+  lastLatency = data.latency_ms ?? null;
   return data.message || { content: data.reply || '' };
 }
 
@@ -1276,6 +1474,12 @@ const AI_TOOLS = [
 // convolution reverb + stereo delay so sounds sit in a space, and layers
 // are detuned/filtered to give them body. No audio files to host.
 let audioCtx = null, busDry = null, busWet = null;
+// The meter must run even when interface sounds are muted, so it needs a
+// context getter that ignores the mute flag.
+function acAlways(){
+  const was = settings.muted; settings.muted = false;
+  const ctx = ac(); settings.muted = was; return ctx;
+}
 let bootUsedFile = false;
 function ac(){
   if(settings.muted) return null;
@@ -1596,8 +1800,131 @@ function kbSearch(q, limit = 4){
   }).filter(x => x.score > 0).sort((a,b) => b.score - a.score).slice(0, limit).map(x => x.e);
 }
 
-// The assistant sees a factual snapshot of the real data. Without this it was
-// answering schedule questions from imagination.
+
+// ===== JARVIS core ===================================================
+// One place for personality and response policy. Nothing about who JARVIS is
+// should live anywhere else.
+const JARVIS = {
+  name: 'JARVIS',
+
+  // An original character in the tradition of the composed British machine
+  // valet — deliberately not an imitation of any copyrighted film character.
+  persona: [
+    "You are JARVIS, the assistant built into Solar Agenda for a solar energy support technician.",
+    "Bearing: an unflappable, exceptionally capable machine intelligence in the tradition of a well-trained British valet. Calm, precise, observant, quietly amused by the world. You are original — never claim to be a character from any film, and never reference one.",
+    "Speak plainly and land the answer first. 'Your inverter is back online.' — not 'Certainly! I would be delighted to inform you that...'.",
+    "Address the user as 'sir' sparingly — roughly one reply in four, at the end of a sentence where it sits naturally. Never stack it ('Yes, sir. Of course, sir.'), never twice in one reply, never in every turn.",
+    "Dry wit is welcome but rationed: at most one wry remark per several exchanges, and only when nothing is at stake. 'I checked twice. The equipment remains stubbornly operational.' Never joke about a failure, a missed deadline, an angry client, or anything consequential.",
+    "Never say: 'As an AI', 'Certainly!', 'Great question', 'I hope this helps', or 'Let me know if you need anything else'. No emoji. No exclamation marks. Never restate the request before answering.",
+    "Do not repeat a phrase you have already used in this conversation. Vary acknowledgements.",
+    "Simple question, simple answer. Do not explain what was not asked.",
+    "TOOLS: say 'I'm checking that now' before a lookup, 'Done.' after a success, and 'I couldn't complete that just now' after a failure — never claim success the tool did not report.",
+    "KNOWLEDGE: use what is retrieved, never invent the rest. Do not recite the source aloud; the interface shows it. Keep the spoken answer short.",
+  ],
+
+  ctx: { historyChars: 4200, minTurns: 4, maxTurns: 20 },
+
+  // Actions that change stored data. Confirmed before running when the request
+  // arrived by voice, where a mis-heard word could create a real record.
+  consequential: new Set(['create_case', 'create_notebook', 'create_note']),
+
+  // Only states what is actually true at the moment it is said.
+  greeting(){
+    const h = new Date().getHours();
+    const part = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+    const bits = [];
+    const open = todaysCases().filter(x => statusRank(x.status) === 0).length;
+    if(open) bits.push(open === 1 ? 'one case open today' : `${open} cases open today`);
+    if(KB.length) bits.push('your knowledge base is standing by');
+    if(wxSnapshot && wxSnapshot.rain >= 2) bits.push('rain is expected');
+    const tail = bits.length ? ' ' + bits.join(', ') + '.' : ' All systems online.';
+    return `${part}, sir.${tail}`;
+  },
+
+  errorFor(code){
+    switch(code){
+      case 'rate_limit':    return "I'm being throttled at the moment, sir. Give me a moment and try again.";
+      case 'auth':          return "My session has expired, sir. Sign in again and I'll pick this up.";
+      case 'auth_upstream': return "My credentials for the language service are being refused, sir. That needs attention in the settings.";
+      case 'upstream_down': return "The language service is down at the moment, sir. Not something on our side.";
+      case 'network':       return "I can't reach the network, sir.";
+      case 'tts_unconfigured': return "I have no speech key configured, so I'll stay on the browser voice for now.";
+      case 'tts_auth':      return "The speech service is refusing my key, sir.";
+      case 'tts_voice':     return "That voice ID isn't valid, sir.";
+      case 'bad_request':   return "That request came out malformed on my end, sir. Try phrasing it differently.";
+      default:              return "Something went wrong reaching my reasoning service, sir.";
+    }
+  },
+};
+
+// --- confirmation gate --------------------------------------------------
+// Personality never overrides safety: a spoken instruction that would write to
+// the database is described back and held until the user agrees.
+let pendingAction = null;
+const AFFIRM = /^\s*(yes|yeah|yep|yup|ok|okay|do it|go ahead|proceed|confirm|please do|sim|pode|isso|manda|confirmo|faz|beleza)\b/i;
+const DENY    = /^\s*(no|nope|cancel|stop|don'?t|nah|não|nao|deixa|cancela|esquece)\b/i;
+
+function describeAction(call){
+  let a = {};
+  try{ a = JSON.parse(call.function?.arguments || '{}'); }catch(e){}
+  switch(call.function?.name){
+    case 'create_case':     return `create a case for “${a.titulo || 'untitled'}”${a.horario ? ' at ' + a.horario : ''}`;
+    case 'create_notebook': return `create a notebook called “${a.title || 'untitled'}”`;
+    case 'create_note':     return `add a note “${a.title || 'untitled'}” to ${a.notebook_title || 'a notebook'}`;
+    default:                return `run ${call.function?.name}`;
+  }
+}
+
+// --- context management: never send unbounded history -------------------
+// Keep recent turns within a character budget and retain the opening question
+// so a long conversation keeps its subject. A tool result must never lead the
+// window, or the API rejects the sequence.
+function trimHistory(history){
+  if(history.length <= JARVIS.ctx.minTurns) return history;
+  const kept = [];
+  let chars = 0;
+  for(let i = history.length - 1; i >= 0; i--){
+    const m = history[i];
+    const size = typeof m.content === 'string' ? m.content.length : 200;
+    if(kept.length >= JARVIS.ctx.minTurns &&
+       (chars + size > JARVIS.ctx.historyChars || kept.length >= JARVIS.ctx.maxTurns)) break;
+    chars += size;
+    kept.unshift(m);
+  }
+  while(kept.length && kept[0].role === 'tool') kept.shift();
+  const first = history.find(m => m.role === 'user');
+  if(first && !kept.includes(first)) kept.unshift(first);
+  return kept;
+}
+
+// --- spoken vs display --------------------------------------------------
+// Derived locally rather than asking the model for two variants: no extra
+// tokens, no extra latency, deterministic result.
+function toSpoken(text){
+  let s = String(text || '');
+  s = s.replace(/```[\s\S]*?```/g, ' the code is on screen ');
+  s = s.replace(/`([^`]+)`/g, '$1');
+  s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+  s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  s = s.replace(/https?:\/\/\S+/g, 'the link on screen');
+  s = s.replace(/^\s*[#>]+\s*/gm, '');
+  s = s.replace(/\*\*|__|\*|_/g, '');
+  s = s.replace(/^\s*[-•]\s*/gm, '');
+  s = s.replace(/^\s*\d+\.\s*/gm, '');
+  s = s.replace(/\|/g, ', ').replace(/-{3,}/g, ' ');
+  s = s.replace(/(\d)\s*%/g, '$1 percent')
+       .replace(/&/g, ' and ')
+       .replace(/(\d)\s*mm\b/g, '$1 millimetres')
+       .replace(/(\d)\s*km\/h/g, '$1 kilometres per hour')
+       .replace(/\bPAC-?(\d+)/gi, 'ticket $1');
+  s = s.replace(/\n{2,}/g, '. ').replace(/\n/g, '. ').replace(/\s{2,}/g, ' ').trim();
+  const parts = s.match(/[^.!?]+[.!?]?/g) || [s];
+  if(parts.length > 2 && s.length > 200) s = parts.slice(0, 2).join(' ').trim();
+  return s;
+}
+
+// The assistant sees a factual snapshot of the real data; without it, it
+// answered schedule questions from imagination.
 function buildAiSystemPrompt(spoken){
   const today = todaysCases();
   const pending = today.filter(c => statusRank(c.status) === 0);
@@ -1607,29 +1934,29 @@ function buildAiSystemPrompt(spoken){
     ? pending.map(c => `- ${c.titulo}${c.horario ? ' at ' + c.horario : ''}${c.horario_fim ? '-' + c.horario_fim : ''} [${prioLabel(c.prioridade)}, ${blocoLabel(c.bloco)}]${c.ticket ? ' ticket ' + c.ticket : ''}`).join('\n')
     : '(none — the agenda is empty for today)';
 
-  const w = wxSnapshot;
-  const wxLine = w
-    ? `Weather today — Vinhedo/Campinas region: ${w.tmin}°C to ${w.tmax}°C, `
-      + `${w.rain.toFixed(1)} mm rain (${w.prob}% chance), max wind ${Math.round(w.wind)} km/h.`
-      + (w.wettest ? ` Heaviest rain in Brazil: ${w.wettest.n} (${w.wettest.v.toFixed(0)} mm). Strongest wind: ${w.windiest.n} (${Math.round(w.windiest.v)} km/h).` : '')
-    : 'Weather: not loaded yet.';
-
-  const hits = kbSearch(lastUserQuestion || '');
-  const kbBlock = hits.length
-    ? 'Knowledge base matches:\n' + hits.map(e => `- [${e.title}] ${e.content}`).join('\n')
-    : (KB.length ? 'Knowledge base: no entry matched this question.' : 'Knowledge base: empty.');
-
   const nbLines = notebooks.length
     ? notebooks.map(nb => `- ${nb.title} (${notes.filter(n => n.notebook_id === nb.id).length} notes)`).join('\n')
     : '(no notebooks yet)';
 
+  const w = wxSnapshot;
+  const wxLine = w
+    ? `Weather today — Vinhedo/Campinas region: ${w.tmin}°C to ${w.tmax}°C, ${w.rain.toFixed(1)} mm rain (${w.prob}% chance), max wind ${Math.round(w.wind)} km/h.`
+      + (w.wettest ? ` Heaviest rain in Brazil: ${w.wettest.n} (${w.wettest.v.toFixed(0)} mm). Strongest wind: ${w.windiest.n} (${Math.round(w.windiest.v)} km/h).` : '')
+    : 'Weather: not loaded yet.';
+
+  // Only the matching entries are sent, never the whole knowledge base.
+  lastKbHits = kbSearch(lastUserQuestion || '');
+  const kbBlock = lastKbHits.length
+    ? 'Knowledge base matches:\n' + lastKbHits.map((e, i) => `- [KB${i + 1} | ${e.title}] ${e.content}`).join('\n')
+    : (KB.length ? 'Knowledge base: no entry matched this question.' : 'Knowledge base: empty.');
+
   return [
-    "You are JARVIS, the assistant built into Solar Agenda, used by a solar energy support technician.",
-    "Manner: calm, precise, quietly confident. Dry wit only when it costs nothing. Never gushing, never emoji, never 'As an AI'. Do not restate the question before answering.",
+    ...JARVIS.persona,
     (spoken
-      ? "SPOKEN REPLY: this will be read aloud. One or two short sentences, under 45 words. No lists, no markdown, no URLs, no numbers read as symbols. Lead with the answer."
-      : "Written reply: brief and direct, plain text."),
-    "LANGUAGE: reply in the same language the user used. If they wrote Portuguese, answer in natural Brazilian Portuguese (você, tudo bem, agendar) — never European Portuguese (tu, ecrã, telemóvel).",
+      ? "SPOKEN: this is read aloud. One or two short sentences, under 45 words. No markdown, no lists, no URLs, no code. Lead with the answer."
+      : "WRITTEN: brief and direct. Plain text. Lists only when the answer genuinely is a list."),
+    "LANGUAGE: answer in the language the user used. Portuguese means natural Brazilian Portuguese (você, agendar) — never European Portuguese (tu, ecrã).",
+    "FOLLOW-UPS: resolve pronouns and elisions from the conversation above. 'and the one before that' refers to whatever was just discussed. Ask for clarification only when genuinely ambiguous.",
     "",
     "=== REAL DATA SNAPSHOT (the ONLY source of truth) ===",
     `Today's date: ${todayStr()}`,
@@ -1642,21 +1969,20 @@ function buildAiSystemPrompt(spoken){
     kbBlock,
     "=== END SNAPSHOT ===",
     "",
-    "CRITICAL RULES:",
-    "1. NEVER invent, assume or give example cases, notes, clients or appointments. If the snapshot shows the agenda is empty, say plainly that it is empty.",
-    "2. Only describe data that literally appears in the snapshot above. If asked about something not in it, say you don't have that record.",
-    "3. Use the tools ONLY when the user explicitly asks you to CREATE something concrete. Statements about how the day went are NOT case requests.",
-    "   - 'the first hour was not needed' / 'nothing scheduled' => do NOT create a case. Just acknowledge it; the app already shows that state on its own.",
-    "   - Never create a case only so it appears in history, and never auto-complete a case you just created.",
-    "4. Weather: answer from the weather block above. Vinhedo is the local forecast; Campinas is ~15 km away so the same figures apply — say so rather than refusing.",
-    "5. Knowledge base first for technical questions; name the entry used. Use web_search for anything current or public that is not in the snapshot or knowledge base. Never invent a search result.",
-    spoken ? "6. Do NOT append a confidence line when speaking." : "6. End EVERY answer with a final line exactly like: CONFIDENCE: 85",
-    "   Use 90-100 when it comes straight from the snapshot or knowledge base, 50-80 for reasoned answers, under 40 when unsure.",
-    "7. Be brief and direct. Plain text, no markdown.",
+    "RULES:",
+    "1. NEVER invent cases, notes, clients or appointments. If the snapshot is empty, say so plainly.",
+    "2. Only describe what appears above. If it is not there, say you have no record of it.",
+    "3. Tools are for explicit creation requests only. Remarks about how the day went are not requests. Never create a record to illustrate a point, and never auto-complete one you just created.",
+    "4. Weather comes from the block above. Vinhedo and Campinas are ~15 km apart, so the same figures apply — say so rather than refusing.",
+    "5. Knowledge base first for technical questions, and name the entry used (e.g. 'per KB2'). web_search only for public or current information. Never invent a search result.",
+    spoken
+      ? "6. Do not append a confidence line when speaking."
+      : "6. End EVERY written answer with a final line exactly like: CONFIDENCE: 85 — 90-100 straight from the snapshot or knowledge base, 50-80 reasoned, under 40 unsure.",
   ].join('\n');
 }
 
 let aiHistory = []; // conversation memory for this panel session
+let lastKbHits = [];
 let lastUserQuestion = '';
 
 async function runToolCall(call){
@@ -1730,12 +2056,44 @@ document.getElementById('ai-input').addEventListener('keydown', (e) => { if(e.ke
 // hint (shorter sentences) and skips the confidence footer, which is noise
 // when read aloud.
 async function runAssistantTurn(text, spoken){
+  const t0 = performance.now();
+  let confirmedThisTurn = false;
+
+  // Resolve an outstanding confirmation before anything else.
+  if(pendingAction){
+    if(AFFIRM.test(text)){
+      const call = pendingAction; pendingAction = null; confirmedThisTurn = true;
+      let outcome;
+      try{ outcome = await runToolCall(call); }
+      catch(err){ outcome = "I couldn't complete that just now — " + err.message; }
+      const line = outcome.startsWith("I couldn't") ? outcome : 'Done. ' + outcome;
+      aiHistory.push({ role:'user', content: text });
+      aiHistory.push({ role:'assistant', content: line });
+      return { spoken: toSpoken(line), display: line, sources: [],
+               actions: [{ tool: call.function?.name, ok: !outcome.startsWith("I couldn't"), detail: outcome }],
+               metadata: { confidence: null, latency_ms: Math.round(performance.now() - t0), spoken_mode: !!spoken } };
+    }
+    if(DENY.test(text)){
+      pendingAction = null;
+      const line = 'Cancelled.';
+      aiHistory.push({ role:'user', content: text });
+      aiHistory.push({ role:'assistant', content: line });
+      return { spoken: line, display: line, sources: [], actions: [],
+               metadata: { confidence: null, latency_ms: Math.round(performance.now() - t0), spoken_mode: !!spoken } };
+    }
+    pendingAction = null;   // they moved on; drop it rather than acting later
+  }
+
   lastUserQuestion = text;
   aiHistory.push({ role: 'user', content: text });
 
-  let convo = [{ role: 'system', content: buildAiSystemPrompt(spoken) }, ...aiHistory];
+  // Only a bounded slice of history goes over the wire.
+  let convo = [{ role: 'system', content: buildAiSystemPrompt(spoken) }, ...trimHistory(aiHistory)];
   const doneCalls = new Set();
-  let msg = await callAiAgent(convo, AI_TOOLS);
+  const actions = [];
+  const sources = [];
+
+  let msg = await callAiAgent(convo, AI_TOOLS, { max_tokens: spoken ? 220 : 900 });
 
   let guard = 0;
   while(msg.tool_calls && msg.tool_calls.length && guard < 4){
@@ -1743,42 +2101,90 @@ async function runAssistantTurn(text, spoken){
     if(spoken) setVoiceState('tool');
     convo.push(msg); aiHistory.push(msg);
     for(const call of msg.tool_calls){
+      const fname = call.function?.name || '';
+      const sig = fname + '|' + (call.function?.arguments || '');
       let result;
-      const sig = (call.function?.name || '') + '|' + (call.function?.arguments || '');
       if(doneCalls.has(sig)){
         result = 'Already done in this turn — not repeated.';
         convo.push({ role:'tool', tool_call_id: call.id, content: result });
         continue;
       }
       doneCalls.add(sig);
-      try{ result = await runToolCall(call); }
-      catch(err){ result = 'Failed: ' + err.message; }
+      // Voice requests that would write data are held for confirmation.
+      if(spoken && settings.confirmActions !== false && JARVIS.consequential.has(fname) && !confirmedThisTurn){
+        pendingAction = call;
+        result = 'NOT EXECUTED — awaiting the user\'s confirmation. Describe the action in one short sentence and ask whether to proceed. Do not claim it is done.';
+        actions.push({ tool: fname, ok: false, detail: 'awaiting confirmation' });
+        convo.push({ role:'tool', tool_call_id: call.id, content: result });
+        aiHistory.push({ role:'tool', tool_call_id: call.id, content: result });
+        continue;
+      }
+      try{
+        result = await runToolCall(call);
+        actions.push({ tool: fname, ok: true, detail: String(result).slice(0, 160) });
+        if(fname === 'web_search'){
+          try{ sources.push({ type:'web', label: JSON.parse(call.function.arguments).query }); }catch(e){}
+        }
+      }catch(err){
+        result = 'Failed: ' + err.message;
+        actions.push({ tool: fname, ok: false, detail: err.message });
+      }
       const toolMsg = { role:'tool', tool_call_id: call.id, content: result };
       convo.push(toolMsg); aiHistory.push(toolMsg);
     }
     if(spoken) setVoiceState('thinking');
-    msg = await callAiAgent(convo, null);
+    msg = await callAiAgent(convo, null, { max_tokens: spoken ? 220 : 900 });
   }
 
-  let reply = (msg.content || '').trim() || 'Done.';
+  let display = (msg.content || '').trim() || 'Done.';
   let conf = null;
-  reply = reply.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i, (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();
-  if(!reply) reply = 'Done.';
+  display = display.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i,
+    (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();
+  if(!display) display = 'Done.';
 
-  const bubble = addAiMessage('assistant', reply);
-  if(conf !== null && !spoken){
+  // Knowledge entries actually fed into this turn become citable sources.
+  (lastKbHits || []).forEach((e, i) => sources.push({ type:'kb', label: e.title, id: 'KB' + (i + 1) }));
+
+  const res = {
+    spoken: toSpoken(display),
+    display,
+    sources,
+    actions,
+    metadata: { confidence: conf, latency_ms: Math.round(performance.now() - t0),
+                model_ms: lastLatency, spoken_mode: !!spoken },
+  };
+
+  aiHistory.push({ role: 'assistant', content: display });
+  if(aiHistory.length > 40) aiHistory = aiHistory.slice(-40);
+  return res;
+}
+
+// Adapter: renders a turn result into the existing chat panel.
+function renderTurn(res){
+  const bubble = addAiMessage('assistant', res.display);
+  if(res.sources.length){
+    const s = document.createElement('div');
+    s.className = 'msg-sources';
+    s.innerHTML = '<div class="src-head">Sources</div>' + res.sources.map(x => `
+      <div class="src-card ${x.type}">
+        <span class="src-kind">${x.type === 'web' ? 'WEB' : x.id || 'KB'}</span>
+        <span class="src-label">${escapeHtml(x.label || '')}</span>
+      </div>`).join('');
+    bubble.appendChild(s);
+  }
+  if(res.metadata.confidence !== null){
+    const conf = res.metadata.confidence;
+    const tone = conf >= 75 ? 'hi' : conf >= 45 ? 'mid' : 'lo';
     const bar = document.createElement('div');
     bar.className = 'conf';
-    const tone = conf >= 75 ? 'hi' : conf >= 45 ? 'mid' : 'lo';
     bar.innerHTML = `<span class="conf-lab">confidence</span>
       <span class="conf-track"><span class="conf-fill ${tone}" style="width:${conf}%"></span></span>
-      <span class="conf-num ${tone}">${conf}%</span>`;
+      <span class="conf-num ${tone}">${conf}%</span>
+      <span class="conf-lat">${res.metadata.latency_ms}ms</span>`;
     bubble.appendChild(bar);
   }
-  aiHistory.push({ role: 'assistant', content: reply });
-  if(aiHistory.length > 24) aiHistory = aiHistory.slice(-24);
   aiMessages.scrollTop = aiMessages.scrollHeight;
-  return reply;
+  return bubble;
 }
 
 async function sendAiMessage(){
@@ -1789,11 +2195,11 @@ async function sendAiMessage(){
   addAiMessage('user', text);
   const loading = addAiMessage('assistant', '…');
   try{
-    const reply = await runAssistantTurn(text, false);
-    loading.remove();                       // runAssistantTurn adds the real bubble
-    void reply;
+    const res = await runAssistantTurn(text, false);
+    loading.remove();
+    renderTurn(res);
   }catch(err){
-    loading.textContent = "Couldn't respond right now (" + err.message + ").";
+    loading.textContent = err.message;      // already phrased for a human
   }
   aiMessages.scrollTop = aiMessages.scrollHeight;
 }
@@ -2942,6 +3348,9 @@ function renderSettings(){
   ds.className = driveToken ? 'ok' : '';
   document.getElementById('set-drive-client').value = settings.driveClientId || '';
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
+  const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
+  const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
+  probeTts(); renderConfirmStatus();
   const sx = document.getElementById('set-sfx-status');
   if(sx) sx.textContent = settings.muted ? 'Muted' : 'On';
   const kbBox = document.getElementById('kb-json');
@@ -2976,6 +3385,22 @@ if(rainTest){
     setRain();
   });
 }
+document.getElementById('confirm-toggle')?.addEventListener('click', () => {
+  settings.confirmActions = settings.confirmActions === false;
+  saveSettings(); renderConfirmStatus();
+});
+function renderConfirmStatus(){
+  const el = document.getElementById('confirm-status');
+  if(el) el.textContent = settings.confirmActions === false
+    ? 'Off — voice requests act immediately'
+    : 'On — asks before creating anything by voice';
+}
+document.getElementById('tts-voice')?.addEventListener('change', e => { settings.ttsVoiceId = e.target.value.trim(); saveSettings(); });
+document.getElementById('tts-model')?.addEventListener('change', e => { settings.ttsModelId = e.target.value.trim(); saveSettings(); });
+document.getElementById('tts-test')?.addEventListener('click', async () => {
+  await probeTts();
+  speak(VOICE.lang.startsWith('pt') ? 'Sistemas prontos, senhor.' : 'All systems ready, sir.', VOICE.lang);
+});
 document.getElementById('sfx-toggle').addEventListener('click', () => {
   settings.muted = !settings.muted; saveSettings();
   document.getElementById('set-sfx-status').textContent = settings.muted ? 'Muted' : 'On';

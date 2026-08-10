@@ -222,6 +222,17 @@
       <div class="day-panel-header"><h2>Knowledge base</h2></div>
       <p class="hint">Feeds the assistant with your own reference material. It answers from these entries first and shows a confidence bar. Either commit a <b>kb.json</b> file to the site root, or paste the JSON below.</p>
       <div class="set-row">
+        <div class="set-info"><b>Confirm spoken actions</b><span id="confirm-status">On — asks before creating anything by voice</span></div>
+        <button class="btn-ghost" id="confirm-toggle">Toggle</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>JARVIS speech</b><span id="tts-status">Checking…</span></div>
+        <button class="btn-ghost" id="tts-test">Test voice</button>
+      </div>
+      <div class="field"><label>ElevenLabs voice ID</label><input type="text" id="tts-voice" placeholder="Leave blank for the server default"></div>
+      <div class="field"><label>ElevenLabs model ID</label><input type="text" id="tts-model" placeholder="eleven_turbo_v2_5"></div>
+      <p class="hint">The API key is set as <b>ELEVENLABS_API_KEY</b> in Supabase → Edge Functions → Secrets. It is never sent to this browser.</p>
+      <div class="set-row">
         <div class="set-info"><b>Interface sounds</b><span id="set-sfx-status">On</span></div>
         <button class="btn-ghost" id="sfx-toggle">Toggle</button>
       </div>
@@ -481,9 +492,15 @@
 
 <div class="voice-panel" id="voice-panel">
   <button class="voice-close" id="voice-close" aria-label="Close voice">×</button>
-  <div class="voice-orb" id="voice-orb" data-state="off"><canvas id="voice-canvas"></canvas></div>
-  <div class="voice-state" id="voice-state">voice off</div>
-  <div class="voice-hint">Say <b>“Hey Jarvis”</b> — then keep talking, no need to repeat it.</div>
+  <div class="voice-orb" id="voice-orb" data-state="off" role="button" tabindex="0"
+       aria-label="Talk to Jarvis. Press Enter to speak without the wake phrase.">
+    <canvas id="voice-canvas" aria-hidden="true"></canvas>
+    <span class="orb-dot" aria-hidden="true"></span>
+  </div>
+  <div class="voice-state" id="voice-state" role="status" aria-live="polite">Voice off</div>
+  <div class="voice-level" role="meter" aria-label="Microphone level" aria-hidden="true"><span id="voice-level-fill"></span></div>
+  <div class="voice-heard" id="voice-heard" aria-live="polite"></div>
+  <div class="voice-hint">Say <b>“Hey Jarvis”</b>, or tap the orb to talk without it.</div>
   <select class="voice-select" id="voice-select" title="Speaking voice"></select>
   <button class="btn-ghost voice-mute" id="voice-mute">Mute replies</button>
 </div>

@@ -604,6 +604,68 @@
   .closed-banner svg{ width:15px; height:15px; flex:0 0 auto; fill:none; stroke:var(--urgente); stroke-width:1.8; }
   .is-locked{ opacity:.55; pointer-events:none; }
 
+
+  .voice-level{ width:100%; height:4px; border-radius:99px; background:var(--line); overflow:hidden; }
+  .voice-level span{ display:block; height:100%; width:0; border-radius:99px; background:var(--accent2); transition:width .06s linear; }
+  .voice-level span.over{ background:var(--ok); }
+  .voice-heard{ font-size:.68rem; color:var(--muted); text-align:center; min-height:1.5em; line-height:1.35; font-style:italic; }
+  .voice-orb{ cursor:pointer; }
+
+
+  .msg-sources{ display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+  .msg-sources .src{ font-size:.62rem; padding:2px 7px; border-radius:999px; border:1px solid var(--line);
+    color:var(--muted); background:var(--bg); }
+  .msg-sources .src.kb{ color:var(--accent3); }
+  .msg-sources .src.web{ color:var(--accent2); }
+  .conf-lat{ font-family:"JetBrains Mono",monospace; font-size:.6rem; color:var(--muted); opacity:.7; }
+
+
+  /* ===== JARVIS presence ===== */
+  .voice-orb{ position:relative; display:grid; place-items:center; border-radius:50%; outline:none; }
+  .voice-orb:focus-visible{ box-shadow:0 0 0 3px var(--amber-soft), 0 0 0 1px var(--amber); }
+  .orb-dot{
+    position:absolute; width:7px; height:7px; border-radius:50%; bottom:6px;
+    background: var(--muted); transition: background .35s, box-shadow .35s;
+  }
+  .voice-orb[data-state="listening"] .orb-dot{ background:var(--ok); box-shadow:0 0 10px var(--ok); }
+  .voice-orb[data-state="processing"] .orb-dot,
+  .voice-orb[data-state="thinking"] .orb-dot{ background:var(--amber); box-shadow:0 0 10px var(--amber);
+    animation: dotBlink 1s steps(1) infinite; }
+  .voice-orb[data-state="speaking"] .orb-dot{ background:var(--accent2); box-shadow:0 0 10px var(--accent2); }
+  .voice-orb[data-state="error"] .orb-dot{ background:var(--urgente); box-shadow:0 0 10px var(--urgente); }
+  @keyframes dotBlink{ 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  /* idle breathing: barely there, so an always-open panel is not distracting */
+  .voice-orb[data-state="idle"] canvas{ animation: orbBreathe 6s ease-in-out infinite; }
+  @keyframes orbBreathe{ 0%,100%{ transform:scale(1); opacity:.9 } 50%{ transform:scale(1.03); opacity:1 } }
+  .voice-orb[data-state="thinking"] canvas,
+  .voice-orb[data-state="processing"] canvas{ animation: orbThink 2.4s cubic-bezier(.4,0,.6,1) infinite; }
+  @keyframes orbThink{ 0%,100%{ transform:rotate(0deg) } 50%{ transform:rotate(180deg) } }
+
+  .voice-state{ font-family:"JetBrains Mono",monospace; font-size:.68rem; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--amber); transition: color .3s; }
+  .voice-orb[data-state="listening"] ~ .voice-state{ color:var(--ok); }
+  .voice-orb[data-state="speaking"] ~ .voice-state{ color:var(--accent2); }
+  .voice-orb[data-state="error"] ~ .voice-state{ color:var(--urgente); }
+
+  /* ===== source cards ===== */
+  .msg-sources{ display:flex; flex-direction:column; gap:5px; margin-top:10px;
+    padding-top:9px; border-top:1px solid var(--line); }
+  .src-head{ font-size:.58rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); margin-bottom:2px; }
+  .src-card{ display:flex; align-items:center; gap:8px; padding:6px 9px; border-radius:8px;
+    border:1px solid var(--line); background: linear-gradient(150deg, var(--panel-2), var(--panel)); }
+  .src-kind{ font-family:"JetBrains Mono",monospace; font-size:.56rem; letter-spacing:.08em;
+    padding:2px 6px; border-radius:5px; background:var(--bg); color:var(--muted); flex:0 0 auto; }
+  .src-card.kb .src-kind{ color:var(--accent3); } .src-card.web .src-kind{ color:var(--accent2); }
+  .src-label{ font-size:.74rem; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  @media (prefers-reduced-motion: reduce){
+    .voice-orb canvas, .orb-dot, .voice-panel{ animation:none !important; transition:none !important; }
+    .arc-wrap, .arc-wrap.night{ animation:none !important; }
+    .wheel-g.rolling{ transition:none !important; }
+    .boot-ring i, .boot-ring b, .boot-grid, .boot-scan{ animation:none !important; }
+  }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;
