@@ -1690,6 +1690,40 @@ async function callAi(message, system){
 }
 // Full agent turn: sends conversation + tool definitions, returns the raw message
 // (which may contain tool_calls instead of content).
+
+// --- request sizing ---------------------------------------------------
+// Groq bills tokens per minute, and the tools payload alone was ~2500 tokens
+// on every message. Sending only the tools a request could plausibly need
+// cuts the common case by roughly two thirds.
+const TOOL_HINTS = {
+  web_search:      /\b(search|google|look ?up|web|news|current|latest|price|spec|pesquis|busca|procur na web)\b/i,
+  find_in_galaxy:  /\b(find|locate|where is|which note|show me the note|encontr|localiz|ach[ae])\b/i,
+  remember:        /\b(remember|note that|keep in mind|don'?t forget|lembr|anota que|guarda)\b/i,
+  forget:          /\b(forget|delete the memory|esquec|apaga)\b/i,
+  save_template:   /\b(template|model[oe]|boilerplate|standard (email|message))\b/i,
+  use_template:    /\b(send|email|message|template|envi|mandar|manda)\b/i,
+  list_templates:  /\b(templates?|model[oe]s)\b/i,
+  create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
+  create_notebook: /\b(notebook|folder|caderno|pasta)\b/i,
+  create_note:     /\b(note|write down|jot|nota|anota)\b/i,
+};
+function toolsFor(text){
+  const t = String(text || '');
+  const picked = AI_TOOLS.filter(x => {
+    const re = TOOL_HINTS[x.function.name];
+    return !re || re.test(t);
+  });
+  // A bare question needs no tools at all; sending none is the cheapest turn.
+  return picked.length ? picked : null;
+}
+
+// Rough token estimate. Four characters per token is close enough for a guard.
+function estimateTokens(messages, tools){
+  const body = JSON.stringify(messages || []).length + JSON.stringify(tools || []).length;
+  return Math.ceil(body / 4);
+}
+const TOKEN_CEILING = 5200;   // well under Groq's per-minute allowance
+
 let lastLatency = null;
 async function callAiAgent(messages, tools, opts){
   const body = tools && tools.length ? { messages, tools } : { messages };
@@ -2766,6 +2800,7 @@ const TARS = {
   errorFor(code){
     switch(code){
       case 'rate_limit':    return "I'm rate limited. Try again in a moment.";
+      case 'too_large':     return "That request came out too large for the model. I've trimmed the context — try again.";
       case 'auth':          return "Session expired. Sign in again.";
       case 'auth_upstream': return "The language service is rejecting my credentials. That needs fixing in settings.";
       case 'upstream_down': return "The language service is down. Not our side.";
@@ -2856,7 +2891,7 @@ function buildAiSystemPrompt(spoken){
   const done = today.filter(c => statusRank(c.status) === 1);
 
   const caseLines = pending.length
-    ? pending.map(c => `- ${c.titulo}${c.horario ? ' at ' + c.horario : ''}${c.horario_fim ? '-' + c.horario_fim : ''} [${prioLabel(c.prioridade)}, ${blocoLabel(c.bloco)}]${c.ticket ? ' ticket ' + c.ticket : ''}`).join('\n')
+    ? pending.slice(0, 25).map(c => `- ${c.titulo}${c.horario ? ' at ' + c.horario : ''}${c.horario_fim ? '-' + c.horario_fim : ''} [${prioLabel(c.prioridade)}, ${blocoLabel(c.bloco)}]${c.ticket ? ' ticket ' + c.ticket : ''}`).join('\n')
     : '(none — the agenda is empty for today)';
 
   const nbLines = notebooks.length
@@ -2876,7 +2911,8 @@ function buildAiSystemPrompt(spoken){
   // Only the matching entries are sent, never the whole knowledge base.
   lastKbHits = kbSearch(lastUserQuestion || '');
   const kbBlock = lastKbHits.length
-    ? 'Knowledge base matches:\n' + lastKbHits.map((e, i) => `- [KB${i + 1} | ${e.title}${e.source ? ' — ' + e.source : ''}] ${e.content}`).join('\n')
+    ? 'Knowledge base matches:\n' + lastKbHits.map((e, i) =>
+        `- [KB${i + 1} | ${e.title}${e.source ? ' — ' + e.source : ''}] ${String(e.content).slice(0, 420)}`).join('\n')
     : (KB.length ? 'Knowledge base: no entry matched this question.' : 'Knowledge base: empty.');
 
   return [
@@ -2978,11 +3014,23 @@ async function runAssistantTurn(text, spoken){
 
   // Only a bounded slice of history goes over the wire.
   let convo = [{ role: 'system', content: buildAiSystemPrompt(spoken) }, ...trimHistory(aiHistory)];
+  let turnTools = toolsFor(text);
+
+  // If the turn is still oversized, drop history first, then tools — a reply
+  // without tools beats a hard failure.
+  if(estimateTokens(convo, turnTools) > TOKEN_CEILING){
+    convo = [convo[0], ...trimHistory(aiHistory).slice(-4)];
+    if(estimateTokens(convo, turnTools) > TOKEN_CEILING) turnTools = null;
+    if(estimateTokens(convo, turnTools) > TOKEN_CEILING){
+      const sys = convo[0].content;
+      convo[0] = { role:'system', content: sys.slice(0, 3000) + '\n(context truncated)' };
+    }
+  }
   const doneCalls = new Set();
   const actions = [];
   const sources = [];
 
-  let msg = await callAiAgent(convo, AI_TOOLS, { max_tokens: spoken ? 220 : 900 });
+  let msg = await callAiAgent(convo, turnTools, { max_tokens: spoken ? 220 : 900 });
 
   let guard = 0;
   while(msg.tool_calls && msg.tool_calls.length && guard < 4){
