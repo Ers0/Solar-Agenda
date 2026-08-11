@@ -1702,7 +1702,7 @@ async function callAiAgent(messages, tools, opts){
       const code = data.code || 'unknown';
       console.error('[assistant]', resp.status, code, data.error || '');
       const err = new Error(TARS.errorFor(code)
-        + (code === 'unknown' ? ` (HTTP ${resp.status})` : ''));
+        + (data.detail ? ` — ${String(data.detail).slice(0, 120)}` : ` (HTTP ${resp.status})`));
       err.code = code;
       throw err;
     }
@@ -1748,7 +1748,7 @@ const WebSearch = {
       });
       if(!r.ok) return { ok:false, error:'search service returned an error', results:[] };
       const d = await r.json();
-      return { ok:true, results: d.results || [] };
+      return { ok:true, results: d.results || [], via: d.via, tried: d.tried };
     }catch(e){ return { ok:false, error:'search service unreachable', results:[] }; }
   },
 };
@@ -1762,7 +1762,9 @@ const TOOLS = [
     async execute(args){
       const res = await WebSearch.run(args.query);
       if(!res.ok) return `SEARCH FAILED (${res.error}). Say plainly that you could not reach the web — do not answer from memory as though you had searched.`;
-      if(!res.results.length) return 'No results found for: ' + args.query;
+      if(!res.results.length)
+        return `No results for "${args.query}"${res.tried ? ' (tried ' + res.tried.join(', ') + ')' : ''}. `
+             + 'Say you found nothing — do not substitute your own knowledge as though it were a search result.';
       return res.results.map(x => `- ${x.title}: ${x.snippet}`).join('\n').slice(0, 1800);
     },
   },
@@ -4307,6 +4309,35 @@ if(rainTest){
     setRain();
   });
 }
+
+// Pings each backend and reports which are alive, so a failure is traceable
+// without opening the console.
+document.getElementById('diag-run')?.addEventListener('click', async () => {
+  const el = document.getElementById('diag-status');
+  const btn = document.getElementById('diag-run');
+  btn.disabled = true; el.textContent = 'checking…'; el.className = '';
+  const lines = [];
+  const ping = async (name, path, body) => {
+    try{
+      const r = await fetch(FN_URL + path, { method:'POST', headers: authHeaders(), body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if(!r.ok) return lines.push(`${name}: HTTP ${r.status}${d.code ? ' ' + d.code : ''}`);
+      if(name === 'assistant') return lines.push(`assistant: ok — model ${d.model || '?'} (${d.available || 0} available)`);
+      if(name === 'search') return lines.push(`search: ok — ${d.keyed_provider ? 'key set (' + d.keyed_provider + ')' : 'no key, using ' + (d.fallbacks || []).join('/')}`);
+      if(name === 'speech') return lines.push(`speech: ${d.configured ? 'ElevenLabs configured' : 'no key, browser voice'}`);
+      lines.push(`${name}: ok`);
+    }catch(e){ lines.push(`${name}: unreachable`); }
+  };
+  await ping('assistant', '/agenda-ai', { probe:true });
+  await ping('search', '/agenda-search', { probe:true });
+  await ping('speech', '/agenda-tts', { probe:true });
+  const bad = lines.filter(l => !l.includes(': ok') && !l.includes('configured') && !l.includes('no key'));
+  el.textContent = bad.length ? `${bad.length} problem${bad.length>1?'s':''}` : 'all services responding';
+  el.className = bad.length ? '' : 'ok';
+  btn.disabled = false;
+  alert(lines.join('\n'));
+});
+
 document.getElementById('audit-show')?.addEventListener('click', () => {
   const rows = ToolAudit.recent();
   alert(rows.length
