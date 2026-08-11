@@ -1252,7 +1252,7 @@ function endClip(){
   for(let i = 0; i < pcm.length; i++){ const v = Math.abs(pcm[i]); if(v > peak) peak = v; sum += v * v; }
   const rms = Math.sqrt(sum / pcm.length);
   lastClipInfo = { secs: secs.toFixed(1), peak: peak.toFixed(3), rms: rms.toFixed(4) };
-  if(peak < 0.005){
+  if(peak < 0.0015){
     showHeard(`no audio captured (${secs.toFixed(1)}s, peak ${peak.toFixed(3)}) — check the microphone`);
     setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
     return;
@@ -1272,7 +1272,7 @@ let lastClipInfo = null;
 // written as a natural sentence rather than a labelled list — and kept short.
 function sttHint(){
   const names = [...new Set(cases.slice(-20).map(x => x.titulo || '').filter(Boolean))].slice(0, 12);
-  const base = 'Support call about solar inverters. We discuss Deye, Foxess and Growatt inverters, PAC tickets, strings and alarms.';
+  const base = 'Hey TARS. Support call about solar inverters. We discuss Deye, Foxess and Growatt inverters, PAC tickets, strings and alarms.';
   return names.length ? base + ' Clients mentioned include ' + names.join(', ') + '.' : base;
 }
 
@@ -1280,9 +1280,10 @@ function sttHint(){
 function isPromptEcho(said){
   const s = said.toLowerCase().replace(/[.,!?]/g, '').trim();
   if(!s) return true;
-  const hint = sttHint().toLowerCase();
-  if(s.length < 40 && hint.includes(s)) return true;
-  return /^(terms|clients mentioned include|support call about solar inverters)\b/.test(s);
+  // Only the specific fragments Whisper recites when it has nothing to work
+  // with. Deliberately narrow, so real speech is never thrown away.
+  return /^(terms|clients mentioned include|support call about solar inverters|we discuss deye)\b/.test(s)
+      || /^(inverter|deye|foxess|growatt)(,? (inverter|deye|foxess|growatt))+$/.test(s);
 }
 
 async function transcribe(blob){
@@ -1327,7 +1328,11 @@ async function onClipReady(blob){
     return;
   }
   showHeard(said);
-  if(!said || said.length < 2){ setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
+  if(!said || said.length < 2){
+    showHeard(`nothing recognised${lastClipInfo ? ` (${lastClipInfo.secs}s, level ${lastClipInfo.rms})` : ''}`);
+    setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+    return;
+  }
 
   VOICE.lang = detected && detected.startsWith('pt') ? 'pt-BR'
              : detected && detected.startsWith('en') ? 'en-US'
@@ -3568,6 +3573,26 @@ function initCustomThemeUI(){
     THEMES.custom = customTheme(); renderCustomTheme();
   });
 }
+
+
+// Settings is long enough to need sectioning; sub-tabs keep it from becoming
+// a wall. The galaxy lives under Knowledge.
+document.querySelectorAll('.sub-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.sub;
+    document.querySelectorAll('.sub-tab').forEach(b => {
+      const on = b === btn;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('.sub-panel').forEach(p =>
+      p.classList.toggle('hidden', p.dataset.subPanel !== key));
+    SFX.tick();
+    // the galaxy canvas has no size while hidden, so it is measured on reveal
+    if(key === 'knowledge') requestAnimationFrame(() => { Galaxy.stop(); startKbMap(); });
+    if(key === 'media' || key === 'appearance') requestAnimationFrame(() => setRain());
+  });
+});
 
 // ===== Settings screen =====
 function renderSettings(){

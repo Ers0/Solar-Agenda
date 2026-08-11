@@ -154,71 +154,18 @@
 
 
   <div id="view-settings" class="hidden">
-    <section class="panel" style="margin-bottom:16px;">
-      <div class="day-panel-header"><h2>Media storage</h2></div>
-      <p class="hint">Images pasted into notes are written to your own storage instead of the app database, so Supabase never fills up. Only a tiny preview thumbnail is kept in the note itself.</p>
-
-      <div class="set-row">
-        <div class="set-info">
-          <b>Local folder</b>
-          <span id="set-folder-status">Not configured</span>
-        </div>
-        <button class="btn-ghost" id="set-folder-btn">Choose folder</button>
-      </div>
-      <p class="hint" id="set-folder-note" style="margin-top:0;"></p>
-
-      <div class="set-row">
-        <div class="set-info">
-          <b>Google Drive backup</b>
-          <span id="set-drive-status">Not connected</span>
-        </div>
-        <button class="btn-ghost" id="set-drive-btn">Connect</button>
-      </div>
-      <div class="field"><label>Google OAuth Client ID</label><input type="text" id="set-drive-client" placeholder="xxxxx.apps.googleusercontent.com"></div>
-      <div class="field"><label>Drive folder ID (optional)</label><input type="text" id="set-drive-folder" placeholder="Paste the folder ID from its Drive URL"></div>
-      <p class="hint">Create an OAuth client (type: Web application) in Google Cloud Console and add <b id="set-origin"></b> as an authorised JavaScript origin.</p>
-    </section>
-
-    <section class="panel" style="margin-bottom:16px;">
-      <div class="day-panel-header"><h2>Encryption</h2></div>
-      <p class="hint">Client names, phone numbers, ticket numbers and every note are encrypted with AES-256-GCM before leaving this browser. The key is issued to your session by the server and is never stored in the database, so a leaked copy of the database contains nothing readable.</p>
-      <div class="set-row">
-        <div class="set-info"><b>Status</b><span id="enc-status">Checking…</span></div>
-        <button class="btn-ghost" id="enc-refresh">Re-check</button>
-      </div>
-      <div class="set-row">
-        <div class="set-info"><b>Existing records</b><span>Older rows saved before encryption are still plain text</span></div>
-        <button class="btn-ghost" id="enc-migrate">Encrypt existing data</button>
-      </div>
-      <p class="hint">Nothing to remember and nothing to type — it unlocks automatically whenever you are signed in.</p>
-    </section>
-
-    <section class="panel" style="margin-bottom:16px;">
-      <div class="day-panel-header"><h2>Custom theme</h2></div>
-      <p class="hint">Describe the look you want and the assistant builds the palette. Every result is contrast-checked before it is applied, so nothing comes back unreadable. Fine-tune the swatches afterwards if you like.</p>
-      <div class="field">
-        <textarea id="ct-prompt" style="min-height:74px" placeholder="e.g. a stormy sea at dusk — deep blue-greys with a pale gold horizon"></textarea>
-      </div>
-      <div class="ct-examples" id="ct-examples">
-        <button type="button">sunset over the ocean</button>
-        <button type="button">cyberpunk neon, magenta and cyan</button>
-        <button type="button">forest at dawn, mossy greens</button>
-        <button type="button">warm terracotta and sand</button>
-        <button type="button">deep space, violet nebula</button>
-      </div>
-      <div class="set-actions" style="margin:10px 0 4px;">
-        <button class="btn-primary" id="ct-generate" style="flex:1">✦ Generate theme</button>
-      </div>
-      <p class="hint" id="ct-status" style="min-height:1.1em"></p>
-      <div class="ct-grid" id="ct-grid"></div>
-      <div class="set-actions" style="margin-top:14px;">
-        <button class="btn-primary" id="ct-save" style="flex:1">Save &amp; apply</button>
-        <button class="btn-ghost" id="ct-copy">Copy current theme</button>
-        <button class="btn-ghost" id="ct-reset">Reset</button>
-      </div>
-    </section>
-
-    <section class="panel" style="margin-bottom:16px;">
+    <div class="sub-tabs" role="tablist" aria-label="Settings sections">
+      <button class="sub-tab active" role="tab" data-sub="assistant" aria-selected="true">Assistant</button>
+      <button class="sub-tab" role="tab" data-sub="knowledge" aria-selected="false">Knowledge</button>
+      <button class="sub-tab" role="tab" data-sub="media" aria-selected="false">Media</button>
+      <button class="sub-tab" role="tab" data-sub="appearance" aria-selected="false">Appearance</button>
+      <button class="sub-tab" role="tab" data-sub="data" aria-selected="false">Data</button>
+    </div>
+    <div class="sub-panel" data-sub-panel="assistant">
+      <section class="panel"><p class="hint">Nothing here yet.</p></section>
+    </div>
+    <div class="sub-panel hidden" data-sub-panel="knowledge">
+<section class="panel" style="margin-bottom:16px;">
       <div class="day-panel-header"><h2>Knowledge base</h2></div>
       <p class="hint">Feeds the assistant with your own reference material. It answers from these entries first and shows a confidence bar. Either commit a <b>kb.json</b> file to the site root, or paste the JSON below.</p>
       <div class="set-row">
@@ -278,8 +225,74 @@
         <button class="btn-ghost" id="kb-clear">Clear</button>
       </div>
     </section>
+    </div>
+    <div class="sub-panel hidden" data-sub-panel="media">
+<section class="panel" style="margin-bottom:16px;">
+      <div class="day-panel-header"><h2>Media storage</h2></div>
+      <p class="hint">Images pasted into notes are written to your own storage instead of the app database, so Supabase never fills up. Only a tiny preview thumbnail is kept in the note itself.</p>
 
-    <section class="panel">
+      <div class="set-row">
+        <div class="set-info">
+          <b>Local folder</b>
+          <span id="set-folder-status">Not configured</span>
+        </div>
+        <button class="btn-ghost" id="set-folder-btn">Choose folder</button>
+      </div>
+      <p class="hint" id="set-folder-note" style="margin-top:0;"></p>
+
+      <div class="set-row">
+        <div class="set-info">
+          <b>Google Drive backup</b>
+          <span id="set-drive-status">Not connected</span>
+        </div>
+        <button class="btn-ghost" id="set-drive-btn">Connect</button>
+      </div>
+      <div class="field"><label>Google OAuth Client ID</label><input type="text" id="set-drive-client" placeholder="xxxxx.apps.googleusercontent.com"></div>
+      <div class="field"><label>Drive folder ID (optional)</label><input type="text" id="set-drive-folder" placeholder="Paste the folder ID from its Drive URL"></div>
+      <p class="hint">Create an OAuth client (type: Web application) in Google Cloud Console and add <b id="set-origin"></b> as an authorised JavaScript origin.</p>
+    </section>
+    </div>
+    <div class="sub-panel hidden" data-sub-panel="appearance">
+<section class="panel" style="margin-bottom:16px;">
+      <div class="day-panel-header"><h2>Custom theme</h2></div>
+      <p class="hint">Describe the look you want and the assistant builds the palette. Every result is contrast-checked before it is applied, so nothing comes back unreadable. Fine-tune the swatches afterwards if you like.</p>
+      <div class="field">
+        <textarea id="ct-prompt" style="min-height:74px" placeholder="e.g. a stormy sea at dusk — deep blue-greys with a pale gold horizon"></textarea>
+      </div>
+      <div class="ct-examples" id="ct-examples">
+        <button type="button">sunset over the ocean</button>
+        <button type="button">cyberpunk neon, magenta and cyan</button>
+        <button type="button">forest at dawn, mossy greens</button>
+        <button type="button">warm terracotta and sand</button>
+        <button type="button">deep space, violet nebula</button>
+      </div>
+      <div class="set-actions" style="margin:10px 0 4px;">
+        <button class="btn-primary" id="ct-generate" style="flex:1">✦ Generate theme</button>
+      </div>
+      <p class="hint" id="ct-status" style="min-height:1.1em"></p>
+      <div class="ct-grid" id="ct-grid"></div>
+      <div class="set-actions" style="margin-top:14px;">
+        <button class="btn-primary" id="ct-save" style="flex:1">Save &amp; apply</button>
+        <button class="btn-ghost" id="ct-copy">Copy current theme</button>
+        <button class="btn-ghost" id="ct-reset">Reset</button>
+      </div>
+    </section>
+    </div>
+    <div class="sub-panel hidden" data-sub-panel="data">
+<section class="panel" style="margin-bottom:16px;">
+      <div class="day-panel-header"><h2>Encryption</h2></div>
+      <p class="hint">Client names, phone numbers, ticket numbers and every note are encrypted with AES-256-GCM before leaving this browser. The key is issued to your session by the server and is never stored in the database, so a leaked copy of the database contains nothing readable.</p>
+      <div class="set-row">
+        <div class="set-info"><b>Status</b><span id="enc-status">Checking…</span></div>
+        <button class="btn-ghost" id="enc-refresh">Re-check</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>Existing records</b><span>Older rows saved before encryption are still plain text</span></div>
+        <button class="btn-ghost" id="enc-migrate">Encrypt existing data</button>
+      </div>
+      <p class="hint">Nothing to remember and nothing to type — it unlocks automatically whenever you are signed in.</p>
+    </section>
+<section class="panel">
       <div class="day-panel-header"><h2>Export data</h2></div>
       <p class="hint">Downloads everything currently loaded — cases, notebooks and notes.</p>
       <div class="set-actions">
@@ -288,8 +301,8 @@
         <button class="btn-ghost" id="export-json">⬇ JSON backup</button>
       </div>
     </section>
+    </div>
   </div>
-
   <div id="view-notebooks" class="hidden">
     <div class="notebooks-toolbar">
       <div class="search-shell" id="search-shell">
