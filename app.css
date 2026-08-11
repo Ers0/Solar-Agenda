@@ -667,6 +667,15 @@
     .boot-ring i, .boot-ring b, .boot-grid, .boot-scan{ animation:none !important; }
   }
 
+
+  .kb-map-wrap{ position:relative; height:190px; border-radius:11px; overflow:hidden; margin:4px 0 10px;
+    border:1px solid var(--line); background: radial-gradient(120% 90% at 50% 20%, var(--panel-2), var(--bg)); }
+  .kb-map-wrap canvas{ position:absolute; inset:0; width:100%; height:100%; }
+  .kb-map-empty{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:.76rem; color:var(--muted); text-align:center; padding:0 20px; }
+  .kb-map-tip{ position:absolute; left:8px; bottom:8px; display:none; font-size:.66rem;
+    background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:4px 8px; color:var(--text); }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

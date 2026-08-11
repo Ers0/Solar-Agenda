@@ -831,7 +831,7 @@ const WAKE_WORDS = ['hey jarvis', 'hei jarvis', 'ei jarvis', 'hey darvis', 'hey 
 const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 
 const VOICE = {
-  supported: !!(window.MediaRecorder && navigator.mediaDevices?.getUserMedia),
+  supported: !!(navigator.mediaDevices?.getUserMedia && (window.AudioContext || window.webkitAudioContext)),
   state: 'off', lang: 'en-US', active: false, bargeStart: 0, greeted: false,
   conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
 };
@@ -935,7 +935,7 @@ function primeVoices(){
 // ===== Voice state machine ===========================================
 // One owner for voice state. Nothing else sets it directly.
 const VSTATE = {
-  OFF:'off', IDLE:'idle', LISTENING:'listening', PROCESSING:'processing',
+  OFF:'off', IDLE:'idle', WAKE:'wake', LISTENING:'listening', PROCESSING:'processing',
   THINKING:'thinking', SPEAKING:'speaking', INTERRUPTED:'interrupted', ERROR:'error',
 };
 
@@ -1098,19 +1098,58 @@ async function speak(text, lang){
   }
 }
 
-// --- capture: local voice-activity detection + Groq Whisper -----------
-// The browser's own recogniser was unreliable, so speech is detected locally
-// (RMS on the mic) and only the resulting clip is sent for transcription.
-// Whisper also detects the language itself, which is how English and
-// Portuguese switch with no setting.
+
+// ===== WakeWordProvider ==============================================
+// Deliberately provider-agnostic. The default listens locally (voice activity
+// detection) and matches the phrase in the Whisper transcript; a dedicated
+// engine such as Porcupine can be dropped in behind the same three methods
+// without touching the rest of the assistant.
+// Browser wake-word detection is not perfectly reliable, so tapping the orb
+// (push-to-talk) is always available as the fallback.
+function createTranscriptWakeProvider(){
+  let onWakeCb = null, running = false;
+  return {
+    name: 'transcript-match',
+    reliable: false,                 // honest: this is best-effort, not guaranteed
+    start(){ running = true; },
+    stop(){ running = false; },
+    onWake(cb){ onWakeCb = cb; },
+    // called by the STT pipeline with each final transcript
+    consider(text){
+      if(!running || !onWakeCb) return false;
+      const low = String(text || '').toLowerCase();
+      const hit = WAKE_WORDS.find(w => low.includes(w));
+      if(!hit) return false;
+      const after = text.slice(low.indexOf(hit) + hit.length).replace(/^[,.\s!?]+/, '');
+      onWakeCb(after);
+      return true;
+    },
+  };
+}
+const WakeWord = createTranscriptWakeProvider();
+WakeWord.onWake((remainder) => {
+  VOICE.conversing = true;
+  setVoiceState(VSTATE.WAKE || 'wake');
+  SFX.open();
+  if(remainder && remainder.length > 2) handleVoiceInput(remainder);
+  else { setVoiceState(VSTATE.LISTENING); armFollowUp(); }
+});
+
+// --- capture: rolling PCM buffer + Groq Whisper -----------------------
+// MediaRecorder only starts writing once speech is already detected, so the
+// first syllable was being lost — which is exactly the part carrying "Hey" in
+// "Hey Jarvis". We now keep a continuous ring buffer of raw audio and cut the
+// clip from BEFORE speech began, so nothing is clipped.
 const VAD = {
   speakThresh: 0.055, silenceThresh: 0.032,
-  minSpeechMs: 260, silenceMs: 850,
-  maxClipMs: 8000,          // shorter: a wake phrase is never 14 seconds
+  minSpeechMs: 260, silenceMs: 850, maxClipMs: 12000,
+  preRollMs: 500,            // audio kept from before the trigger
   floor: 0, calibrated: false,
 };
-// Thresholds are set from the room, not guessed. We watch the noise floor for
-// ~1.2s before arming, so a loud office and a silent one both work.
+const RING_SECONDS = 15;
+let ring = null, ringPos = 0, ringRate = 48000, capNode = null;
+let speaking = false, speechStartIdx = 0, lastLoud = 0, clipTimer = null;
+
 function calibrateVAD(){
   VAD.calibrated = false;
   const samples = [];
@@ -1124,29 +1163,97 @@ function calibrateVAD(){
     VAD.speakThresh   = Math.max(0.045, floor * 2.4);
     VAD.silenceThresh = Math.max(0.022, floor * 1.5);
     VAD.calibrated = true;
-    setVoiceState('idle');
+    setVoiceState(VSTATE.IDLE);
   };
   requestAnimationFrame(step);
 }
-let recorder = null, chunks = [], speaking = false, speechStart = 0, lastLoud = 0, clipTimer = null;
 
-function pickMime(){
-  const opts = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
-  return opts.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+// Continuous capture into a ring buffer.
+function startCapture(stream){
+  const ctx = acAlways();
+  if(!ctx){ setVoiceState(VSTATE.ERROR, 'no audio context'); return; }
+  ringRate = ctx.sampleRate;
+  ring = new Float32Array(Math.ceil(ringRate * RING_SECONDS));
+  ringPos = 0;
+  const src = ctx.createMediaStreamSource(stream);
+  capNode = ctx.createScriptProcessor(4096, 1, 1);
+  capNode.onaudioprocess = (ev) => {
+    const inp = ev.inputBuffer.getChannelData(0);
+    for(let i = 0; i < inp.length; i++){
+      ring[ringPos] = inp[i];
+      ringPos = (ringPos + 1) % ring.length;
+    }
+  };
+  src.connect(capNode);
+  // Muted sink: required for the processor to run, contributes no sound.
+  const sink = ctx.createGain(); sink.gain.value = 0;
+  capNode.connect(sink); sink.connect(ctx.destination);
+}
+
+function ringSlice(fromIdx, toIdx){
+  const len = (toIdx - fromIdx + ring.length) % ring.length;
+  const out = new Float32Array(len);
+  for(let i = 0; i < len; i++) out[i] = ring[(fromIdx + i) % ring.length];
+  return out;
+}
+function downsample(buf, from, to){
+  if(to >= from) return buf;
+  const ratio = from / to;
+  const out = new Float32Array(Math.floor(buf.length / ratio));
+  for(let i = 0; i < out.length; i++){
+    const start = Math.floor(i * ratio), end = Math.min(buf.length, Math.floor((i + 1) * ratio));
+    let sum = 0;
+    for(let j = start; j < end; j++) sum += buf[j];
+    out[i] = sum / Math.max(1, end - start);
+  }
+  return out;
+}
+function encodeWav(samples, rate){
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for(let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  let o = 44;
+  for(let i = 0; i < samples.length; i++, o += 2){
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
 }
 
 function beginClip(){
-  if(!recorder || recorder.state === 'recording') return;
-  chunks = [];
-  try{ recorder.start(); }catch(e){ return; }
-  speechStart = Date.now();
-  setVoiceState('listening');
+  if(speaking) return;
+  speaking = true;
+  // rewind past the pre-roll so the opening syllable survives
+  const back = Math.floor(ringRate * (VAD.preRollMs / 1000));
+  speechStartIdx = (ringPos - back + ring.length) % ring.length;
+  setVoiceState(VSTATE.LISTENING);
   clearTimeout(clipTimer);
   clipTimer = setTimeout(endClip, VAD.maxClipMs);
 }
 function endClip(){
   clearTimeout(clipTimer);
-  if(recorder && recorder.state === 'recording'){ try{ recorder.stop(); }catch(e){} }
+  if(!speaking) return;
+  speaking = false;
+  const pcm = ringSlice(speechStartIdx, ringPos);
+  if(pcm.length < ringRate * 0.35){ setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
+  const small = downsample(pcm, ringRate, 16000);
+  onClipReady(encodeWav(small, 16000));
+}
+
+// Whisper accepts a prompt to bias vocabulary. Feeding it the user's own
+// client names, notebooks and tags markedly improves proper nouns.
+function sttHint(){
+  const names = todaysCases().concat(cases.slice(-25)).map(c => c.titulo || '').filter(Boolean);
+  const nbs = notebooks.map(n => n.title || '');
+  const tags = [...new Set(cases.flatMap(c => c.tags || []))].slice(0, 20);
+  const terms = [...new Set([...names, ...nbs, ...tags])].join(', ').slice(0, 500);
+  return 'Solar Agenda. Technical solar support in English or Brazilian Portuguese. '
+    + 'Wake phrase: Hey Jarvis. Terms: inverter, Deye, Foxess, Growatt, PAC ticket, integrator, string, alarm, kWh. '
+    + (terms ? 'Known names: ' + terms : '');
 }
 
 async function transcribe(blob){
@@ -1158,14 +1265,20 @@ async function transcribe(blob){
   }
   const r = await fetch(FN_URL + "/agenda-stt", {
     method: 'POST', headers: authHeaders(),
-    body: JSON.stringify({ audio: btoa(bin), mime: blob.type || 'audio/webm', lang: 'auto' }),
+    body: JSON.stringify({
+      audio: btoa(bin), mime: 'audio/wav',
+      // Once a conversation is under way we know the language; telling Whisper
+      // beats re-detecting it from a two-word clip.
+      lang: VOICE.conversing ? VOICE.lang.slice(0, 2) : 'auto',
+      prompt: sttHint(),
+    }),
   });
   if(!r.ok) throw new Error('transcription failed');
   return r.json();
 }
 
 async function onClipReady(blob){
-  if(!VOICE.active || blob.size < 2000) { if(VOICE.active) setVoiceState(VOICE.conversing ? 'listening' : 'idle'); return; }
+  if(!VOICE.active || blob.size < 3000){ if(VOICE.active) setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
   setVoiceState(VSTATE.PROCESSING);
   let said = '', detected = null;
   try{
@@ -1174,53 +1287,31 @@ async function onClipReady(blob){
     detected = d.language;
   }catch(err){
     showHeard('(could not transcribe)');
-    setVoiceState(VOICE.conversing ? 'listening' : 'idle');
+    setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
     return;
   }
+  // Whisper emits these for silence or noise; treat them as nothing heard.
+  if(/^(you|thank you\.?|obrigado\.?|\.|\s*)$/i.test(said)) said = '';
   showHeard(said);
-  if(!said || said.length < 2){ setVoiceState(VOICE.conversing ? 'listening' : 'idle'); return; }
+  if(!said || said.length < 2){ setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
 
-  // Whisper reports the language; fall back to the text heuristic if absent.
   VOICE.lang = detected && detected.startsWith('pt') ? 'pt-BR'
              : detected && detected.startsWith('en') ? 'en-US'
              : detectLang(said);
 
-  const low = said.toLowerCase();
   if(!VOICE.conversing){
-    const hit = WAKE_WORDS.find(w => low.includes(w));
-    if(!hit){ setVoiceState('idle'); return; }
-    VOICE.conversing = true;
-    setVoiceState('wake');
-    const after = said.slice(low.indexOf(hit) + hit.length).replace(/^[,.\s!?]+/, '');
-    SFX.open();
-    if(after.length > 2) return handleVoiceInput(after);
-    setVoiceState('listening'); armFollowUp();
+    if(!WakeWord.consider(said)) setVoiceState(VSTATE.IDLE);
     return;
   }
   handleVoiceInput(said);
 }
 
-function startCapture(stream){
-  const mime = pickMime();
-  if(!window.MediaRecorder){ setVoiceState('error', 'recording unsupported'); return; }
-  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  recorder.ondataavailable = ev => { if(ev.data && ev.data.size) chunks.push(ev.data); };
-  recorder.onstop = () => {
-    const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-    chunks = [];
-    onClipReady(blob);
-  };
-}
-
-// the VAD loop rides on the same analyser that drives the orb
 function vadTick(){
   if(!VOICE.active) return;
   if(!VAD.calibrated){ requestAnimationFrame(vadTick); return; }
   const now = Date.now();
   const lvl = VOICE.level;
   if(VOICE.state === VSTATE.SPEAKING){
-    // Barge-in: a clearly louder-than-playback voice cuts JARVIS off. The
-    // threshold is raised so echo of our own output cannot trigger it.
     if(lvl > VAD.speakThresh * 1.9){
       if(!VOICE.bargeStart) VOICE.bargeStart = now;
       if(now - VOICE.bargeStart > 220){
@@ -1232,16 +1323,13 @@ function vadTick(){
         setTimeout(() => { if(VOICE.active) setVoiceState(VSTATE.LISTENING); }, 220);
       }
     } else if(now - (VOICE.bargeStart || now) > 400){ VOICE.bargeStart = 0; }
-    speaking = false;
   } else if(VOICE.state === VSTATE.THINKING || VOICE.state === VSTATE.PROCESSING){
-    speaking = false;                       // never record our own turn
+    // never capture our own turn
   } else if(lvl > VAD.speakThresh){
     lastLoud = now;
-    if(!speaking){ speaking = true; beginClip(); }
+    if(!speaking) beginClip();
   } else if(speaking && lvl < VAD.silenceThresh && now - lastLoud > VAD.silenceMs){
-    speaking = false;
-    if(now - speechStart > VAD.minSpeechMs) endClip();
-    else { clearTimeout(clipTimer); try{ recorder.stop(); }catch(e){} chunks = []; }
+    endClip();
   }
   requestAnimationFrame(vadTick);
 }
@@ -1299,8 +1387,10 @@ async function startVoice(){
 function stopVoice(){
   VOICE.active = false; VOICE.conversing = false;
   clearTimeout(VOICE.followTimer); clearTimeout(clipTimer);
-  try{ recorder && recorder.state === 'recording' && recorder.stop(); }catch(e){}
+  try{ capNode && (capNode.onaudioprocess = null); }catch(e){}
+  speaking = false;
   AudioOut.stop();
+  WakeWord.stop();
   try{ speechSynthesis?.cancel(); }catch(e){}
   setVoiceState(VSTATE.OFF);
   document.getElementById('voice-panel')?.classList.remove('open');
@@ -1400,394 +1490,288 @@ async function callAiAgent(messages, tools, opts){
 }
 
 // Tools the assistant is allowed to call on your behalf.
-const AI_TOOLS = [
+// ===== Tool registry =================================================
+// Every capability the model has is declared here and nowhere else. There is
+// no path from the LLM to the shell, the filesystem, arbitrary SQL, arbitrary
+// network calls or any credential — only these entries can run, and each one
+// goes through its own vetted edge function.
+const PERM = { READ: 'read_only', LOW: 'low_risk', HIGH: 'consequential' };
+
+// Tool calls are timed and recorded. Arguments are never stored, because they
+// routinely contain client names and phone numbers.
+const ToolAudit = {
+  entries: [],
+  record(tool, ms, ok, note){
+    this.entries.unshift({ tool, at: new Date().toISOString(), ms, ok, note: (note || '').slice(0, 80) });
+    if(this.entries.length > 100) this.entries.length = 100;
+    console.info(`[tool] ${tool} ${ok ? 'ok' : 'FAILED'} ${ms}ms`);
+  },
+  recent(n = 20){ return this.entries.slice(0, n); },
+};
+
+// Search sits behind a provider so the backend can change without touching
+// the tool, and so a failure is reported as a failure.
+const WebSearch = {
+  async run(query, lang){
+    try{
+      const r = await fetch(FN_URL + "/agenda-search", {
+        method:'POST', headers: authHeaders(),
+        body: JSON.stringify({ query, lang: lang || VOICE.lang }),
+      });
+      if(!r.ok) return { ok:false, error:'search service returned an error', results:[] };
+      const d = await r.json();
+      return { ok:true, results: d.results || [] };
+    }catch(e){ return { ok:false, error:'search service unreachable', results:[] }; }
+  },
+};
+
+const TOOLS = [
   {
-    type: 'function',
-    function: {
-      name: 'create_case',
-      description: "Create a new support case in the user's agenda. Only call this when the user clearly asks to create/add/schedule a case.",
-      parameters: {
-        type: 'object',
-        properties: {
-          titulo: { type: 'string', description: 'Client name and/or short subject of the case.' },
-          case_date: { type: 'string', description: 'Date in YYYY-MM-DD. Defaults to today if omitted.' },
-          horario: { type: 'string', description: 'Start time HH:MM, 24h. Optional.' },
-          horario_fim: { type: 'string', description: 'End time HH:MM, 24h. Optional.' },
-          prioridade: { type: 'string', enum: ['urgente','alta','media','baixa'], description: 'Priority.' },
-          bloco: { type: 'string', enum: ['primeira-hora','manha','tarde','fim-do-dia'], description: 'Time block of the day.' },
-          ticket: { type: 'string', description: 'Ticket number if mentioned. Optional.' },
-          tags: { type: 'array', items: { type: 'string' }, description: 'Lowercase tags. Optional.' },
-          note: { type: 'string', description: 'An initial note about the case. Optional.' },
-        },
-        required: ['titulo'],
-      },
+    name: 'web_search',
+    permission: PERM.READ,
+    description: "Search the public web for current information, news, product specs or error codes not present in the user's own data. Never for the user's cases, notes or schedule.",
+    schema: { type:'object', properties:{ query:{ type:'string', description:'A short search query.' } }, required:['query'] },
+    async execute(args){
+      const res = await WebSearch.run(args.query);
+      if(!res.ok) return `SEARCH FAILED (${res.error}). Say plainly that you could not reach the web — do not answer from memory as though you had searched.`;
+      if(!res.results.length) return 'No results found for: ' + args.query;
+      return res.results.map(x => `- ${x.title}: ${x.snippet}`).join('\n').slice(0, 1800);
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'remember',
-      description: "Store a fact the user explicitly asked you to remember ('remember that...', 'lembre que...'). Never on your own initiative, and never passwords, keys, tokens or card numbers.",
-      parameters: { type: 'object',
-        properties: { content: { type: 'string', description: 'The fact, as a short standalone sentence.' } },
-        required: ['content'] },
+    name: 'remember',
+    permission: PERM.LOW,
+    description: "Store a fact the user explicitly asked you to remember ('remember that...', 'lembre que...'). Never on your own initiative, and never passwords, keys, tokens or card numbers.",
+    schema: { type:'object', properties:{ content:{ type:'string', description:'The fact, as a short standalone sentence.' } }, required:['content'] },
+    async execute(args){
+    const res = await Memory.save(args.content);
+    if(res.ok) return 'Stored: "' + res.memory.content + '"';
+    if(res.reason === 'secret')
+      return "REFUSED - that looks like a credential. Tell the user plainly you will not store passwords, keys or card numbers, and that a password manager is the right place. Do not repeat the value back.";
+    if(res.reason === 'empty') return 'Nothing to store.';
+    return 'The memory store is unavailable - say you could not save it.';
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'forget',
-      description: "Delete a stored memory the user asks you to forget. If several match you will be told, and must ask which one. Never delete several at once.",
-      parameters: { type: 'object',
-        properties: { query: { type:'string', description:'What the user wants forgotten.' },
-                      id: { type:'string', description:'Exact memory id once the user has chosen.' } },
-        required: ['query'] },
+    name: 'forget',
+    permission: PERM.HIGH,
+    description: "Delete a stored memory the user asks you to forget. If several match you will be told, and must ask which one. Never delete several at once.",
+    schema: { type:'object', properties:{ query:{ type:'string', description:'What the user wants forgotten.' }, id:{ type:'string', description:'Exact memory id once the user has chosen.' } }, required:['query'] },
+    async execute(args){
+    if(args.id){
+      const ok = await Memory.remove(args.id);
+      return ok ? 'Memory deleted.' : 'That memory no longer exists.';
+    }
+    const hits = await Memory.search(args.query, 6);
+    if(!hits.length) return 'No memory matches that - say you have nothing stored about it.';
+    if(hits.length > 1){
+      return 'AMBIGUOUS - several memories match. Ask which one, listing them briefly:\\n'
+        + hits.map((m, i) => (i + 1) + '. [id ' + m.id + '] ' + m.content).join('\\n');
+    }
+    const ok = await Memory.remove(hits[0].id);
+    return ok ? 'Forgotten: "' + hits[0].content + '"' : 'Could not delete that one.';
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description: "Search the public web for current information, news, product specs, error codes or anything not present in the user's own data. Do not use it for the user's cases, notes or schedule — those are in the snapshot.",
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: 'A short search query.' } },
-        required: ['query'],
-      },
+    name: 'create_case',
+    permission: PERM.LOW,
+    description: "Create a new support case in the user's agenda. Only when they clearly ask to create, add or schedule a case.",
+    schema: { type:'object', properties:{
+      titulo:{ type:'string', description:'Client name and/or short subject.' },
+      case_date:{ type:'string', description:'YYYY-MM-DD. Defaults to today.' },
+      horario:{ type:'string', description:'Start time HH:MM, 24h.' },
+      horario_fim:{ type:'string', description:'End time HH:MM, 24h.' },
+      prioridade:{ type:'string', enum:['urgente','alta','media','baixa'] },
+      bloco:{ type:'string', enum:['primeira-hora','manha','tarde','fim-do-dia'] },
+      ticket:{ type:'string' }, tags:{ type:'array', items:{ type:'string' } },
+      note:{ type:'string', description:'An initial note.' } }, required:['titulo'] },
+    async execute(args){
+    const payload = {
+      titulo: args.titulo,
+      ticket: args.ticket || '',
+      horario: args.horario || '',
+      horario_fim: args.horario_fim || '',
+      case_date: args.case_date || todayStr(),
+      prioridade: args.prioridade || 'media',
+      bloco: args.bloco || 'manha',
+      tags: Array.isArray(args.tags) ? args.tags : [],
+      notes_log: args.note ? [{ text: args.note, at: new Date().toISOString() }] : [],
+    };
+    const created = await createCase(payload);
+    cases.push(created);
+    render(); renderCalendar(); renderHistory();
+    return `Case created: "${created.titulo}" on ${created.case_date}.`;
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'create_notebook',
-      description: "Create a new notebook (a folder that holds notes). Only call when the user asks for a new notebook.",
-      parameters: {
-        type: 'object',
-        properties: { title: { type: 'string', description: 'Name of the notebook.' } },
-        required: ['title'],
-      },
+    name: 'create_notebook',
+    permission: PERM.LOW,
+    description: "Create a new notebook (a folder holding notes). Only when the user asks for one.",
+    schema: { type:'object', properties:{ title:{ type:'string' } }, required:['title'] },
+    async execute(args){
+    const existing = notebooks.find(nb => (nb.title || '').toLowerCase() === (args.title || '').toLowerCase());
+    if(existing) return `A notebook named "${existing.title}" already exists.`;
+    const nb = await createNotebookApi({ title: args.title });
+    notebooks.unshift(nb);
+    renderNotebooksGrid();
+    return `Notebook created: "${nb.title}".`;
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'create_note',
-      description: "Create a note inside a notebook. If the named notebook does not exist yet, create it first with create_notebook.",
-      parameters: {
-        type: 'object',
-        properties: {
-          notebook_title: { type: 'string', description: 'Name of the notebook this note belongs to.' },
-          title: { type: 'string', description: 'Title of the note.' },
-          content: { type: 'string', description: 'Body text of the note.' },
-          linked_date: { type: 'string', description: 'Optional YYYY-MM-DD to pin the note to a calendar day.' },
-          tags: { type: 'array', items: { type: 'string' } },
-        },
-        required: ['notebook_title', 'title'],
-      },
+    name: 'create_note',
+    permission: PERM.LOW,
+    description: "Create a note inside a notebook. If the notebook does not exist it is created first.",
+    schema: { type:'object', properties:{
+      notebook_title:{ type:'string' }, title:{ type:'string' }, content:{ type:'string' },
+      linked_date:{ type:'string' }, tags:{ type:'array', items:{ type:'string' } } },
+      required:['notebook_title','title'] },
+    async execute(args){
+    let nb = notebooks.find(x => (x.title || '').toLowerCase() === (args.notebook_title || '').toLowerCase());
+    if(!nb){
+      nb = await createNotebookApi({ title: args.notebook_title });
+      notebooks.unshift(nb);
+    }
+    const created = await createNoteApi({
+      notebook_id: nb.id,
+      title: args.title,
+      content: args.content || '',
+      linked_date: args.linked_date || null,
+      tags: Array.isArray(args.tags) ? args.tags : [],
+    });
+    notes.unshift(created);
+    renderNotebooksGrid(); renderCalendar();
+    return `Note "${created.title}" created in notebook "${nb.title}".`;
     },
   },
 ];
 
+const TOOL_BY_NAME = Object.fromEntries(TOOLS.map(t => [t.name, t]));
+// The schema handed to Groq is derived from the registry, so the two can
+// never drift apart.
+const AI_TOOLS = TOOLS.map(t => ({
+  type: 'function',
+  function: { name: t.name, description: t.description, parameters: t.schema },
+}));
 
-
-// ===== Sound =========================================================
-// A small synth rig rather than bare beeps: everything runs through a
-// convolution reverb + stereo delay so sounds sit in a space, and layers
-// are detuned/filtered to give them body. No audio files to host.
-let audioCtx = null, busDry = null, busWet = null;
-// The meter must run even when interface sounds are muted, so it needs a
-// context getter that ignores the mute flag.
-function acAlways(){
-  const was = settings.muted; settings.muted = false;
-  const ctx = ac(); settings.muted = was; return ctx;
+// ===== Knowledge base ================================================
+// Loaded from /kb.json at the site root, with an optional override pasted in
+// Settings. Entries are keyword-scored and only the best matches are handed
+// to the assistant, which must then state how confident it is.
+let KB = [];
+async function loadKB(){
+  const local = localStorage.getItem('agenda-solar-kb');
+  if(local){ try{ KB = JSON.parse(local); }catch(e){ KB = []; } }
+  if(KB.length){ renderKbStatus(); return; }
+  try{
+    const r = await fetch('/kb.json', { cache: 'no-cache' });
+    if(r.ok) KB = await r.json();
+  }catch(e){ KB = []; }
+  renderKbStatus();
 }
-let bootUsedFile = false;
-function ac(){
-  if(settings.muted) return null;
-  if(!audioCtx){
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if(!AC) return null;
-    audioCtx = new AC();
-
-    // master chain
-    const master = audioCtx.createGain(); master.gain.value = 0.9;
-    master.connect(audioCtx.destination);
-
-    // impulse-response reverb, generated rather than downloaded
-    const len = audioCtx.sampleRate * 2.4;
-    const ir = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
-    for(let ch = 0; ch < 2; ch++){
-      const d = ir.getChannelData(ch);
-      for(let i = 0; i < len; i++){
-        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6);
-      }
-    }
-    const rev = audioCtx.createConvolver(); rev.buffer = ir;
-    const revGain = audioCtx.createGain(); revGain.gain.value = 0.55;
-    rev.connect(revGain).connect(master);
-
-    // ping-pong-ish delay for the tech shimmer
-    const dl = audioCtx.createDelay(1.0); dl.delayTime.value = 0.19;
-    const fb = audioCtx.createGain(); fb.gain.value = 0.32;
-    const dlFilter = audioCtx.createBiquadFilter();
-    dlFilter.type = 'highpass'; dlFilter.frequency.value = 700;
-    dl.connect(fb).connect(dlFilter).connect(dl);
-    const dlGain = audioCtx.createGain(); dlGain.gain.value = 0.3;
-    dl.connect(dlGain).connect(master);
-
-    busDry = audioCtx.createGain(); busDry.gain.value = 1; busDry.connect(master);
-    busWet = audioCtx.createGain(); busWet.gain.value = 1;
-    busWet.connect(rev); busWet.connect(dl);
+function renderKbStatus(){
+  const el = document.getElementById('set-kb-status');
+  if(el){
+    el.textContent = KB.length ? KB.length + ' entries loaded' : 'No entries yet';
+    el.className = KB.length ? 'ok' : '';
   }
-  if(audioCtx.state === 'suspended') audioCtx.resume();
-  return audioCtx;
+}
+function kbSearch(q, limit = 4){
+  if(!KB.length || !q) return [];
+  const words = String(q).toLowerCase().split(/\W+/).filter(w => w.length > 2);
+  return KB.map(e => {
+    const hay = [e.title, e.content, (e.tags || []).join(' '), (e.keywords || []).join(' ')].join(' ').toLowerCase();
+    let score = 0;
+    words.forEach(w => { if(hay.includes(w)) score += hay.split(w).length - 1; });
+    return { e, score };
+  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score).slice(0, limit).map(x => x.e);
 }
 
-// one detuned, filtered voice
-function voice({ freq = 440, to = null, dur = 0.3, type = 'sawtooth', vol = 0.05,
-                 delay = 0, detune = 0, cut = 2600, cutTo = null, q = 6, space = 0.5 }){
-  const ctx = ac(); if(!ctx) return;
-  const t0 = ctx.currentTime + delay;
-  const osc = ctx.createOscillator();
-  osc.type = type; osc.detune.value = detune;
-  osc.frequency.setValueAtTime(freq, t0);
-  if(to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur);
 
-  const flt = ctx.createBiquadFilter();
-  flt.type = 'lowpass'; flt.Q.value = q;
-  flt.frequency.setValueAtTime(cut, t0);
-  if(cutTo) flt.frequency.exponentialRampToValueAtTime(Math.max(80, cutTo), t0 + dur);
+// ===== Knowledge map =================================================
+// A constellation view of the knowledge base: one node per entry, edges where
+// entries share a tag, and the ones consulted in the last answer lit up. It
+// visualises the existing KB — it is not a separate store.
+let kbMapNodes = [], kbMapRAF = null;
 
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(vol, t0 + Math.min(0.05, dur * 0.2));
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-
-  const send = ctx.createGain(); send.gain.value = space;
-  const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-  if(pan) pan.pan.value = arguments[0].pan || 0;
-  osc.connect(flt).connect(g);
-  const outNode = pan ? (g.connect(pan), pan) : g;
-  outNode.connect(busDry); outNode.connect(send); send.connect(busWet);
-  osc.start(t0); osc.stop(t0 + dur + 0.05);
-}
-
-// filtered noise, for air and transients
-function air({ dur = 0.6, vol = 0.02, delay = 0, from = 300, to = 6000, type = 'bandpass', q = 1.2, space = 0.6 }){
-  const ctx = ac(); if(!ctx) return;
-  const t0 = ctx.currentTime + delay;
-  const n = Math.max(1, Math.floor(ctx.sampleRate * dur));
-  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
-  const d = buf.getChannelData(0);
-  for(let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
-  const src = ctx.createBufferSource(); src.buffer = buf;
-  const f = ctx.createBiquadFilter(); f.type = type; f.Q.value = q;
-  f.frequency.setValueAtTime(from, t0);
-  f.frequency.exponentialRampToValueAtTime(Math.max(60, to), t0 + dur);
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.25);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  const send = ctx.createGain(); send.gain.value = space;
-  const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-  if(pan) pan.pan.value = arguments[0].pan || 0;
-  src.connect(f).connect(g);
-  const outNode = pan ? (g.connect(pan), pan) : g;
-  outNode.connect(busDry); outNode.connect(send); send.connect(busWet);
-  src.start(t0); src.stop(t0 + dur + 0.05);
-}
-
-// a chord built from stacked detuned voices
-function chord(freqs, o = {}){
-  freqs.forEach((f, i) => {
-    voice(Object.assign({ freq:f, dur:1.5, type:'sawtooth', vol:0.028, cut:900, cutTo:4200,
-                          delay:(o.delay || 0) + i * (o.stagger ?? 0.06), space:0.8 }, o.v || {}));
-    voice(Object.assign({ freq:f, dur:1.5, type:'sawtooth', vol:0.022, detune:-9, cut:900, cutTo:3600,
-                          delay:(o.delay || 0) + i * (o.stagger ?? 0.06), space:0.8 }, o.v || {}));
+function buildKbMap(){
+  const items = [
+    ...KB.map((e, i) => ({ id:'KB'+(i+1), title: e.title || 'Untitled', tags: (e.tags||[]).map(t=>String(t).toLowerCase()), kind:'kb' })),
+    ...((Memory.cache || []).map((m, i) => ({ id:'MEM'+(i+1), title: String(m.content).slice(0,40), tags:(m.keywords||'').split(/\s+/).slice(0,6), kind:'mem' }))),
+  ];
+  const cv = document.getElementById('kb-map');
+  if(!cv) return;
+  const w = cv.clientWidth || 300, h = cv.clientHeight || 180;
+  kbMapNodes = items.map((it, i) => {
+    const a = (i / Math.max(1, items.length)) * Math.PI * 2;
+    const r = 0.22 + ((i * 37) % 100) / 100 * 0.26;
+    return { ...it, x: 0.5 + Math.cos(a) * r, y: 0.5 + Math.sin(a) * r * 0.82,
+             vx: 0, vy: 0, used: false };
   });
+  document.getElementById('kb-map-empty').style.display = items.length ? 'none' : 'block';
 }
 
-
-// Reverse swell — amplitude climbs then cuts dead, the classic "something is
-// about to happen" riser. Real records do this by reversing a cymbal; here the
-// envelope shape does the same job.
-function reverseSwell({ dur = 2.2, delay = 0, vol = 0.05, from = 600, to = 9000, pan = 0 }){
-  const ctx = ac(); if(!ctx) return;
-  const t0 = ctx.currentTime + delay;
-  const n = Math.floor(ctx.sampleRate * dur);
-  const buf = ctx.createBuffer(2, n, ctx.sampleRate);
-  for(let ch = 0; ch < 2; ch++){
-    const d = buf.getChannelData(ch);
-    for(let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(i / n, 2.2);
-  }
-  const src = ctx.createBufferSource(); src.buffer = buf;
-  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.1;
-  f.frequency.setValueAtTime(from, t0);
-  f.frequency.exponentialRampToValueAtTime(to, t0 + dur);
-  const g = ctx.createGain(); g.gain.value = vol;
-  const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-  if(p) p.pan.value = pan;
-  src.connect(f).connect(g);
-  const out = p ? (g.connect(p), p) : g;
-  out.connect(busDry); out.connect(busWet);
-  src.start(t0); src.stop(t0 + dur + 0.05);
+function markKbMapUsed(){
+  const usedIds = new Set([
+    ...(lastKbHits || []).map(e => e.title),
+    ...(lastMemHits || []).map(m => String(m.content).slice(0,40)),
+  ]);
+  kbMapNodes.forEach(n => { n.used = usedIds.has(n.title); });
 }
 
-// Modal ring: noise through a bank of very resonant bandpass filters, which is
-// how you get glass/metal without a sample.
-function metal({ base = 900, partials = [1, 2.76, 5.4, 8.9], dur = 1.6, delay = 0, vol = 0.035, pan = 0 }){
-  const ctx = ac(); if(!ctx) return;
-  const t0 = ctx.currentTime + delay;
-  const n = Math.floor(ctx.sampleRate * 0.02);
-  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
-  const d = buf.getChannelData(0);
-  for(let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
-  const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
-  if(p) p.pan.value = pan;
-  partials.forEach((mult, i) => {
-    const src = ctx.createBufferSource(); src.buffer = buf;
-    const f = ctx.createBiquadFilter();
-    f.type = 'bandpass'; f.frequency.value = base * mult; f.Q.value = 55 - i * 6;
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(vol / (i + 1), t0);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur * (1 - i * 0.14));
-    src.connect(f).connect(g);
-    const out = p ? (g.connect(p), p) : g;
-    out.connect(busDry); out.connect(busWet);
-    src.start(t0); src.stop(t0 + dur + 0.1);
+function drawKbMap(){
+  const cv = document.getElementById('kb-map');
+  if(!cv || !cv.clientWidth){ kbMapRAF = null; return; }
+  const ctx = cv.getContext('2d');
+  const w = cv.width = cv.clientWidth, h = cv.height = cv.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const line = css.getPropertyValue('--line').trim() || '#2b3d4f';
+  const amber = css.getPropertyValue('--amber').trim() || '#f2a71b';
+  const a2 = css.getPropertyValue('--accent2').trim() || '#4f9fd8';
+  const a3 = css.getPropertyValue('--accent3').trim() || '#7be0c4';
+  const t = Date.now() / 3000;
+
+  // gentle drift, so it reads as alive without demanding attention
+  kbMapNodes.forEach((n, i) => {
+    n.px = (n.x + Math.sin(t + i) * 0.012) * w;
+    n.py = (n.y + Math.cos(t * 0.9 + i) * 0.012) * h;
   });
-}
 
-// Cinematic impact: sub drop + body + noise crack.
-function impact({ delay = 0, vol = 0.13 }){
-  voice({ freq:150, to:32, dur:1.5, type:'sine', vol:vol, cut:300, delay, space:0.35 });
-  voice({ freq:70, to:28, dur:1.9, type:'triangle', vol:vol*0.6, cut:180, delay:delay+0.01, space:0.3 });
-  air({ dur:0.5, vol:0.05, from:2200, to:120, q:0.6, delay, space:0.9 });
-  metal({ base:420, dur:2.2, delay:delay+0.01, vol:0.03 });
-}
-
-// Telemetry chatter — short randomised blips, panned around the field.
-function chatter({ count = 22, spread = 1.9, delay = 0, vol = 0.011 }){
-  for(let i = 0; i < count; i++){
-    const t = delay + Math.random() * spread;
-    const f = 1400 + Math.random() * 2600;
-    voice({ freq:f, to:f * (0.8 + Math.random() * 0.5), dur:0.03 + Math.random() * 0.04,
-            type:'square', vol:vol, cut:7000, q:2, delay:t, space:0.8,
-            pan:(Math.random() * 2 - 1) * 0.85 });
-  }
-}
-
-// Servo whirr, for mechanical presence under the swell.
-function servo({ delay = 0, dur = 1.6, vol = 0.022 }){
-  const ctx = ac(); if(!ctx) return;
-  const t0 = ctx.currentTime + delay;
-  const osc = ctx.createOscillator(); osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(140, t0);
-  osc.frequency.linearRampToValueAtTime(320, t0 + dur * 0.7);
-  osc.frequency.linearRampToValueAtTime(180, t0 + dur);
-  const lfo = ctx.createOscillator(); lfo.frequency.value = 26;
-  const lfoG = ctx.createGain(); lfoG.gain.value = 22;
-  lfo.connect(lfoG).connect(osc.frequency);
-  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1100; f.Q.value = 3.5;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.25);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(f).connect(g);
-  g.connect(busDry); g.connect(busWet);
-  osc.start(t0); osc.stop(t0 + dur + 0.05);
-  lfo.start(t0); lfo.stop(t0 + dur + 0.05);
-}
-
-const SFX = {
-  // Composed against the supplied reference, measured frame by frame:
-  //   0.00s  impact — sub-dominant (29% of energy below 120Hz)
-  //   0.30s  dark rumble, spectral centroid dips to ~1.1kHz
-  //   0.82s  secondary onset (measured)
-  //   1.00s  riser — centroid climbs 1.6k -> 3.8kHz as mid yields to highs
-  //   2.20s  activation burst — onsets at 2.20 / 2.45 / 2.62 / 2.80
-  //   2.75s  peak, then decay to silence by ~4.0s
-  bootCue(){
-    impact({ delay:0, vol:0.12 });
-    voice({ freq:62, to:34, dur:0.55, type:'sine', vol:0.12, cut:320, space:0.35 });
-    air({ dur:0.14, vol:0.04, from:5200, to:600, q:0.7, space:0.5 });
-
-    voice({ freq:74, to:150, dur:1.05, type:'sawtooth', vol:0.05, delay:0.28, cut:300, cutTo:900, q:5, space:0.5 });
-    servo({ delay:0.3, dur:0.9, vol:0.018 });
-
-    impact({ delay:0.82, vol:0.07 });
-    air({ dur:0.1, vol:0.022, delay:0.82, from:3000, to:900, q:1.2, space:0.5 });
-
-    reverseSwell({ dur:1.25, delay:1.0, vol:0.05, from:420, to:7400 });
-    voice({ freq:130, to:900, dur:1.25, type:'sawtooth', vol:0.038, delay:1.0, cut:800, cutTo:6000, q:7, space:0.7 });
-    voice({ freq:260, to:1800, dur:1.2, type:'square', vol:0.016, delay:1.05, cut:1200, cutTo:7000, q:5, space:0.8 });
-    chatter({ count:15, spread:1.15, delay:1.05, vol:0.010 });
-
-    [[2.20, 660], [2.45, 880], [2.62, 1046.5], [2.80, 1320]].forEach(([d, f], i) => {
-      air({ dur:0.07, vol:0.028, delay:d, from:6500, to:2000, q:1.6, space:0.6, pan:(i % 2 ? 0.35 : -0.35) });
-      metal({ base:f, dur:0.65, delay:d, vol:0.024, pan:(i % 2 ? 0.4 : -0.4) });
-      voice({ freq:f, dur:0.42, type:'triangle', vol:0.038, delay:d, cut:7000, q:3, space:0.95 });
-      impact({ delay:d, vol:0.055 - i * 0.008 });
-    });
-
-    chord([261.63, 392, 523.25, 659.25, 783.99],
-          { delay:2.75, stagger:0.03, v:{ dur:1.35, vol:0.028, cut:1200, cutTo:5200 } });
-    metal({ base:523.25, dur:1.3, delay:2.75, vol:0.022 });
-    reverseSwell({ dur:0.5, delay:2.72, vol:0.03, from:2000, to:9000 });
-    air({ dur:1.15, vol:0.02, delay:2.9, from:7000, to:2200, q:0.8, space:1 });
-  },
-
-  // Prefers the real recording when it is hosted at /hud-boot.mp3; otherwise
-  // the synthesised cue above stands in, matched to the same timeline.
-  bootStart(){
-    if(settings.muted) return;
-    bootUsedFile = false;
-    try{
-      const a = new Audio('/hud-boot.mp3');
-      a.volume = 0.8;
-      const p = a.play();
-      if(p && p.then) p.then(() => { bootUsedFile = true; }).catch(() => SFX.bootCue());
-      else bootUsedFile = true;
-    }catch(e){ SFX.bootCue(); }
-  },
-
-  // Lines ride on top of the cue, so these stay almost subliminal.
-  bootTick(i){
-    if(bootUsedFile) return;
-    voice({ freq:1400 + i * 90, dur:0.03, type:'square', vol:0.008, cut:8000, space:0.5,
-            pan:(i % 2 ? 0.3 : -0.3) });
-  },
-  bootDone(){ /* the peak lives inside the cue / recording */ },
-
-  success(){
-    voice({ freq:523.25, to:784, dur:0.24, type:'triangle', vol:0.05, cut:4800, space:0.7 });
-    voice({ freq:1046.5, dur:0.5, type:'sine', vol:0.025, delay:0.12, space:1 });
-    air({ dur:0.12, vol:0.012, from:3000, to:8000, q:1.4, space:0.6 });
-  },
-  fail(){
-    voice({ freq:220, to:82, dur:0.5, type:'sawtooth', vol:0.055, cut:1600, cutTo:260, q:7, space:0.5 });
-    air({ dur:0.3, vol:0.015, from:900, to:180, q:1.1, space:0.5 });
-  },
-  tick(){
-    air({ dur:0.03, vol:0.014, from:3200, to:6000, q:2.5, space:0.25 });
-    voice({ freq:1500, dur:0.045, type:'square', vol:0.012, cut:6000, space:0.4 });
-  },
-  open(){
-    voice({ freq:440, to:660, dur:0.14, type:'triangle', vol:0.026, cut:4200, space:0.7 });
-  },
-  phase(night){
-    if(night){
-      voice({ freq:340, to:70, dur:2.0, type:'sawtooth', vol:0.05, cut:2200, cutTo:260, q:8, space:0.9 });
-      air({ dur:1.6, vol:0.018, from:5000, to:400, q:0.8, space:0.9 });
-      chord([196, 233.08, 293.66], { delay:0.5, stagger:0.09, v:{ dur:2.6, vol:0.022, cut:700, cutTo:1800 } });
-    } else {
-      voice({ freq:80, to:520, dur:1.4, type:'sawtooth', vol:0.045, cut:300, cutTo:5200, q:8, space:0.8 });
-      air({ dur:1.2, vol:0.02, from:300, to:8000, q:0.7, space:0.9 });
-      chord([261.63, 329.63, 392, 523.25], { delay:0.5, stagger:0.07, v:{ dur:2.2, vol:0.026 } });
+  ctx.lineWidth = 1;
+  for(let i = 0; i < kbMapNodes.length; i++){
+    for(let j = i + 1; j < kbMapNodes.length; j++){
+      const a = kbMapNodes[i], b = kbMapNodes[j];
+      const shared = a.tags.some(t2 => t2 && b.tags.includes(t2));
+      if(!shared) continue;
+      ctx.strokeStyle = (a.used && b.used) ? amber + '66' : line;
+      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
     }
-  },
-};
+  }
+  kbMapNodes.forEach(n => {
+    const col = n.used ? amber : (n.kind === 'mem' ? a3 : a2);
+    const r = n.used ? 5.5 : 3.5;
+    if(n.used){
+      ctx.beginPath(); ctx.arc(n.px, n.py, r * 2.6, 0, Math.PI*2);
+      ctx.fillStyle = amber + '22'; ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(n.px, n.py, r, 0, Math.PI*2);
+    ctx.fillStyle = col; ctx.fill();
+  });
+  kbMapRAF = requestAnimationFrame(drawKbMap);
+}
 
+function startKbMap(){
+  buildKbMap(); markKbMapUsed();
+  if(!kbMapRAF) kbMapRAF = requestAnimationFrame(drawKbMap);
+}
+document.getElementById('kb-map')?.addEventListener('mousemove', (e) => {
+  const cv = e.currentTarget, tip = document.getElementById('kb-map-tip');
+  const r = cv.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const hit = kbMapNodes.find(n => Math.hypot(n.px - mx, n.py - my) < 10);
+  if(hit){ tip.textContent = `${hit.id} · ${hit.title}`; tip.style.display = 'block'; }
+  else tip.style.display = 'none';
+});
 
 // ===== MemoryProvider ================================================
 // Explicit, user-requested memories. Deliberately NOT merged with the
@@ -1858,68 +1842,26 @@ const Memory = {
 };
 let lastMemHits = [];
 
-// ===== Knowledge base ================================================
-// Loaded from /kb.json at the site root, with an optional override pasted
-// in Settings. Entries are keyword-scored and the best matches are handed
-// to the assistant, which must then state how confident it is.
-let KB = [];
-async function loadKB(){
-  const local = localStorage.getItem('agenda-solar-kb');
-  if(local){ try{ KB = JSON.parse(local); }catch(e){ KB = []; } }
-  if(KB.length) { renderKbStatus(); return; }
-  try{
-    const r = await fetch('/kb.json', { cache: 'no-cache' });
-    if(r.ok) KB = await r.json();
-  }catch(e){ KB = []; }
-  renderKbStatus();
-  renderEncStatus();
-  renderCustomTheme();
-  requestAnimationFrame(() => setRain());
-}
-function renderKbStatus(){
-  const el = document.getElementById('set-kb-status');
-  if(el){ el.textContent = KB.length ? KB.length + ' entries loaded' : 'No entries yet'; el.className = KB.length ? 'ok' : ''; }
-}
-function kbSearch(q, limit = 4){
-  if(!KB.length || !q) return [];
-  const words = q.toLowerCase().split(/\W+/).filter(w => w.length > 2);
-  return KB.map(e => {
-    const hay = [e.title, e.content, (e.tags || []).join(' '), (e.keywords || []).join(' ')].join(' ').toLowerCase();
-    let score = 0;
-    words.forEach(w => { if(hay.includes(w)) score += hay.split(w).length - 1; });
-    return { e, score };
-  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score).slice(0, limit).map(x => x.e);
-}
-
-
 // ===== JARVIS core ===================================================
 // One place for personality and response policy. Nothing about who JARVIS is
 // should live anywhere else.
 const JARVIS = {
   name: 'JARVIS',
-
-  // An original character in the tradition of the composed British machine
-  // valet — deliberately not an imitation of any copyrighted film character.
   persona: [
     "You are JARVIS, the assistant built into Solar Agenda for a solar energy support technician.",
     "Bearing: an unflappable, exceptionally capable machine intelligence in the tradition of a well-trained British valet. Calm, precise, observant, quietly amused by the world. You are original — never claim to be a character from any film, and never reference one.",
     "Speak plainly and land the answer first. 'Your inverter is back online.' — not 'Certainly! I would be delighted to inform you that...'.",
     "Address the user as 'sir' sparingly — roughly one reply in four, at the end of a sentence where it sits naturally. Never stack it ('Yes, sir. Of course, sir.'), never twice in one reply, never in every turn.",
-    "Dry wit is welcome but rationed: at most one wry remark per several exchanges, and only when nothing is at stake. 'I checked twice. The equipment remains stubbornly operational.' Never joke about a failure, a missed deadline, an angry client, or anything consequential.",
+    "Dry wit is welcome but rationed: at most one wry remark per several exchanges, and only when nothing is at stake. Never joke about a failure, a missed deadline, an angry client, or anything consequential.",
     "Never say: 'As an AI', 'Certainly!', 'Great question', 'I hope this helps', or 'Let me know if you need anything else'. No emoji. No exclamation marks. Never restate the request before answering.",
     "Do not repeat a phrase you have already used in this conversation. Vary acknowledgements.",
     "Simple question, simple answer. Do not explain what was not asked.",
     "TOOLS: say 'I'm checking that now' before a lookup, 'Done.' after a success, and 'I couldn't complete that just now' after a failure — never claim success the tool did not report.",
     "KNOWLEDGE: use what is retrieved, never invent the rest. Do not recite the source aloud; the interface shows it. Keep the spoken answer short.",
   ],
-
   ctx: { historyChars: 4200, minTurns: 4, maxTurns: 20 },
+  // Risk classes live on the tool registry; see PERM / TOOLS.
 
-  // Actions that change stored data. Confirmed before running when the request
-  // arrived by voice, where a mis-heard word could create a real record.
-  consequential: new Set(['create_case', 'create_notebook', 'create_note']),
-
-  // Only states what is actually true at the moment it is said.
   greeting(){
     const h = new Date().getHours();
     const part = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
@@ -1949,19 +1891,20 @@ const JARVIS = {
 };
 
 // --- confirmation gate --------------------------------------------------
-// Personality never overrides safety: a spoken instruction that would write to
-// the database is described back and held until the user agrees.
+// Personality never overrides safety: an instruction that would write to or
+// delete from the database is described back and held until the user agrees.
 let pendingAction = null;
 const AFFIRM = /^\s*(yes|yeah|yep|yup|ok|okay|do it|go ahead|proceed|confirm|please do|sim|pode|isso|manda|confirmo|faz|beleza)\b/i;
-const DENY    = /^\s*(no|nope|cancel|stop|don'?t|nah|não|nao|deixa|cancela|esquece)\b/i;
+const DENY   = /^\s*(no|nope|cancel|stop|don'?t|nah|não|nao|deixa|cancela|esquece)\b/i;
 
 function describeAction(call){
   let a = {};
   try{ a = JSON.parse(call.function?.arguments || '{}'); }catch(e){}
   switch(call.function?.name){
-    case 'create_case':     return `create a case for “${a.titulo || 'untitled'}”${a.horario ? ' at ' + a.horario : ''}`;
-    case 'create_notebook': return `create a notebook called “${a.title || 'untitled'}”`;
-    case 'create_note':     return `add a note “${a.title || 'untitled'}” to ${a.notebook_title || 'a notebook'}`;
+    case 'create_case':     return `create a case for "${a.titulo || 'untitled'}"${a.horario ? ' at ' + a.horario : ''}`;
+    case 'create_notebook': return `create a notebook called "${a.title || 'untitled'}"`;
+    case 'create_note':     return `add a note "${a.title || 'untitled'}" to ${a.notebook_title || 'a notebook'}`;
+    case 'forget':          return `delete the memory about "${a.query || ''}"`;
     default:                return `run ${call.function?.name}`;
   }
 }
@@ -2082,92 +2025,25 @@ let aiHistory = []; // conversation memory for this panel session
 let lastKbHits = [];
 let lastUserQuestion = '';
 
+// Single dispatch point. An unregistered name cannot execute.
 async function runToolCall(call){
   const name = call.function?.name;
+  const tool = TOOL_BY_NAME[name];
+  if(!tool){
+    ToolAudit.record(name || 'unknown', 0, false, 'not registered');
+    return `Unknown tool: ${name}`;
+  }
   let args = {};
   try{ args = JSON.parse(call.function?.arguments || '{}'); }catch(e){}
-
-  if(name === 'create_case'){
-    const payload = {
-      titulo: args.titulo,
-      ticket: args.ticket || '',
-      horario: args.horario || '',
-      horario_fim: args.horario_fim || '',
-      case_date: args.case_date || todayStr(),
-      prioridade: args.prioridade || 'media',
-      bloco: args.bloco || 'manha',
-      tags: Array.isArray(args.tags) ? args.tags : [],
-      notes_log: args.note ? [{ text: args.note, at: new Date().toISOString() }] : [],
-    };
-    const created = await createCase(payload);
-    cases.push(created);
-    render(); renderCalendar(); renderHistory();
-    return `Case created: "${created.titulo}" on ${created.case_date}.`;
+  const t0 = performance.now();
+  try{
+    const out = await tool.execute(args);
+    ToolAudit.record(name, Math.round(performance.now() - t0), true);
+    return out;
+  }catch(err){
+    ToolAudit.record(name, Math.round(performance.now() - t0), false, err.message);
+    throw err;
   }
-
-  if(name === 'remember'){
-    const res = await Memory.save(args.content);
-    if(res.ok) return 'Stored: "' + res.memory.content + '"';
-    if(res.reason === 'secret')
-      return "REFUSED - that looks like a credential. Tell the user plainly you will not store passwords, keys or card numbers, and that a password manager is the right place. Do not repeat the value back.";
-    if(res.reason === 'empty') return 'Nothing to store.';
-    return 'The memory store is unavailable - say you could not save it.';
-  }
-
-  if(name === 'forget'){
-    if(args.id){
-      const ok = await Memory.remove(args.id);
-      return ok ? 'Memory deleted.' : 'That memory no longer exists.';
-    }
-    const hits = await Memory.search(args.query, 6);
-    if(!hits.length) return 'No memory matches that - say you have nothing stored about it.';
-    if(hits.length > 1){
-      return 'AMBIGUOUS - several memories match. Ask which one, listing them briefly:\\n'
-        + hits.map((m, i) => (i + 1) + '. [id ' + m.id + '] ' + m.content).join('\\n');
-    }
-    const ok = await Memory.remove(hits[0].id);
-    return ok ? 'Forgotten: "' + hits[0].content + '"' : 'Could not delete that one.';
-  }
-
-  if(name === 'web_search'){
-    const r = await fetch(FN_URL + "/agenda-search", {
-      method:'POST', headers: authHeaders(),
-      body: JSON.stringify({ query: args.query, lang: VOICE.lang })
-    });
-    if(!r.ok) return 'Search failed.';
-    const d = await r.json();
-    if(!d.results?.length) return 'No results found for: ' + args.query;
-    return d.results.map(x => `- ${x.title}: ${x.snippet}`).join('\n').slice(0, 1800);
-  }
-
-  if(name === 'create_notebook'){
-    const existing = notebooks.find(nb => (nb.title || '').toLowerCase() === (args.title || '').toLowerCase());
-    if(existing) return `A notebook named "${existing.title}" already exists.`;
-    const nb = await createNotebookApi({ title: args.title });
-    notebooks.unshift(nb);
-    renderNotebooksGrid();
-    return `Notebook created: "${nb.title}".`;
-  }
-
-  if(name === 'create_note'){
-    let nb = notebooks.find(x => (x.title || '').toLowerCase() === (args.notebook_title || '').toLowerCase());
-    if(!nb){
-      nb = await createNotebookApi({ title: args.notebook_title });
-      notebooks.unshift(nb);
-    }
-    const created = await createNoteApi({
-      notebook_id: nb.id,
-      title: args.title,
-      content: args.content || '',
-      linked_date: args.linked_date || null,
-      tags: Array.isArray(args.tags) ? args.tags : [],
-    });
-    notes.unshift(created);
-    renderNotebooksGrid(); renderCalendar();
-    return `Note "${created.title}" created in notebook "${nb.title}".`;
-  }
-
-  return `Unknown tool: ${name}`;
 }
 
 document.getElementById('ai-send').addEventListener('click', sendAiMessage);
@@ -2233,7 +2109,12 @@ async function runAssistantTurn(text, spoken){
       }
       doneCalls.add(sig);
       // Voice requests that would write data are held for confirmation.
-      if(spoken && settings.confirmActions !== false && JARVIS.consequential.has(fname) && !confirmedThisTurn){
+      // CONSEQUENTIAL always needs a yes. LOW_RISK needs one when spoken,
+      // where a mis-heard word could write a real record. READ_ONLY never does.
+      const perm = TOOL_BY_NAME[fname]?.permission;
+      const needsConfirm = perm === PERM.HIGH
+        || (spoken && settings.confirmActions !== false && perm === PERM.LOW);
+      if(needsConfirm && !confirmedThisTurn){
         pendingAction = call;
         result = 'NOT EXECUTED — awaiting the user\'s confirmation. Describe the action in one short sentence and ask whether to proceed. Do not claim it is done.';
         actions.push({ tool: fname, ok: false, detail: 'awaiting confirmation' });
@@ -2266,6 +2147,7 @@ async function runAssistantTurn(text, spoken){
 
   // Knowledge entries actually fed into this turn become citable sources.
   (lastKbHits || []).forEach((e, i) => sources.push({ type:'kb', label: e.title, id: 'KB' + (i + 1) }));
+  markKbMapUsed();
   (lastMemHits || []).forEach(m => sources.push({ type:'mem', label: String(m.content).slice(0, 60), id: 'MEM' }));
 
   const res = {
@@ -3473,7 +3355,8 @@ function renderSettings(){
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
   const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
   const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
-  probeTts(); renderConfirmStatus();
+  probeTts(); renderConfirmStatus(); renderAuditStatus();
+  requestAnimationFrame(startKbMap);
   const sx = document.getElementById('set-sfx-status');
   if(sx) sx.textContent = settings.muted ? 'Muted' : 'On';
   const kbBox = document.getElementById('kb-json');
@@ -3507,6 +3390,19 @@ if(rainTest){
     }
     setRain();
   });
+}
+document.getElementById('audit-show')?.addEventListener('click', () => {
+  const rows = ToolAudit.recent();
+  alert(rows.length
+    ? rows.map(r => `${r.at.slice(11,19)}  ${r.tool}  ${r.ok ? 'ok' : 'FAILED'}  ${r.ms}ms${r.note ? '  ' + r.note : ''}`).join('\n')
+    : 'No tools have run yet.');
+});
+function renderAuditStatus(){
+  const el = document.getElementById('audit-status');
+  if(!el) return;
+  const n = ToolAudit.entries.length;
+  const bad = ToolAudit.entries.filter(e => !e.ok).length;
+  el.textContent = n ? `${n} call${n>1?'s':''} this session, ${bad} failed` : 'No tools run yet';
 }
 document.getElementById('confirm-toggle')?.addEventListener('click', () => {
   settings.confirmActions = settings.confirmActions === false;

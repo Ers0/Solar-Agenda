@@ -222,6 +222,10 @@
       <div class="day-panel-header"><h2>Knowledge base</h2></div>
       <p class="hint">Feeds the assistant with your own reference material. It answers from these entries first and shows a confidence bar. Either commit a <b>kb.json</b> file to the site root, or paste the JSON below.</p>
       <div class="set-row">
+        <div class="set-info"><b>Tool activity</b><span id="audit-status">No tools run yet</span></div>
+        <button class="btn-ghost" id="audit-show">View log</button>
+      </div>
+      <div class="set-row">
         <div class="set-info"><b>Confirm spoken actions</b><span id="confirm-status">On — asks before creating anything by voice</span></div>
         <button class="btn-ghost" id="confirm-toggle">Toggle</button>
       </div>
@@ -246,6 +250,12 @@
         <div class="set-info"><b>Status</b><span id="set-kb-status">No entries yet</span></div>
         <button class="btn-ghost" id="kb-template">Copy template</button>
       </div>
+      <div class="kb-map-wrap">
+        <canvas id="kb-map" aria-label="Knowledge map"></canvas>
+        <div class="kb-map-empty" id="kb-map-empty">No entries yet — the map fills in as you add knowledge.</div>
+        <div class="kb-map-tip" id="kb-map-tip"></div>
+      </div>
+      <p class="hint">Each point is an entry; lines join entries that share a tag. Amber points were used in the most recent answer.</p>
       <div class="field"><label>kb.json contents</label><textarea id="kb-json" style="min-height:150px; font-family:'JetBrains Mono',monospace; font-size:0.78rem;" placeholder='[{"title":"...","content":"...","tags":["..."]}]'></textarea></div>
       <div class="set-actions">
         <button class="btn-primary" id="kb-save" style="flex:1">Save knowledge base</button>
