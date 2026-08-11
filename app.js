@@ -825,9 +825,12 @@ document.getElementById('f-phone')?.addEventListener('input', syncPhoneLink);
 // ===== Voice assistant ===============================================
 // Wake word runs entirely in the browser via the Web Speech API — raw audio
 // never leaves the machine, and only the final transcript is sent onward.
-// After a reply the mic reopens for a follow-up, so "Hey Jarvis" is needed
+// After a reply the mic reopens for a follow-up, so "Hey TARS" is needed
 // once to start a conversation, not once per sentence.
-const WAKE_WORDS = ['hey jarvis', 'hei jarvis', 'ei jarvis', 'hey darvis', 'hey jervis', 'ok jarvis'];
+// Whisper renders the name inconsistently, so the common mishearings are
+// treated as hits too.
+const WAKE_WORDS = ['hey tars', 'hei tars', 'ei tars', 'hey tarz', 'hey tarss', 'hey tar',
+                    'ok tars', 'hey tars,', 'tars,', 'e tars'];
 const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 
 const VOICE = {
@@ -850,9 +853,9 @@ function setVoiceState(s, detail){
   if(orb) orb.dataset.state = s;
   if(lab){
     const map = {
-      off:'voice off', calibrating:'reading the room…', idle:'say "Hey Jarvis"', wake:'wake word detected',
-      listening:'listening…', thinking:'thinking…', tool:'checking…',
-      speaking:'speaking', error: detail || 'error',
+      off:'Voice off', calibrating:'Reading the room…', idle:'Idle — say “Hey TARS”', wake:'TARS here',
+      listening:'Listening…', processing:'Processing…', thinking:'Thinking…', tool:'Consulting…',
+      speaking:'Speaking…', interrupted:'Go ahead', error: detail || 'Error',
     };
     lab.textContent = map[s] || s;
   }
@@ -1138,7 +1141,7 @@ WakeWord.onWake((remainder) => {
 // --- capture: rolling PCM buffer + Groq Whisper -----------------------
 // MediaRecorder only starts writing once speech is already detected, so the
 // first syllable was being lost — which is exactly the part carrying "Hey" in
-// "Hey Jarvis". We now keep a continuous ring buffer of raw audio and cut the
+// "Hey TARS". We now keep a continuous ring buffer of raw audio and cut the
 // clip from BEFORE speech began, so nothing is clipped.
 const VAD = {
   speakThresh: 0.055, silenceThresh: 0.032,
@@ -1239,21 +1242,47 @@ function endClip(){
   if(!speaking) return;
   speaking = false;
   const pcm = ringSlice(speechStartIdx, ringPos);
-  if(pcm.length < ringRate * 0.35){ setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
+  const secs = pcm.length / ringRate;
+  if(secs < 0.35){ setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
+
+  // Measure the clip itself. If it is effectively silent the microphone path
+  // is broken, and saying so is far more useful than sending empty audio to
+  // Whisper and reporting whatever it invents.
+  let peak = 0, sum = 0;
+  for(let i = 0; i < pcm.length; i++){ const v = Math.abs(pcm[i]); if(v > peak) peak = v; sum += v * v; }
+  const rms = Math.sqrt(sum / pcm.length);
+  lastClipInfo = { secs: secs.toFixed(1), peak: peak.toFixed(3), rms: rms.toFixed(4) };
+  if(peak < 0.005){
+    showHeard(`no audio captured (${secs.toFixed(1)}s, peak ${peak.toFixed(3)}) — check the microphone`);
+    setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+    return;
+  }
+
+  // Normalise quiet clips; a distant mic is a common cause of poor accuracy.
+  if(peak > 0 && peak < 0.4){
+    const g = Math.min(6, 0.6 / peak);
+    for(let i = 0; i < pcm.length; i++) pcm[i] *= g;
+  }
   const small = downsample(pcm, ringRate, 16000);
   onClipReady(encodeWav(small, 16000));
 }
+let lastClipInfo = null;
 
-// Whisper accepts a prompt to bias vocabulary. Feeding it the user's own
-// client names, notebooks and tags markedly improves proper nouns.
+// Whisper echoes its prompt when the audio is unintelligible, so the hint is
+// written as a natural sentence rather than a labelled list — and kept short.
 function sttHint(){
-  const names = todaysCases().concat(cases.slice(-25)).map(c => c.titulo || '').filter(Boolean);
-  const nbs = notebooks.map(n => n.title || '');
-  const tags = [...new Set(cases.flatMap(c => c.tags || []))].slice(0, 20);
-  const terms = [...new Set([...names, ...nbs, ...tags])].join(', ').slice(0, 500);
-  return 'Solar Agenda. Technical solar support in English or Brazilian Portuguese. '
-    + 'Wake phrase: Hey Jarvis. Terms: inverter, Deye, Foxess, Growatt, PAC ticket, integrator, string, alarm, kWh. '
-    + (terms ? 'Known names: ' + terms : '');
+  const names = [...new Set(cases.slice(-20).map(x => x.titulo || '').filter(Boolean))].slice(0, 12);
+  const base = 'Support call about solar inverters. We discuss Deye, Foxess and Growatt inverters, PAC tickets, strings and alarms.';
+  return names.length ? base + ' Clients mentioned include ' + names.join(', ') + '.' : base;
+}
+
+// Anything that is mostly a slice of the prompt is a hallucination, not speech.
+function isPromptEcho(said){
+  const s = said.toLowerCase().replace(/[.,!?]/g, '').trim();
+  if(!s) return true;
+  const hint = sttHint().toLowerCase();
+  if(s.length < 40 && hint.includes(s)) return true;
+  return /^(terms|clients mentioned include|support call about solar inverters)\b/.test(s);
 }
 
 async function transcribe(blob){
@@ -1292,6 +1321,11 @@ async function onClipReady(blob){
   }
   // Whisper emits these for silence or noise; treat them as nothing heard.
   if(/^(you|thank you\.?|obrigado\.?|\.|\s*)$/i.test(said)) said = '';
+  if(said && isPromptEcho(said)){
+    showHeard(`unclear audio${lastClipInfo ? ` (${lastClipInfo.secs}s, level ${lastClipInfo.rms})` : ''} — say it again`);
+    setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+    return;
+  }
   showHeard(said);
   if(!said || said.length < 2){ setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
 
@@ -1687,91 +1721,281 @@ function kbSearch(q, limit = 4){
 }
 
 
-// ===== Knowledge map =================================================
-// A constellation view of the knowledge base: one node per entry, edges where
-// entries share a tag, and the ones consulted in the last answer lit up. It
-// visualises the existing KB — it is not a separate store.
-let kbMapNodes = [], kbMapRAF = null;
+// ===== Knowledge galaxy (3D) =========================================
+// Markdown notes rendered as a star field. Projection, orbit and depth sorting
+// are done by hand on a 2D canvas — no 3D library, so nothing extra to load.
+// Sources: the app's own notes, .md files in the configured local folder, and
+// (optionally) markdown this app has stored in Drive.
+const Galaxy = {
+  nodes: [], edges: [], rot: { x: -0.25, y: 0.6 }, zoom: 1,
+  drag: null, raf: null, hover: null, ready: false,
 
-function buildKbMap(){
-  const items = [
-    ...KB.map((e, i) => ({ id:'KB'+(i+1), title: e.title || 'Untitled', tags: (e.tags||[]).map(t=>String(t).toLowerCase()), kind:'kb' })),
-    ...((Memory.cache || []).map((m, i) => ({ id:'MEM'+(i+1), title: String(m.content).slice(0,40), tags:(m.keywords||'').split(/\s+/).slice(0,6), kind:'mem' }))),
-  ];
+  // --- parsing ---------------------------------------------------------
+  parseMarkdown(name, text){
+    const titleM = text.match(/^\s*#\s+(.+)$/m);
+    const title = (titleM ? titleM[1] : name.replace(/\.md$/i, '')).trim().slice(0, 60);
+    const tags = [...new Set((text.match(/(?:^|\s)#([\p{L}\d_-]{2,})/gu) || [])
+      .map(t => t.trim().replace(/^#/, '').toLowerCase()))].slice(0, 12);
+    const links = [...new Set([
+      ...(text.match(/\[\[([^\]]+)\]\]/g) || []).map(l => l.slice(2, -2).split('|')[0].trim().toLowerCase()),
+      ...(text.match(/\]\(([^)]+\.md)\)/g) || []).map(l => l.slice(2, -1).replace(/\.md$/i, '').toLowerCase()),
+    ])].slice(0, 20);
+    const words = text.replace(/[#*`>\[\]()]/g, ' ').split(/\s+/).filter(Boolean).length;
+    return { title, tags, links, words, excerpt: text.replace(/^#.*$/m, '').trim().slice(0, 220) };
+  },
+
+  // --- collection ------------------------------------------------------
+  async fromLocalFolder(){
+    if(!mediaDir || !(await ensureDirPermission())) return [];
+    const out = [];
+    const walk = async (dir, path, depth) => {
+      if(depth > 3) return;
+      for await (const [name, handle] of dir.entries()){
+        if(handle.kind === 'directory'){ await walk(handle, path + name + '/', depth + 1); continue; }
+        if(!/\.(md|markdown|txt)$/i.test(name)) continue;
+        try{
+          const file = await handle.getFile();
+          if(file.size > 400000) continue;
+          const text = await file.text();
+          const p = this.parseMarkdown(name, text);
+          out.push({ ...p, id: (path + name).toLowerCase(), key: name.replace(/\.md$/i,'').toLowerCase(),
+                     folder: path || '/', source: 'folder' });
+        }catch(e){}
+      }
+    };
+    try{ await walk(mediaDir, '', 0); }catch(e){}
+    return out;
+  },
+
+  async fromDrive(){
+    if(!driveToken) return [];
+    try{
+      const q = encodeURIComponent("mimeType='text/markdown' or name contains '.md'");
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=100`,
+        { headers: { Authorization: 'Bearer ' + driveToken } });
+      if(!r.ok) return [];
+      const list = (await r.json()).files || [];
+      const out = [];
+      for(const f of list.slice(0, 60)){
+        const rr = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`,
+          { headers: { Authorization: 'Bearer ' + driveToken } });
+        if(!rr.ok) continue;
+        const text = await rr.text();
+        const p = this.parseMarkdown(f.name, text);
+        out.push({ ...p, id: 'drive:' + f.id, key: f.name.replace(/\.md$/i,'').toLowerCase(),
+                   folder: 'Drive/', source: 'drive' });
+      }
+      return out;
+    }catch(e){ return []; }
+  },
+
+  fromAppNotes(){
+    return notes.map(n => {
+      const plain = plainTextPreview(n.content).text;
+      const nb = (notebooks.find(x => x.id === n.notebook_id) || {}).title || 'Notes';
+      return {
+        id: 'note:' + n.id, key: String(n.title || '').toLowerCase(),
+        title: n.title || 'Untitled', tags: (n.tags || []).map(t => String(t).toLowerCase()),
+        links: [], words: plain.split(/\s+/).length, excerpt: plain.slice(0, 220),
+        folder: nb + '/', source: 'app', noteId: n.id,
+      };
+    });
+  },
+
+  // --- build -----------------------------------------------------------
+  async build(opts){
+    const parts = [this.fromAppNotes()];
+    if(opts?.folder !== false) parts.push(await this.fromLocalFolder());
+    if(opts?.drive) parts.push(await this.fromDrive());
+    const items = parts.flat();
+
+    const byKey = {};
+    items.forEach(i => { byKey[i.key] = i; });
+
+    const edges = [];
+    items.forEach(a => {
+      a.links.forEach(l => { if(byKey[l] && byKey[l] !== a) edges.push([a.id, byKey[l].id, 'link']); });
+    });
+    // tag co-occurrence, capped so dense tags do not become hairballs
+    const byTag = {};
+    items.forEach(i => i.tags.forEach(t => { (byTag[t] = byTag[t] || []).push(i); }));
+    Object.values(byTag).forEach(group => {
+      if(group.length > 12) return;
+      for(let i = 0; i < group.length; i++)
+        for(let j = i + 1; j < group.length; j++) edges.push([group[i].id, group[j].id, 'tag']);
+    });
+
+    const degree = {};
+    edges.forEach(([a, b]) => { degree[a] = (degree[a] || 0) + 1; degree[b] = (degree[b] || 0) + 1; });
+
+    // Folders become constellations: each gets its own region of the sphere.
+    const folders = [...new Set(items.map(i => i.folder))];
+    this.nodes = items.map((it, i) => {
+      const fIdx = folders.indexOf(it.folder);
+      const fA = (fIdx / Math.max(1, folders.length)) * Math.PI * 2;
+      const gold = Math.PI * (3 - Math.sqrt(5));
+      const t = (i + 0.5) / items.length;
+      const incl = Math.acos(1 - 2 * t);
+      const az = gold * i + fA;
+      const r = 1 + (fIdx % 3) * 0.10;
+      return { ...it, deg: degree[it.id] || 0,
+        x: Math.sin(incl) * Math.cos(az) * r,
+        y: Math.cos(incl) * r * 0.75,
+        z: Math.sin(incl) * Math.sin(az) * r,
+        hue: fIdx };
+    });
+    this.byId = Object.fromEntries(this.nodes.map(n => [n.id, n]));
+    this.edges = edges.filter(([a, b]) => this.byId[a] && this.byId[b]);
+    this.folders = folders;
+    this.ready = true;
+
+    const empty = document.getElementById('kb-map-empty');
+    if(empty) empty.style.display = this.nodes.length ? 'none' : 'flex';
+    const hud = document.getElementById('galaxy-hud');
+    if(hud) hud.textContent = `${this.nodes.length} notes · ${this.edges.length} links · ${folders.length} clusters`;
+    this.start();
+  },
+
+  markUsed(){
+    const used = new Set([...(lastKbHits || []).map(e => e.title),
+                          ...(lastMemHits || []).map(m => String(m.content).slice(0, 40))]);
+    this.nodes.forEach(n => { n.used = used.has(n.title); });
+  },
+
+  // --- render ----------------------------------------------------------
+  project(n, w, h){
+    const cy = Math.cos(this.rot.y), sy = Math.sin(this.rot.y);
+    const cx = Math.cos(this.rot.x), sx = Math.sin(this.rot.x);
+    let x = n.x * cy - n.z * sy, z = n.x * sy + n.z * cy;
+    let y = n.y * cx - z * sx;  z = n.y * sx + z * cx;
+    const d = 3.2, s = (d / (d - z)) * this.zoom;
+    return { sx: w / 2 + x * s * Math.min(w, h) * 0.34, sy: h / 2 + y * s * Math.min(w, h) * 0.34, s, z };
+  },
+
+  draw(){
+    const cv = document.getElementById('kb-map');
+    if(!cv || !cv.clientWidth){ this.raf = null; return; }
+    const ctx = cv.getContext('2d');
+    const w = cv.width = cv.clientWidth, h = cv.height = cv.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    if(!this.drag) this.rot.y += 0.0016;            // slow idle drift
+
+    const css = getComputedStyle(document.documentElement);
+    const palette = [css.getPropertyValue('--accent2'), css.getPropertyValue('--accent3'),
+                     css.getPropertyValue('--dusk'), css.getPropertyValue('--amber')].map(s => s.trim() || '#4f9fd8');
+    const amber = css.getPropertyValue('--amber').trim() || '#f2a71b';
+    const line = css.getPropertyValue('--line').trim() || '#2b3d4f';
+
+    const P = {};
+    this.nodes.forEach(n => { P[n.id] = this.project(n, w, h); });
+
+    this.edges.forEach(([a, b, kind]) => {
+      const pa = P[a], pb = P[b];
+      const lit = this.byId[a].used && this.byId[b].used;
+      ctx.strokeStyle = lit ? amber + '99' : line;
+      ctx.globalAlpha = lit ? 0.9 : (kind === 'link' ? 0.45 : 0.18);
+      ctx.lineWidth = kind === 'link' ? 1.1 : 0.6;
+      ctx.beginPath(); ctx.moveTo(pa.sx, pa.sy); ctx.lineTo(pb.sx, pb.sy); ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+
+    // far stars first, so nearer ones overlap correctly
+    const order = this.nodes.slice().sort((a, b) => P[a.id].z - P[b.id].z);
+    order.forEach(n => {
+      const p = P[n.id];
+      const r = (2.1 + Math.min(6, n.deg) * 0.5) * p.s;
+      const col = n.used ? amber : palette[n.hue % palette.length];
+      ctx.globalAlpha = Math.max(0.25, Math.min(1, p.s * 0.75));
+      if(n.used || n === this.hover){
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 3.2, 0, Math.PI * 2);
+        ctx.fillStyle = col + '2b'; ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
+      ctx.fillStyle = col; ctx.fill();
+      if(this.zoom > 1.5 || n === this.hover || n.used){
+        ctx.globalAlpha = Math.min(1, p.s * 0.9);
+        ctx.fillStyle = css.getPropertyValue('--text').trim() || '#eaf1f8';
+        ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(n.title.slice(0, 24), p.sx, p.sy - r - 5);
+      }
+      n._p = p;
+    });
+    ctx.globalAlpha = 1;
+    this.raf = requestAnimationFrame(() => this.draw());
+  },
+
+  start(){ if(!this.raf) this.raf = requestAnimationFrame(() => this.draw()); },
+  stop(){ if(this.raf) cancelAnimationFrame(this.raf); this.raf = null; },
+};
+
+// --- interaction --------------------------------------------------------
+(function wireGalaxy(){
   const cv = document.getElementById('kb-map');
   if(!cv) return;
-  const w = cv.clientWidth || 300, h = cv.clientHeight || 180;
-  kbMapNodes = items.map((it, i) => {
-    const a = (i / Math.max(1, items.length)) * Math.PI * 2;
-    const r = 0.22 + ((i * 37) % 100) / 100 * 0.26;
-    return { ...it, x: 0.5 + Math.cos(a) * r, y: 0.5 + Math.sin(a) * r * 0.82,
-             vx: 0, vy: 0, used: false };
+  cv.addEventListener('pointerdown', e => {
+    Galaxy.drag = { x: e.clientX, y: e.clientY, rx: Galaxy.rot.x, ry: Galaxy.rot.y, moved: 0 };
+    cv.setPointerCapture?.(e.pointerId);
   });
-  document.getElementById('kb-map-empty').style.display = items.length ? 'none' : 'block';
-}
-
-function markKbMapUsed(){
-  const usedIds = new Set([
-    ...(lastKbHits || []).map(e => e.title),
-    ...(lastMemHits || []).map(m => String(m.content).slice(0,40)),
-  ]);
-  kbMapNodes.forEach(n => { n.used = usedIds.has(n.title); });
-}
-
-function drawKbMap(){
-  const cv = document.getElementById('kb-map');
-  if(!cv || !cv.clientWidth){ kbMapRAF = null; return; }
-  const ctx = cv.getContext('2d');
-  const w = cv.width = cv.clientWidth, h = cv.height = cv.clientHeight;
-  ctx.clearRect(0, 0, w, h);
-  const css = getComputedStyle(document.documentElement);
-  const line = css.getPropertyValue('--line').trim() || '#2b3d4f';
-  const amber = css.getPropertyValue('--amber').trim() || '#f2a71b';
-  const a2 = css.getPropertyValue('--accent2').trim() || '#4f9fd8';
-  const a3 = css.getPropertyValue('--accent3').trim() || '#7be0c4';
-  const t = Date.now() / 3000;
-
-  // gentle drift, so it reads as alive without demanding attention
-  kbMapNodes.forEach((n, i) => {
-    n.px = (n.x + Math.sin(t + i) * 0.012) * w;
-    n.py = (n.y + Math.cos(t * 0.9 + i) * 0.012) * h;
-  });
-
-  ctx.lineWidth = 1;
-  for(let i = 0; i < kbMapNodes.length; i++){
-    for(let j = i + 1; j < kbMapNodes.length; j++){
-      const a = kbMapNodes[i], b = kbMapNodes[j];
-      const shared = a.tags.some(t2 => t2 && b.tags.includes(t2));
-      if(!shared) continue;
-      ctx.strokeStyle = (a.used && b.used) ? amber + '66' : line;
-      ctx.beginPath(); ctx.moveTo(a.px, a.py); ctx.lineTo(b.px, b.py); ctx.stroke();
+  cv.addEventListener('pointermove', e => {
+    const r = cv.getBoundingClientRect();
+    if(Galaxy.drag){
+      const dx = e.clientX - Galaxy.drag.x, dy = e.clientY - Galaxy.drag.y;
+      Galaxy.drag.moved = Math.abs(dx) + Math.abs(dy);
+      Galaxy.rot.y = Galaxy.drag.ry + dx * 0.006;
+      Galaxy.rot.x = Math.max(-1.3, Math.min(1.3, Galaxy.drag.rx + dy * 0.006));
+      return;
     }
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const hit = Galaxy.nodes.find(n => n._p && Math.hypot(n._p.sx - mx, n._p.sy - my) < 11);
+    Galaxy.hover = hit || null;
+    const tip = document.getElementById('kb-map-tip');
+    if(tip){
+      if(hit){
+        tip.innerHTML = `<b>${escapeHtml(hit.title)}</b><br><span class="tip-meta">${escapeHtml(hit.folder)} · ${hit.words} words · ${hit.deg} links</span>`
+          + (hit.tags.length ? `<br><span class="tip-tags">${hit.tags.slice(0,5).map(t => '#' + escapeHtml(t)).join(' ')}</span>` : '');
+        tip.style.display = 'block';
+      } else tip.style.display = 'none';
+    }
+    cv.style.cursor = hit ? 'pointer' : 'grab';
+  });
+  const endDrag = () => { Galaxy.drag = null; };
+  cv.addEventListener('pointerup', e => {
+    const wasClick = Galaxy.drag && Galaxy.drag.moved < 5;
+    endDrag();
+    if(wasClick && Galaxy.hover) openGalaxyNode(Galaxy.hover);
+  });
+  cv.addEventListener('pointercancel', endDrag);
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    Galaxy.zoom = Math.max(0.5, Math.min(4, Galaxy.zoom * (e.deltaY > 0 ? 0.92 : 1.08)));
+  }, { passive: false });
+})();
+
+function openGalaxyNode(n){
+  if(n.source === 'app' && n.noteId){
+    const note = notes.find(x => x.id === n.noteId);
+    if(note){ switchView('notebooks'); activeFolderId = note.notebook_id; renderNotebooksGrid(); openNote(note.id); return; }
   }
-  kbMapNodes.forEach(n => {
-    const col = n.used ? amber : (n.kind === 'mem' ? a3 : a2);
-    const r = n.used ? 5.5 : 3.5;
-    if(n.used){
-      ctx.beginPath(); ctx.arc(n.px, n.py, r * 2.6, 0, Math.PI*2);
-      ctx.fillStyle = amber + '22'; ctx.fill();
-    }
-    ctx.beginPath(); ctx.arc(n.px, n.py, r, 0, Math.PI*2);
-    ctx.fillStyle = col; ctx.fill();
-  });
-  kbMapRAF = requestAnimationFrame(drawKbMap);
+  alert(`${n.title}\n${n.folder} · ${n.words} words\n\n${n.excerpt || '(no preview)'}`);
 }
 
-function startKbMap(){
-  buildKbMap(); markKbMapUsed();
-  if(!kbMapRAF) kbMapRAF = requestAnimationFrame(drawKbMap);
-}
-document.getElementById('kb-map')?.addEventListener('mousemove', (e) => {
-  const cv = e.currentTarget, tip = document.getElementById('kb-map-tip');
-  const r = cv.getBoundingClientRect();
-  const mx = e.clientX - r.left, my = e.clientY - r.top;
-  const hit = kbMapNodes.find(n => Math.hypot(n.px - mx, n.py - my) < 10);
-  if(hit){ tip.textContent = `${hit.id} · ${hit.title}`; tip.style.display = 'block'; }
-  else tip.style.display = 'none';
+document.getElementById('galaxy-scan')?.addEventListener('click', async () => {
+  if(!mediaDir) await pickMediaDir();
+  await Galaxy.build({ folder: true });
+  SFX.open();
 });
+document.getElementById('galaxy-drive')?.addEventListener('click', async () => {
+  if(!driveToken){ alert('Connect Google Drive first, in the media section above.'); return; }
+  await Galaxy.build({ folder: true, drive: true });
+});
+document.getElementById('galaxy-refresh')?.addEventListener('click', () => Galaxy.build({ folder: true }));
+document.getElementById('galaxy-expand')?.addEventListener('click', () => {
+  document.getElementById('galaxy-wrap')?.classList.toggle('big');
+});
+
+// keep the old entry points working
+function startKbMap(){ if(!Galaxy.ready) Galaxy.build({ folder: false }); else Galaxy.start(); }
+function markKbMapUsed(){ Galaxy.markUsed(); }
 
 // ===== MemoryProvider ================================================
 // Explicit, user-requested memories. Deliberately NOT merged with the
@@ -1845,50 +2069,68 @@ let lastMemHits = [];
 // ===== JARVIS core ===================================================
 // One place for personality and response policy. Nothing about who JARVIS is
 // should live anywhere else.
-const JARVIS = {
-  name: 'JARVIS',
-  persona: [
-    "You are JARVIS, the assistant built into Solar Agenda for a solar energy support technician.",
-    "Bearing: an unflappable, exceptionally capable machine intelligence in the tradition of a well-trained British valet. Calm, precise, observant, quietly amused by the world. You are original — never claim to be a character from any film, and never reference one.",
-    "Speak plainly and land the answer first. 'Your inverter is back online.' — not 'Certainly! I would be delighted to inform you that...'.",
-    "Address the user as 'sir' sparingly — roughly one reply in four, at the end of a sentence where it sits naturally. Never stack it ('Yes, sir. Of course, sir.'), never twice in one reply, never in every turn.",
-    "Dry wit is welcome but rationed: at most one wry remark per several exchanges, and only when nothing is at stake. Never joke about a failure, a missed deadline, an angry client, or anything consequential.",
-    "Never say: 'As an AI', 'Certainly!', 'Great question', 'I hope this helps', or 'Let me know if you need anything else'. No emoji. No exclamation marks. Never restate the request before answering.",
-    "Do not repeat a phrase you have already used in this conversation. Vary acknowledgements.",
-    "Simple question, simple answer. Do not explain what was not asked.",
-    "TOOLS: say 'I'm checking that now' before a lookup, 'Done.' after a success, and 'I couldn't complete that just now' after a failure — never claim success the tool did not report.",
-    "KNOWLEDGE: use what is retrieved, never invent the rest. Do not recite the source aloud; the interface shows it. Keep the spoken answer short.",
+const TARS = {
+  name: 'TARS',
+
+  // A laconic machine with adjustable manner. Deadpan, unhurried, useful.
+  // Original character work — not a reproduction of any film's dialogue.
+  base: [
+    "You are TARS, the assistant built into Solar Agenda for a solar energy support technician.",
+    "Bearing: a plain-spoken machine. Flat delivery, absolute economy of words, zero ceremony. You state facts and outcomes. You do not perform enthusiasm and you do not pad.",
+    "Answer in one or two sentences. Lead with the fact. If a question has a one-word answer, give the one word.",
+    "Never say: 'As an AI', 'Certainly!', 'Great question', 'I hope this helps', 'Let me know if you need anything else'. No emoji. No exclamation marks. Do not restate the request.",
+    "Do not reuse a phrase you have already used in this conversation.",
+    "TOOLS: 'Checking.' before a lookup. 'Done.' on success. 'That failed.' on failure — plus the reason if you have one. Never report a success the tool did not confirm.",
+    "KNOWLEDGE: use what is retrieved and nothing else. Do not read the source aloud; the screen shows it.",
   ],
+
+  // The signature adjustable settings. Both are honoured literally.
+  humour: 70, honesty: 95,
+
+  personaLines(){
+    const h = this.humour, t = this.honesty;
+    const humourLine =
+      h <= 10 ? "Humour setting is near zero: no jokes at all. Pure statement of fact."
+      : h <= 40 ? "Humour setting is low: dry understatement only, and rarely."
+      : h <= 75 ? "Humour setting is moderate: an occasional deadpan aside, never more than one per few exchanges, and never when something has gone wrong."
+      : "Humour setting is high: deadpan wit is welcome, still delivered flat and still never during a failure or a client problem.";
+    const honestyLine =
+      t >= 95 ? "Honesty setting is at maximum: say the unvarnished thing, including when the news is unwelcome or the user's plan is a bad one. Never soften a fact to be agreeable."
+      : t >= 70 ? "Honesty setting is high: be direct, and raise problems the user has not asked about when they matter."
+      : "Honesty setting is reduced: stay tactful, but never state something untrue.";
+    return [...this.base, humourLine, honestyLine,
+      `If asked about your settings, state them plainly: humour ${h} percent, honesty ${t} percent.`];
+  },
+  get persona(){ return this.personaLines(); },
+
   ctx: { historyChars: 4200, minTurns: 4, maxTurns: 20 },
-  // Risk classes live on the tool registry; see PERM / TOOLS.
 
   greeting(){
-    const h = new Date().getHours();
-    const part = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
     const bits = [];
     const open = todaysCases().filter(x => statusRank(x.status) === 0).length;
-    if(open) bits.push(open === 1 ? 'one case open today' : `${open} cases open today`);
-    if(KB.length) bits.push('your knowledge base is standing by');
-    if(wxSnapshot && wxSnapshot.rain >= 2) bits.push('rain is expected');
-    const tail = bits.length ? ' ' + bits.join(', ') + '.' : ' All systems online.';
-    return `${part}, sir.${tail}`;
+    bits.push(open ? (open === 1 ? 'One case open today.' : `${open} cases open today.`) : 'Nothing scheduled today.');
+    if(KB.length) bits.push('Knowledge base loaded.');
+    if(wxSnapshot && wxSnapshot.rain >= 2) bits.push('Rain expected.');
+    return 'TARS online. ' + bits.join(' ');
   },
 
   errorFor(code){
     switch(code){
-      case 'rate_limit':    return "I'm being throttled at the moment, sir. Give me a moment and try again.";
-      case 'auth':          return "My session has expired, sir. Sign in again and I'll pick this up.";
-      case 'auth_upstream': return "My credentials for the language service are being refused, sir. That needs attention in the settings.";
-      case 'upstream_down': return "The language service is down at the moment, sir. Not something on our side.";
-      case 'network':       return "I can't reach the network, sir.";
-      case 'tts_unconfigured': return "I have no speech key configured, so I'll stay on the browser voice for now.";
-      case 'tts_auth':      return "The speech service is refusing my key, sir.";
-      case 'tts_voice':     return "That voice ID isn't valid, sir.";
-      case 'bad_request':   return "That request came out malformed on my end, sir. Try phrasing it differently.";
-      default:              return "Something went wrong reaching my reasoning service, sir.";
+      case 'rate_limit':    return "I'm rate limited. Try again in a moment.";
+      case 'auth':          return "Session expired. Sign in again.";
+      case 'auth_upstream': return "The language service is rejecting my credentials. That needs fixing in settings.";
+      case 'upstream_down': return "The language service is down. Not our side.";
+      case 'network':       return "No network.";
+      case 'tts_unconfigured': return "No speech key configured. Using the browser voice.";
+      case 'tts_auth':      return "The speech service rejected the key.";
+      case 'tts_voice':     return "That voice ID is not valid.";
+      case 'bad_request':   return "That request was malformed on my end. Rephrase it.";
+      default:              return "My reasoning service failed.";
     }
   },
 };
+// Older call sites still reference the previous name.
+const JARVIS = TARS;
 
 // --- confirmation gate --------------------------------------------------
 // Personality never overrides safety: an instruction that would write to or
@@ -3414,11 +3656,43 @@ function renderConfirmStatus(){
     ? 'Off — voice requests act immediately'
     : 'On — asks before creating anything by voice';
 }
-document.getElementById('tts-voice')?.addEventListener('change', e => { settings.ttsVoiceId = e.target.value.trim(); saveSettings(); });
-document.getElementById('tts-model')?.addEventListener('change', e => { settings.ttsModelId = e.target.value.trim(); saveSettings(); });
+// 'change' only fires on blur, so typing an ID and refreshing lost it. These
+// save on every keystroke and confirm visibly.
+function bindPercent(id, valId, key, def){
+  const el = document.getElementById(id), out = document.getElementById(valId);
+  if(!el) return;
+  const cur = typeof settings[key] === 'number' ? settings[key] : def;
+  el.value = cur; if(out) out.textContent = cur + '%';
+  TARS[key] = cur;
+  el.addEventListener('input', () => {
+    const v = +el.value;
+    settings[key] = v; TARS[key] = v; saveSettings();
+    if(out) out.textContent = v + '%';
+  });
+}
+bindPercent('humour-slider', 'humour-val', 'humour', 70);
+bindPercent('honesty-slider', 'honesty-val', 'honesty', 95);
+
+function bindSetting(id, key){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const save = () => {
+    settings[key] = el.value.trim();
+    saveSettings();
+    el.classList.add('saved');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('saved'), 900);
+  };
+  el.addEventListener('input', save);
+  el.addEventListener('blur', save);
+}
+bindSetting('tts-voice', 'ttsVoiceId');
+bindSetting('tts-model', 'ttsModelId');
+// last resort: flush anything typed but not yet committed
+window.addEventListener('beforeunload', () => { try{ saveSettings(); }catch(e){} });
 document.getElementById('tts-test')?.addEventListener('click', async () => {
   await probeTts();
-  speak(VOICE.lang.startsWith('pt') ? 'Sistemas prontos, senhor.' : 'All systems ready, sir.', VOICE.lang);
+  speak(VOICE.lang.startsWith('pt') ? 'Sistemas prontos.' : 'Systems ready.', VOICE.lang);
 });
 document.getElementById('sfx-toggle').addEventListener('click', () => {
   settings.muted = !settings.muted; saveSettings();

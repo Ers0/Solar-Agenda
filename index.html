@@ -55,7 +55,7 @@
       <span class="user-pill" id="user-pill"></span>
       <button class="ai-toggle" id="hud-toggle" title="Fullscreen HUD (F11 also works)"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg><span class="btn-lab">HUD</span></button>
       <button class="ai-toggle" id="theme-toggle"><svg class="btn-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="9.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="14.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/></svg><span class="btn-lab">Theme</span></button>
-      <button class="ai-toggle" id="voice-toggle" title="Voice — say &quot;Hey Jarvis&quot;"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg><span class="btn-lab">Voice</span></button>
+      <button class="ai-toggle" id="voice-toggle" title="Voice — say &quot;Hey TARS&quot;"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg><span class="btn-lab">Voice</span></button>
       <button class="ai-toggle" id="ai-toggle"><span class="dot"></span><span class="btn-lab">Assistant</span></button>
       <button class="logout-btn" id="logout-btn"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M15 17l5-5-5-5M20 12H9M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></svg><span class="btn-lab">Sign out</span></button>
     </div>
@@ -229,8 +229,17 @@
         <div class="set-info"><b>Confirm spoken actions</b><span id="confirm-status">On — asks before creating anything by voice</span></div>
         <button class="btn-ghost" id="confirm-toggle">Toggle</button>
       </div>
+      <div class="set-row" style="display:block">
+        <div class="set-info" style="margin-bottom:8px"><b>Humour</b><span id="humour-val">70%</span></div>
+        <input type="range" id="humour-slider" class="rain-range" min="0" max="100" step="5" value="70">
+      </div>
+      <div class="set-row" style="display:block">
+        <div class="set-info" style="margin-bottom:8px"><b>Honesty</b><span id="honesty-val">95%</span></div>
+        <input type="range" id="honesty-slider" class="rain-range" min="40" max="100" step="5" value="95">
+        <p class="hint" style="margin:6px 0 0">At maximum, TARS will tell you when a plan is a bad one rather than agreeing with it.</p>
+      </div>
       <div class="set-row">
-        <div class="set-info"><b>JARVIS speech</b><span id="tts-status">Checking…</span></div>
+        <div class="set-info"><b>TARS speech</b><span id="tts-status">Checking…</span></div>
         <button class="btn-ghost" id="tts-test">Test voice</button>
       </div>
       <div class="field"><label>ElevenLabs voice ID</label><input type="text" id="tts-voice" placeholder="Leave blank for the server default"></div>
@@ -250,12 +259,19 @@
         <div class="set-info"><b>Status</b><span id="set-kb-status">No entries yet</span></div>
         <button class="btn-ghost" id="kb-template">Copy template</button>
       </div>
-      <div class="kb-map-wrap">
-        <canvas id="kb-map" aria-label="Knowledge map"></canvas>
-        <div class="kb-map-empty" id="kb-map-empty">No entries yet — the map fills in as you add knowledge.</div>
+      <div class="galaxy-wrap" id="galaxy-wrap">
+        <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
+        <div class="kb-map-empty" id="kb-map-empty">Nothing mapped yet — scan a folder of markdown notes to build the galaxy.</div>
         <div class="kb-map-tip" id="kb-map-tip"></div>
+        <div class="galaxy-hud" id="galaxy-hud"></div>
+        <button class="galaxy-expand" id="galaxy-expand" title="Expand">⤢</button>
       </div>
-      <p class="hint">Each point is an entry; lines join entries that share a tag. Amber points were used in the most recent answer.</p>
+      <div class="set-actions" style="margin:8px 0 4px;">
+        <button class="btn-ghost" id="galaxy-scan">Scan markdown folder</button>
+        <button class="btn-ghost" id="galaxy-drive">Include Drive</button>
+        <button class="btn-ghost" id="galaxy-refresh">Refresh</button>
+      </div>
+      <p class="hint">Drag to orbit, scroll to zoom, click a star to open it. Notes link through <b>[[wiki links]]</b> and shared <b>#tags</b>; colour is by folder, size by how many links a note has. Amber stars were consulted in the last answer.</p>
       <div class="field"><label>kb.json contents</label><textarea id="kb-json" style="min-height:150px; font-family:'JetBrains Mono',monospace; font-size:0.78rem;" placeholder='[{"title":"...","content":"...","tags":["..."]}]'></textarea></div>
       <div class="set-actions">
         <button class="btn-primary" id="kb-save" style="flex:1">Save knowledge base</button>
@@ -503,14 +519,14 @@
 <div class="voice-panel" id="voice-panel">
   <button class="voice-close" id="voice-close" aria-label="Close voice">×</button>
   <div class="voice-orb" id="voice-orb" data-state="off" role="button" tabindex="0"
-       aria-label="Talk to Jarvis. Press Enter to speak without the wake phrase.">
+       aria-label="Talk to TARS. Press Enter to speak without the wake phrase.">
     <canvas id="voice-canvas" aria-hidden="true"></canvas>
     <span class="orb-dot" aria-hidden="true"></span>
   </div>
   <div class="voice-state" id="voice-state" role="status" aria-live="polite">Voice off</div>
   <div class="voice-level" role="meter" aria-label="Microphone level" aria-hidden="true"><span id="voice-level-fill"></span></div>
   <div class="voice-heard" id="voice-heard" aria-live="polite"></div>
-  <div class="voice-hint">Say <b>“Hey Jarvis”</b>, or tap the orb to talk without it.</div>
+  <div class="voice-hint">Say <b>“Hey TARS”</b>, or tap the orb to talk without it.</div>
   <select class="voice-select" id="voice-select" title="Speaking voice"></select>
   <button class="btn-ghost voice-mute" id="voice-mute">Mute replies</button>
 </div>
@@ -518,7 +534,7 @@
 <div class="ai-panel" id="ai-panel">
   <div class="ai-panel-header"><span>Assistant</span><button id="ai-close">×</button></div>
   <div class="ai-messages" id="ai-messages">
-    <div class="ai-msg hint">Ask about today's agenda, or tell me to create a case, notebook or note — e.g. "add an urgent case for Integrator XPTO at 14:00".</div>
+    <div class="ai-msg hint">Ask about today's agenda, or say what to create — e.g. "add an urgent case for Integrator XPTO at 14:00".</div>
   </div>
   <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button id="ai-send">Send</button></div>
 </div>
