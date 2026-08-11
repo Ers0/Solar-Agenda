@@ -957,6 +957,171 @@ function primeVoices(){
 }
 
 // --- speech synthesis ---
+// ===== Sound =========================================================
+// Synthesised through Web Audio: a reverb + delay bus with detuned, filtered
+// voices. No audio files to host.
+let audioCtx = null, busDry = null, busWet = null;
+function ac(){
+  if(settings.muted) return null;
+  if(!audioCtx){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return null;
+    audioCtx = new AC();
+    const master = audioCtx.createGain(); master.gain.value = 0.9;
+    master.connect(audioCtx.destination);
+    const len = audioCtx.sampleRate * 2.4;
+    const ir = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+    for(let ch = 0; ch < 2; ch++){
+      const d = ir.getChannelData(ch);
+      for(let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6);
+    }
+    const rev = audioCtx.createConvolver(); rev.buffer = ir;
+    const revGain = audioCtx.createGain(); revGain.gain.value = 0.55;
+    rev.connect(revGain).connect(master);
+    const dl = audioCtx.createDelay(1.0); dl.delayTime.value = 0.19;
+    const fb = audioCtx.createGain(); fb.gain.value = 0.32;
+    const dlF = audioCtx.createBiquadFilter(); dlF.type = 'highpass'; dlF.frequency.value = 700;
+    dl.connect(fb).connect(dlF).connect(dl);
+    const dlGain = audioCtx.createGain(); dlGain.gain.value = 0.3;
+    dl.connect(dlGain).connect(master);
+    busDry = audioCtx.createGain(); busDry.gain.value = 1; busDry.connect(master);
+    busWet = audioCtx.createGain(); busWet.gain.value = 1;
+    busWet.connect(rev); busWet.connect(dl);
+  }
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+// The microphone meter must run even when interface sounds are muted.
+function acAlways(){
+  const was = settings.muted; settings.muted = false;
+  const ctx = ac(); settings.muted = was; return ctx;
+}
+
+function voice({ freq = 440, to = null, dur = 0.3, type = 'sawtooth', vol = 0.05,
+                 delay = 0, detune = 0, cut = 2600, cutTo = null, q = 6, space = 0.5, pan = 0 }){
+  const ctx = ac(); if(!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator();
+  osc.type = type; osc.detune.value = detune;
+  osc.frequency.setValueAtTime(freq, t0);
+  if(to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur);
+  const flt = ctx.createBiquadFilter();
+  flt.type = 'lowpass'; flt.Q.value = q;
+  flt.frequency.setValueAtTime(cut, t0);
+  if(cutTo) flt.frequency.exponentialRampToValueAtTime(Math.max(80, cutTo), t0 + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + Math.min(0.05, dur * 0.2));
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  const send = ctx.createGain(); send.gain.value = space;
+  osc.connect(flt).connect(g);
+  g.connect(busDry); g.connect(send); send.connect(busWet);
+  osc.start(t0); osc.stop(t0 + dur + 0.05);
+}
+function air({ dur = 0.6, vol = 0.02, delay = 0, from = 300, to = 6000, type = 'bandpass', q = 1.2, space = 0.6, pan = 0 }){
+  const ctx = ac(); if(!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const n = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const f = ctx.createBiquadFilter(); f.type = type; f.Q.value = q;
+  f.frequency.setValueAtTime(from, t0);
+  f.frequency.exponentialRampToValueAtTime(Math.max(60, to), t0 + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.25);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  const send = ctx.createGain(); send.gain.value = space;
+  src.connect(f).connect(g);
+  g.connect(busDry); g.connect(send); send.connect(busWet);
+  src.start(t0); src.stop(t0 + dur + 0.05);
+}
+function chord(freqs, o = {}){
+  freqs.forEach((f, i) => {
+    voice(Object.assign({ freq:f, dur:1.5, type:'sawtooth', vol:0.028, cut:900, cutTo:4200,
+                          delay:(o.delay || 0) + i * (o.stagger ?? 0.06), space:0.8 }, o.v || {}));
+    voice(Object.assign({ freq:f, dur:1.5, type:'sawtooth', vol:0.022, detune:-9, cut:900, cutTo:3600,
+                          delay:(o.delay || 0) + i * (o.stagger ?? 0.06), space:0.8 }, o.v || {}));
+  });
+}
+function impact({ delay = 0, vol = 0.1 }){
+  voice({ freq:70, to:38, dur:0.45, type:'sine', vol, delay, cut:400, space:0.35 });
+  air({ dur:0.1, vol: vol * 0.3, delay, from:4000, to:600, q:0.8, space:0.4 });
+}
+function servo({ delay = 0, dur = 0.8, vol = 0.02 }){
+  voice({ freq:180, to:320, dur, type:'sawtooth', vol, delay, cut:900, cutTo:2200, q:9, space:0.6 });
+}
+function reverseSwell({ dur = 1.2, delay = 0, vol = 0.04, from = 400, to = 7000 }){
+  air({ dur, vol, delay, from, to, q:0.9, space:0.85 });
+}
+function chatter({ count = 12, spread = 1, delay = 0, vol = 0.01 }){
+  for(let i = 0; i < count; i++){
+    voice({ freq: 900 + Math.random() * 2600, dur:0.035, type:'square',
+            vol, delay: delay + (i / count) * spread, cut:7000, space:0.7 });
+  }
+}
+function metal({ base = 660, dur = 0.6, delay = 0, vol = 0.02, pan = 0 }){
+  [1, 2.41, 3.83].forEach((m, i) =>
+    voice({ freq: base * m, dur: dur * (1 - i * 0.2), type:'sine',
+            vol: vol / (i + 1), delay, cut:9000, space:1 }));
+}
+
+let bootUsedFile = false;
+const SFX = {
+  bootCue(){
+    impact({ delay:0, vol:0.12 });
+    voice({ freq:62, to:34, dur:0.55, type:'sine', vol:0.12, cut:320, space:0.35 });
+    air({ dur:0.14, vol:0.04, from:5200, to:600, q:0.7, space:0.5 });
+    voice({ freq:74, to:150, dur:1.05, type:'sawtooth', vol:0.05, delay:0.28, cut:300, cutTo:900, q:5, space:0.5 });
+    servo({ delay:0.3, dur:0.9, vol:0.018 });
+    impact({ delay:0.82, vol:0.07 });
+    reverseSwell({ dur:1.25, delay:1.0, vol:0.05, from:420, to:7400 });
+    voice({ freq:130, to:900, dur:1.25, type:'sawtooth', vol:0.038, delay:1.0, cut:800, cutTo:6000, q:7, space:0.7 });
+    chatter({ count:15, spread:1.15, delay:1.05, vol:0.010 });
+    [[2.20, 660], [2.45, 880], [2.62, 1046.5], [2.80, 1320]].forEach(([d, f], i) => {
+      air({ dur:0.07, vol:0.028, delay:d, from:6500, to:2000, q:1.6, space:0.6 });
+      metal({ base:f, dur:0.65, delay:d, vol:0.024 });
+      impact({ delay:d, vol:0.055 - i * 0.008 });
+    });
+    chord([261.63, 392, 523.25, 659.25, 783.99],
+          { delay:2.75, stagger:0.03, v:{ dur:1.35, vol:0.028, cut:1200, cutTo:5200 } });
+  },
+  bootStart(){
+    if(settings.muted) return;
+    bootUsedFile = false;
+    try{
+      const a = new Audio('/hud-boot.mp3');
+      a.volume = 0.8;
+      const p = a.play();
+      if(p && p.then) p.then(() => { bootUsedFile = true; }).catch(() => SFX.bootCue());
+      else bootUsedFile = true;
+    }catch(e){ SFX.bootCue(); }
+  },
+  bootTick(i){
+    if(bootUsedFile) return;
+    voice({ freq:1400 + i * 90, dur:0.03, type:'square', vol:0.008, cut:8000, space:0.5 });
+  },
+  bootDone(){},
+  success(){
+    voice({ freq:523.25, to:784, dur:0.24, type:'triangle', vol:0.05, cut:4800, space:0.7 });
+    voice({ freq:1046.5, dur:0.5, type:'sine', vol:0.025, delay:0.12, space:1 });
+  },
+  fail(){ voice({ freq:220, to:82, dur:0.5, type:'sawtooth', vol:0.055, cut:1600, cutTo:260, q:7, space:0.5 }); },
+  tick(){ voice({ freq:1500, dur:0.045, type:'square', vol:0.012, cut:6000, space:0.4 }); },
+  open(){ voice({ freq:440, to:660, dur:0.14, type:'triangle', vol:0.026, cut:4200, space:0.7 }); },
+  phase(night){
+    if(night){
+      voice({ freq:340, to:70, dur:2.0, type:'sawtooth', vol:0.05, cut:2200, cutTo:260, q:8, space:0.9 });
+      chord([196, 233.08, 293.66], { delay:0.5, stagger:0.09, v:{ dur:2.6, vol:0.022, cut:700, cutTo:1800 } });
+    } else {
+      voice({ freq:80, to:520, dur:1.4, type:'sawtooth', vol:0.045, cut:300, cutTo:5200, q:8, space:0.8 });
+      chord([261.63, 329.63, 392, 523.25], { delay:0.5, stagger:0.07, v:{ dur:2.2, vol:0.026 } });
+    }
+  },
+};
+
 // ===== Voice state machine ===========================================
 // One owner for voice state. Nothing else sets it directly.
 const VSTATE = {
@@ -1188,8 +1353,9 @@ function newRecorder(){
   }catch(e){ setVoiceState(VSTATE.ERROR, 'cannot record'); return; }
   chunks = [];
   recorder.ondataavailable = ev => { if(ev.data && ev.data.size) chunks.push(ev.data); };
+  const self = recorder;              // stopVoice nulls the shared reference
   recorder.onstop = () => {
-    const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+    const blob = new Blob(chunks, { type: (self && self.mimeType) || 'audio/webm' });
     chunks = [];
     const wanted = speechStart > 0;
     speechStart = 0;
@@ -1623,6 +1789,59 @@ const TOOLS = [
     },
   },
   {
+    name: 'save_template',
+    permission: PERM.LOW,
+    description: "Save a reusable message template. Use {{placeholders}} for the parts that change, e.g. {{client}} or {{date}}.",
+    schema: { type:'object', properties:{
+      name:{ type:'string', description:'Short name to call it by later.' },
+      to:{ type:'string', description:'Recipient, may contain placeholders.' },
+      subject:{ type:'string' }, body:{ type:'string' },
+      tags:{ type:'array', items:{ type:'string' } } },
+      required:['name','body'] },
+    async execute(args){
+      const saved = await Templates.save({
+        name: args.name, to: args.to || '', subject: args.subject || '',
+        body: args.body, tags: args.tags || [], kind: 'email',
+      });
+      if(!saved) return 'Could not save the template.';
+      const ph = Templates.placeholders(saved);
+      return `Template "${saved.name}" saved` + (ph.length ? ` with placeholders: ${ph.join(', ')}.` : '.');
+    },
+  },
+  {
+    name: 'use_template',
+    permission: PERM.READ,
+    description: "Open a saved template ready to send, filling in the values given. This only PREPARES the message — the user sends it themselves. Say what was prepared and what still needs filling.",
+    schema: { type:'object', properties:{
+      name:{ type:'string', description:'Which template.' },
+      values:{ type:'object', description:'Placeholder values, e.g. {"client":"Pablo","date":"Monday"}.' } },
+      required:['name'] },
+    async execute(args){
+      const tpl = await Templates.find(args.name);
+      if(!tpl){
+        const all = await Templates.all();
+        return all.length ? `No template called "${args.name}". Available: ${all.map(t => t.name).join(', ')}.`
+                          : 'No templates saved yet.';
+      }
+      openCompose(tpl, args.values || {});
+      const { missing } = Templates.fill(`${tpl.subject} ${tpl.body} ${tpl.to}`, args.values || {});
+      return `Prepared "${tpl.name}" on screen. ` + (missing.length
+        ? `Still needs: ${[...new Set(missing)].join(', ')}. The user reviews and sends it.`
+        : 'Everything is filled in. The user reviews and sends it.');
+    },
+  },
+  {
+    name: 'list_templates',
+    permission: PERM.READ,
+    description: "List the saved templates and their placeholders.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      const all = await Templates.all(true);
+      if(!all.length) return 'No templates saved.';
+      return all.map(t => `- ${t.name}: ${Templates.placeholders(t).join(', ') || 'no placeholders'}`).join('\n');
+    },
+  },
+  {
     name: 'create_case',
     permission: PERM.LOW,
     description: "Create a new support case in the user's agenda. Only when they clearly ask to create, add or schedule a case.",
@@ -1737,6 +1956,153 @@ function kbSearch(q, limit = 4){
 }
 
 
+
+
+// --- manual knowledge entry -------------------------------------------
+document.getElementById('kb-add-btn')?.addEventListener('click', () => {
+  const title = document.getElementById('kb-new-title').value.trim();
+  const content = document.getElementById('kb-new-body').value.trim();
+  if(!title || !content){ alert('Give it a title and something to remember.'); return; }
+  const tags = document.getElementById('kb-new-tags').value.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+  KB = [{ title, content, tags }, ...KB];
+  localStorage.setItem('agenda-solar-kb', JSON.stringify(KB));
+  document.getElementById('kb-new-title').value = '';
+  document.getElementById('kb-new-body').value = '';
+  document.getElementById('kb-new-tags').value = '';
+  const box = document.getElementById('kb-json');
+  if(box) box.value = JSON.stringify(KB, null, 2);
+  renderKbStatus();
+  Galaxy.build({ folder: false });
+  SFX.open();
+});
+
+// --- template management ----------------------------------------------
+async function renderTemplates(){
+  const list = document.getElementById('tpl-list');
+  const count = document.getElementById('tpl-count');
+  if(!list) return;
+  const all = await Templates.all(true);
+  if(count) count.textContent = all.length ? `${all.length} saved` : 'none saved';
+  list.innerHTML = all.length ? '' : '<p class="hint" style="margin:0">Nothing saved yet.</p>';
+  all.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'tpl-row';
+    row.innerHTML = `<span class="tpl-name">${escapeHtml(t.name)}</span>
+      <span class="tpl-ph">${Templates.placeholders(t).map(p => '{{' + escapeHtml(p) + '}}').join(' ') || '—'}</span>
+      <button class="tpl-use">Use</button><button class="tpl-del">✕</button>`;
+    row.querySelector('.tpl-use').addEventListener('click', () => openCompose(t, {}));
+    row.querySelector('.tpl-del').addEventListener('click', async () => {
+      if(!confirm(`Delete template "${t.name}"?`)) return;
+      await Templates.remove(t.id); renderTemplates(); Galaxy.build({ folder:false });
+    });
+    list.appendChild(row);
+  });
+}
+document.getElementById('tpl-save')?.addEventListener('click', async () => {
+  const name = document.getElementById('tpl-name').value.trim();
+  const body = document.getElementById('tpl-body').value.trim();
+  if(!name || !body){ alert('A template needs a name and a body.'); return; }
+  const saved = await Templates.save({
+    name, to: document.getElementById('tpl-to').value.trim(),
+    subject: document.getElementById('tpl-subject').value.trim(), body, kind:'email', tags:[],
+  });
+  if(!saved){ alert('Could not save that.'); return; }
+  ['tpl-name','tpl-to','tpl-subject','tpl-body'].forEach(id => document.getElementById(id).value = '');
+  renderTemplates(); Galaxy.build({ folder:false }); SFX.open();
+});
+
+// ===== Templates =====================================================
+// Stored in the existing memories table with kind='template', so they inherit
+// the same encryption and per-user scoping. Content is a JSON payload.
+const Templates = {
+  cache: null,
+  async all(force){
+    if(this.cache && !force) return this.cache;
+    const mems = await Memory.all(force);
+    this.cache = mems.filter(m => m.kind === 'template').map(m => {
+      try{ return { id: m.id, ...JSON.parse(m.content) }; }catch(e){ return null; }
+    }).filter(Boolean);
+    return this.cache;
+  },
+  async save(tpl){
+    const payload = JSON.stringify(tpl);
+    const keywords = [tpl.name, tpl.subject, (tpl.tags || []).join(' ')].join(' ').toLowerCase().slice(0, 300);
+    const r = await fetch(FN_URL + "/agenda-memory", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ content: await encStr(payload), keywords, kind: 'template' }),
+    });
+    if(!r.ok) return null;
+    const d = await r.json();
+    this.cache = null; Memory.cache = null;
+    return { id: d.memory.id, ...tpl };
+  },
+  async remove(id){ const ok = await Memory.remove(id); this.cache = null; return ok; },
+  async find(name){
+    const all = await this.all();
+    const q = String(name || '').toLowerCase();
+    return all.find(t => (t.name || '').toLowerCase() === q)
+        || all.find(t => (t.name || '').toLowerCase().includes(q))
+        || null;
+  },
+  // {{placeholders}} are filled from what the model supplies; anything left
+  // over is flagged so the user sees exactly what still needs a value.
+  fill(text, vars){
+    const missing = [];
+    const out = String(text || '').replace(/\{\{\s*([\w .-]+)\s*\}\}/g, (m, k) => {
+      const key = k.trim().toLowerCase();
+      const hit = Object.keys(vars || {}).find(v => v.toLowerCase() === key);
+      if(hit && vars[hit]) return vars[hit];
+      missing.push(k.trim());
+      return '⟨' + k.trim() + '⟩';
+    });
+    return { text: out, missing };
+  },
+  placeholders(tpl){
+    const all = `${tpl.subject || ''} ${tpl.body || ''} ${tpl.to || ''}`;
+    return [...new Set([...all.matchAll(/\{\{\s*([\w .-]+)\s*\}\}/g)].map(m => m[1].trim()))];
+  },
+};
+
+// The compose sheet. TARS prepares it; the send is always a deliberate click.
+let composeState = null;
+function openCompose(tpl, vars){
+  const s = Templates.fill(tpl.subject || '', vars);
+  const b = Templates.fill(tpl.body || '', vars);
+  const t = Templates.fill(tpl.to || '', vars);
+  composeState = { tpl, missing: [...new Set([...s.missing, ...b.missing, ...t.missing])] };
+  document.getElementById('compose-title').textContent = tpl.name || 'Message';
+  document.getElementById('compose-to').value = t.text;
+  document.getElementById('compose-subject').value = s.text;
+  document.getElementById('compose-body').value = b.text;
+  const warn = document.getElementById('compose-missing');
+  warn.textContent = composeState.missing.length
+    ? 'Still to fill: ' + composeState.missing.join(', ')
+    : 'Everything is filled in. Check it, then send.';
+  warn.className = 'hint' + (composeState.missing.length ? ' compose-warn' : '');
+  document.getElementById('compose-backdrop').classList.add('open');
+  SFX.open();
+}
+function closeCompose(){ document.getElementById('compose-backdrop')?.classList.remove('open'); composeState = null; }
+document.getElementById('compose-close')?.addEventListener('click', closeCompose);
+document.getElementById('compose-backdrop')?.addEventListener('click', e => {
+  if(e.target.id === 'compose-backdrop') closeCompose();
+});
+document.getElementById('compose-copy')?.addEventListener('click', () => {
+  const txt = `${document.getElementById('compose-subject').value}\n\n${document.getElementById('compose-body').value}`;
+  navigator.clipboard?.writeText(txt);
+  document.getElementById('compose-copy').textContent = 'Copied';
+  setTimeout(() => { document.getElementById('compose-copy').textContent = 'Copy'; }, 1200);
+});
+document.getElementById('compose-send')?.addEventListener('click', () => {
+  const to = encodeURIComponent(document.getElementById('compose-to').value);
+  const su = encodeURIComponent(document.getElementById('compose-subject').value);
+  const bo = encodeURIComponent(document.getElementById('compose-body').value);
+  // Opens the user's own mail client with everything prepared. See the note in
+  // Settings about why the final send stays in their hands.
+  window.location.href = `mailto:${to}?subject=${su}&body=${bo}`;
+  closeCompose();
+});
+
 // ===== Knowledge galaxy (3D) =========================================
 // Markdown notes rendered as a star field. Projection, orbit and depth sorting
 // are done by hand on a 2D canvas — no 3D library, so nothing extra to load.
@@ -1805,6 +2171,34 @@ const Galaxy = {
     }catch(e){ return []; }
   },
 
+  // Everything the assistant can draw on becomes a star: notes, cases,
+  // knowledge entries, remembered facts and templates.
+  fromEverything(){
+    const out = [];
+    KB.forEach((e, i) => out.push({
+      id: 'kb:' + i, key: String(e.title || '').toLowerCase(), title: e.title || 'Untitled',
+      tags: (e.tags || []).map(t => String(t).toLowerCase()), links: [],
+      words: String(e.content || '').split(/\s+/).length, excerpt: String(e.content || '').slice(0, 220),
+      folder: 'Knowledge/', source: 'kb' }));
+    (Memory.cache || []).filter(m => m.kind !== 'template').forEach(m => out.push({
+      id: 'mem:' + m.id, key: String(m.content).slice(0, 30).toLowerCase(),
+      title: String(m.content).slice(0, 40), tags: (m.keywords || '').split(/\s+/).filter(Boolean).slice(0, 6),
+      links: [], words: String(m.content).split(/\s+/).length, excerpt: String(m.content).slice(0, 220),
+      folder: 'Memory/', source: 'mem' }));
+    (Templates.cache || []).forEach(t => out.push({
+      id: 'tpl:' + t.id, key: String(t.name || '').toLowerCase(), title: t.name || 'Template',
+      tags: ['template', ...(t.tags || [])], links: [],
+      words: String(t.body || '').split(/\s+/).length, excerpt: String(t.body || '').slice(0, 220),
+      folder: 'Templates/', source: 'tpl', tpl: t }));
+    cases.slice(-40).forEach(cs => out.push({
+      id: 'case:' + cs.id, key: String(cs.titulo || '').toLowerCase(), title: cs.titulo || 'Case',
+      tags: (cs.tags || []).map(t => String(t).toLowerCase()), links: [],
+      words: (cs.notes_log || []).reduce((n, x) => n + String(x.text).split(/\s+/).length, 0),
+      excerpt: (cs.notes_log || []).map(x => x.text).join(' ').slice(0, 220),
+      folder: 'Cases/', source: 'case', caseId: cs.id }));
+    return out;
+  },
+
   fromAppNotes(){
     return notes.map(n => {
       const plain = plainTextPreview(n.content).text;
@@ -1820,7 +2214,7 @@ const Galaxy = {
 
   // --- build -----------------------------------------------------------
   async build(opts){
-    const parts = [this.fromAppNotes()];
+    const parts = [this.fromAppNotes(), this.fromEverything()];
     if(opts?.folder !== false) parts.push(await this.fromLocalFolder());
     if(opts?.drive) parts.push(await this.fromDrive());
     const items = parts.flat();
@@ -1988,6 +2382,8 @@ const Galaxy = {
 })();
 
 function openGalaxyNode(n){
+  if(n.source === 'tpl' && n.tpl){ openCompose(n.tpl, {}); return; }
+  if(n.source === 'case' && n.caseId){ openModal(n.caseId); return; }
   if(n.source === 'app' && n.noteId){
     const note = notes.find(x => x.id === n.noteId);
     if(note){ switchView('notebooks'); activeFolderId = note.notebook_id; renderNotebooksGrid(); openNote(note.id); return; }
@@ -3600,7 +3996,7 @@ document.querySelectorAll('.sub-tab').forEach(btn => {
       p.classList.toggle('hidden', p.dataset.subPanel !== key));
     SFX.tick();
     // the galaxy canvas has no size while hidden, so it is measured on reveal
-    if(key === 'knowledge') requestAnimationFrame(() => { Galaxy.stop(); startKbMap(); });
+    if(key === 'knowledge'){ renderTemplates(); requestAnimationFrame(() => { Galaxy.stop(); startKbMap(); }); }
     if(key === 'media' || key === 'appearance') requestAnimationFrame(() => setRain());
   });
 });

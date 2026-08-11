@@ -708,6 +708,20 @@
     color: var(--on-accent); box-shadow: 0 0 14px -6px var(--glow); }
   @media (max-width:860px){ .sub-tab{ flex:0 0 auto; font-size:.74rem; padding:8px 12px; } }
 
+
+  .kb-add{ padding:12px; border:1px dashed var(--line); border-radius:11px; margin-bottom:14px; }
+  .tpl-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+  .tpl-row{ display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:9px;
+    border:1px solid var(--line); background: linear-gradient(150deg, var(--panel-2), var(--panel)); }
+  .tpl-name{ font-weight:700; font-size:.8rem; }
+  .tpl-ph{ flex:1; font-family:"JetBrains Mono",monospace; font-size:.6rem; color:var(--muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tpl-row button{ border:1px solid var(--line); background:var(--bg); color:var(--muted);
+    border-radius:7px; font-size:.68rem; padding:4px 9px; }
+  .tpl-row .tpl-use:hover{ color:var(--amber); border-color:var(--amber); }
+  .tpl-row .tpl-del:hover{ color:var(--urgente); border-color:var(--urgente); }
+  .compose-warn{ color: var(--amber) !important; border-left:3px solid var(--amber); padding-left:9px; }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

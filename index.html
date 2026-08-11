@@ -219,6 +219,28 @@
         <button class="btn-ghost" id="galaxy-refresh">Refresh</button>
       </div>
       <p class="hint">Drag to orbit, scroll to zoom, click a star to open it. Notes link through <b>[[wiki links]]</b> and shared <b>#tags</b>; colour is by folder, size by how many links a note has. Amber stars were consulted in the last answer.</p>
+      <div class="kb-add">
+        <div class="field-row">
+          <div class="field"><label>New entry — title</label><input type="text" id="kb-new-title" placeholder="e.g. Growatt 117 relay fault"></div>
+          <div class="field"><label>Tags</label><input type="text" id="kb-new-tags" placeholder="growatt, relay"></div>
+        </div>
+        <div class="field"><label>What to remember</label><textarea id="kb-new-body" style="min-height:80px" placeholder="Write it as you would explain it to a colleague."></textarea></div>
+        <button class="btn-primary" id="kb-add-btn" style="width:100%">Add to knowledge base</button>
+      </div>
+
+      <div class="tpl-list-wrap">
+        <div class="set-info" style="margin:14px 0 8px"><b>Templates</b><span id="tpl-count">none saved</span></div>
+        <div id="tpl-list" class="tpl-list"></div>
+        <p class="hint">Say “TARS, save an email template called visit confirmation…” or add one below. Use <b>{{placeholders}}</b> for the parts that change.</p>
+        <div class="field-row">
+          <div class="field"><label>Template name</label><input type="text" id="tpl-name" placeholder="visit confirmation"></div>
+          <div class="field"><label>To</label><input type="text" id="tpl-to" placeholder="{{email}}"></div>
+        </div>
+        <div class="field"><label>Subject</label><input type="text" id="tpl-subject" placeholder="Visit scheduled — {{client}}"></div>
+        <div class="field"><label>Body</label><textarea id="tpl-body" style="min-height:110px" placeholder="Hello {{client}},&#10;&#10;Your technical visit is confirmed for {{date}} at {{time}}."></textarea></div>
+        <button class="btn-ghost" id="tpl-save" style="width:100%">Save template</button>
+      </div>
+
       <div class="field"><label>kb.json contents</label><textarea id="kb-json" style="min-height:150px; font-family:'JetBrains Mono',monospace; font-size:0.78rem;" placeholder='[{"title":"...","content":"...","tags":["..."]}]'></textarea></div>
       <div class="set-actions">
         <button class="btn-primary" id="kb-save" style="flex:1">Save knowledge base</button>
@@ -508,6 +530,22 @@
       <button class="btn-danger" id="sticky-del">Delete</button>
       <button class="btn-ghost" id="sticky-close">Close</button>
       <button class="btn-primary" id="sticky-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="compose-backdrop" style="z-index:150">
+  <div class="modal" style="max-width:560px">
+    <h2 id="compose-title">Message</h2>
+    <p class="hint" id="compose-missing"></p>
+    <div class="field"><label>To</label><input type="text" id="compose-to"></div>
+    <div class="field"><label>Subject</label><input type="text" id="compose-subject"></div>
+    <div class="field"><label>Message</label><textarea id="compose-body" style="min-height:200px"></textarea></div>
+    <p class="hint">TARS prepares it; you send it. Nothing leaves this machine until you press Send.</p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="compose-copy">Copy</button>
+      <button class="btn-ghost" id="compose-close">Cancel</button>
+      <button class="btn-primary" id="compose-send">Send</button>
     </div>
   </div>
 </div>
