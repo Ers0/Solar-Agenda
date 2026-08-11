@@ -834,7 +834,7 @@ const WAKE_WORDS = ['hey tars', 'hei tars', 'ei tars', 'hey tarz', 'hey tarss', 
 const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 
 const VOICE = {
-  supported: !!(navigator.mediaDevices?.getUserMedia && (window.AudioContext || window.webkitAudioContext)),
+  supported: !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
   state: 'off', lang: 'en-US', active: false, bargeStart: 0, greeted: false,
   conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
 };
@@ -1138,101 +1138,61 @@ WakeWord.onWake((remainder) => {
   else { setVoiceState(VSTATE.LISTENING); armFollowUp(); }
 });
 
-// --- capture: rolling PCM buffer + Groq Whisper -----------------------
-// MediaRecorder only starts writing once speech is already detected, so the
-// first syllable was being lost — which is exactly the part carrying "Hey" in
-// "Hey TARS". We now keep a continuous ring buffer of raw audio and cut the
-// clip from BEFORE speech began, so nothing is clipped.
+// --- capture: rolling MediaRecorder segments + Groq Whisper -----------
+// ScriptProcessorNode proved unreliable in current Chrome, so capture is back
+// on MediaRecorder. Pre-roll is achieved by restarting the recorder on a cycle:
+// when speech ends we stop the CURRENT segment, which already contains the
+// seconds leading up to it — so the opening syllable is never lost, and every
+// blob keeps a valid header.
 const VAD = {
   speakThresh: 0.055, silenceThresh: 0.032,
-  minSpeechMs: 260, silenceMs: 850, maxClipMs: 12000,
-  preRollMs: 500,            // audio kept from before the trigger
+  minSpeechMs: 240, silenceMs: 800, maxClipMs: 12000,
+  cycleMs: 5000,               // recorder restart interval while idle
   floor: 0, calibrated: false,
 };
-const RING_SECONDS = 15;
-let ring = null, ringPos = 0, ringRate = 48000, capNode = null;
-let speaking = false, speechStartIdx = 0, lastLoud = 0, clipTimer = null;
+let recorder = null, chunks = [], speaking = false, speechStart = 0, lastLoud = 0;
+let clipTimer = null, cycleTimer = null, micStream = null, lastClipInfo = null;
 
-function calibrateVAD(){
-  VAD.calibrated = false;
-  const samples = [];
-  const t0 = Date.now();
-  const step = () => {
-    samples.push(VOICE.level);
-    if(Date.now() - t0 < 1200){ requestAnimationFrame(step); return; }
-    samples.sort((a,b) => a-b);
-    const floor = samples[Math.floor(samples.length * 0.6)] || 0.01;
-    VAD.floor = floor;
-    VAD.speakThresh   = Math.max(0.045, floor * 2.4);
-    VAD.silenceThresh = Math.max(0.022, floor * 1.5);
-    VAD.calibrated = true;
-    setVoiceState(VSTATE.IDLE);
-  };
-  requestAnimationFrame(step);
+function pickMime(){
+  const opts = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+  return (window.MediaRecorder && opts.find(t => MediaRecorder.isTypeSupported(t))) || '';
 }
 
-// Continuous capture into a ring buffer.
-function startCapture(stream){
-  const ctx = acAlways();
-  if(!ctx){ setVoiceState(VSTATE.ERROR, 'no audio context'); return; }
-  ringRate = ctx.sampleRate;
-  ring = new Float32Array(Math.ceil(ringRate * RING_SECONDS));
-  ringPos = 0;
-  const src = ctx.createMediaStreamSource(stream);
-  capNode = ctx.createScriptProcessor(4096, 1, 1);
-  capNode.onaudioprocess = (ev) => {
-    const inp = ev.inputBuffer.getChannelData(0);
-    for(let i = 0; i < inp.length; i++){
-      ring[ringPos] = inp[i];
-      ringPos = (ringPos + 1) % ring.length;
+function newRecorder(){
+  if(!micStream) return;
+  try{
+    const mime = pickMime();
+    recorder = new MediaRecorder(micStream, mime ? { mimeType: mime } : undefined);
+  }catch(e){ setVoiceState(VSTATE.ERROR, 'cannot record'); return; }
+  chunks = [];
+  recorder.ondataavailable = ev => { if(ev.data && ev.data.size) chunks.push(ev.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+    chunks = [];
+    const wanted = speechStart > 0;
+    speechStart = 0;
+    if(VOICE.active) newRecorder();          // always keep a segment running
+    if(wanted) onClipReady(blob);
+  };
+  try{ recorder.start(); }catch(e){}
+}
+
+function cycleRecorder(){
+  clearTimeout(cycleTimer);
+  cycleTimer = setTimeout(() => {
+    // Only recycle while quiet, so an utterance is never cut in half.
+    if(VOICE.active && !speaking && recorder && recorder.state === 'recording'){
+      speechStart = 0;
+      try{ recorder.stop(); }catch(e){}      // onstop discards and restarts
     }
-  };
-  src.connect(capNode);
-  // Muted sink: required for the processor to run, contributes no sound.
-  const sink = ctx.createGain(); sink.gain.value = 0;
-  capNode.connect(sink); sink.connect(ctx.destination);
-}
-
-function ringSlice(fromIdx, toIdx){
-  const len = (toIdx - fromIdx + ring.length) % ring.length;
-  const out = new Float32Array(len);
-  for(let i = 0; i < len; i++) out[i] = ring[(fromIdx + i) % ring.length];
-  return out;
-}
-function downsample(buf, from, to){
-  if(to >= from) return buf;
-  const ratio = from / to;
-  const out = new Float32Array(Math.floor(buf.length / ratio));
-  for(let i = 0; i < out.length; i++){
-    const start = Math.floor(i * ratio), end = Math.min(buf.length, Math.floor((i + 1) * ratio));
-    let sum = 0;
-    for(let j = start; j < end; j++) sum += buf[j];
-    out[i] = sum / Math.max(1, end - start);
-  }
-  return out;
-}
-function encodeWav(samples, rate){
-  const buf = new ArrayBuffer(44 + samples.length * 2);
-  const v = new DataView(buf);
-  const str = (o, s) => { for(let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
-  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
-  let o = 44;
-  for(let i = 0; i < samples.length; i++, o += 2){
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-  return new Blob([buf], { type: 'audio/wav' });
+    cycleRecorder();
+  }, VAD.cycleMs);
 }
 
 function beginClip(){
   if(speaking) return;
   speaking = true;
-  // rewind past the pre-roll so the opening syllable survives
-  const back = Math.floor(ringRate * (VAD.preRollMs / 1000));
-  speechStartIdx = (ringPos - back + ring.length) % ring.length;
+  speechStart = Date.now();
   setVoiceState(VSTATE.LISTENING);
   clearTimeout(clipTimer);
   clipTimer = setTimeout(endClip, VAD.maxClipMs);
@@ -1241,47 +1201,51 @@ function endClip(){
   clearTimeout(clipTimer);
   if(!speaking) return;
   speaking = false;
-  const pcm = ringSlice(speechStartIdx, ringPos);
-  const secs = pcm.length / ringRate;
-  if(secs < 0.35){ setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
-
-  // Measure the clip itself. If it is effectively silent the microphone path
-  // is broken, and saying so is far more useful than sending empty audio to
-  // Whisper and reporting whatever it invents.
-  let peak = 0, sum = 0;
-  for(let i = 0; i < pcm.length; i++){ const v = Math.abs(pcm[i]); if(v > peak) peak = v; sum += v * v; }
-  const rms = Math.sqrt(sum / pcm.length);
-  lastClipInfo = { secs: secs.toFixed(1), peak: peak.toFixed(3), rms: rms.toFixed(4) };
-  if(peak < 0.0015){
-    showHeard(`no audio captured (${secs.toFixed(1)}s, peak ${peak.toFixed(3)}) — check the microphone`);
+  if(Date.now() - speechStart < VAD.minSpeechMs){
+    speechStart = 0;
     setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
     return;
   }
-
-  // Normalise quiet clips; a distant mic is a common cause of poor accuracy.
-  if(peak > 0 && peak < 0.4){
-    const g = Math.min(6, 0.6 / peak);
-    for(let i = 0; i < pcm.length; i++) pcm[i] *= g;
-  }
-  const small = downsample(pcm, ringRate, 16000);
-  onClipReady(encodeWav(small, 16000));
+  lastClipInfo = { secs: ((Date.now() - speechStart) / 1000).toFixed(1) };
+  if(recorder && recorder.state === 'recording'){ try{ recorder.stop(); }catch(e){} }
 }
-let lastClipInfo = null;
+
+function calibrateVAD(){
+  VAD.calibrated = false;
+  const samples = [];
+  const t0 = Date.now();
+  const step = () => {
+    if(!VOICE.active) return;
+    samples.push(VOICE.level || 0);
+    if(Date.now() - t0 < 1200){ requestAnimationFrame(step); return; }
+    samples.sort((a, b) => a - b);
+    const floor = samples[Math.floor(samples.length * 0.6)] || 0.01;
+    VAD.floor = floor;
+    VAD.speakThresh   = Math.max(0.035, floor * 2.4);
+    VAD.silenceThresh = Math.max(0.018, floor * 1.5);
+    VAD.calibrated = true;
+    // If the meter never moved, the microphone is not reaching us at all.
+    const peak = samples[samples.length - 1] || 0;
+    if(peak < 0.0008){
+      setVoiceState(VSTATE.ERROR, 'no microphone signal');
+      showHeard('The microphone is producing no signal. Check the input device and site permissions.');
+      return;
+    }
+    setVoiceState(VSTATE.IDLE);
+  };
+  requestAnimationFrame(step);
+}
 
 // Whisper echoes its prompt when the audio is unintelligible, so the hint is
-// written as a natural sentence rather than a labelled list — and kept short.
+// written as a natural sentence rather than a labelled list.
 function sttHint(){
   const names = [...new Set(cases.slice(-20).map(x => x.titulo || '').filter(Boolean))].slice(0, 12);
   const base = 'Hey TARS. Support call about solar inverters. We discuss Deye, Foxess and Growatt inverters, PAC tickets, strings and alarms.';
   return names.length ? base + ' Clients mentioned include ' + names.join(', ') + '.' : base;
 }
-
-// Anything that is mostly a slice of the prompt is a hallucination, not speech.
 function isPromptEcho(said){
   const s = said.toLowerCase().replace(/[.,!?]/g, '').trim();
   if(!s) return true;
-  // Only the specific fragments Whisper recites when it has nothing to work
-  // with. Deliberately narrow, so real speech is never thrown away.
   return /^(terms|clients mentioned include|support call about solar inverters|we discuss deye)\b/.test(s)
       || /^(inverter|deye|foxess|growatt)(,? (inverter|deye|foxess|growatt))+$/.test(s);
 }
@@ -1296,9 +1260,7 @@ async function transcribe(blob){
   const r = await fetch(FN_URL + "/agenda-stt", {
     method: 'POST', headers: authHeaders(),
     body: JSON.stringify({
-      audio: btoa(bin), mime: 'audio/wav',
-      // Once a conversation is under way we know the language; telling Whisper
-      // beats re-detecting it from a two-word clip.
+      audio: btoa(bin), mime: blob.type || 'audio/webm',
       lang: VOICE.conversing ? VOICE.lang.slice(0, 2) : 'auto',
       prompt: sttHint(),
     }),
@@ -1308,7 +1270,12 @@ async function transcribe(blob){
 }
 
 async function onClipReady(blob){
-  if(!VOICE.active || blob.size < 3000){ if(VOICE.active) setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE); return; }
+  if(!VOICE.active) return;
+  if(!blob || blob.size < 2000){
+    showHeard(`no audio captured (${blob ? blob.size : 0} bytes) — check the microphone`);
+    setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+    return;
+  }
   setVoiceState(VSTATE.PROCESSING);
   let said = '', detected = null;
   try{
@@ -1316,20 +1283,18 @@ async function onClipReady(blob){
     said = (d.text || '').trim();
     detected = d.language;
   }catch(err){
-    showHeard('(could not transcribe)');
+    showHeard('could not transcribe — network or service problem');
     setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
     return;
   }
-  // Whisper emits these for silence or noise; treat them as nothing heard.
   if(/^(you|thank you\.?|obrigado\.?|\.|\s*)$/i.test(said)) said = '';
   if(said && isPromptEcho(said)){
-    showHeard(`unclear audio${lastClipInfo ? ` (${lastClipInfo.secs}s, level ${lastClipInfo.rms})` : ''} — say it again`);
+    showHeard(`unclear audio${lastClipInfo ? ` (${lastClipInfo.secs}s)` : ''} — say it again`);
     setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
     return;
   }
-  showHeard(said);
+  showHeard(said || `nothing recognised${lastClipInfo ? ` (${lastClipInfo.secs}s)` : ''}`);
   if(!said || said.length < 2){
-    showHeard(`nothing recognised${lastClipInfo ? ` (${lastClipInfo.secs}s, level ${lastClipInfo.rms})` : ''}`);
     setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
     return;
   }
@@ -1416,8 +1381,10 @@ async function startVoice(){
   let stream;
   try{ stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true } }); }
   catch(e){ setVoiceState('error', 'microphone blocked'); return; }
+  micStream = stream;
   startMicMeter(stream);
-  startCapture(stream);
+  newRecorder();
+  cycleRecorder();
   primeVoices();
   setVoiceState('thinking');
   calibrateVAD();
@@ -1426,8 +1393,10 @@ async function startVoice(){
 function stopVoice(){
   VOICE.active = false; VOICE.conversing = false;
   clearTimeout(VOICE.followTimer); clearTimeout(clipTimer);
-  try{ capNode && (capNode.onaudioprocess = null); }catch(e){}
-  speaking = false;
+  try{ recorder && recorder.state === 'recording' && recorder.stop(); }catch(e){}
+  try{ micStream && micStream.getTracks().forEach(t => t.stop()); }catch(e){}
+  clearTimeout(cycleTimer); clearTimeout(clipTimer);
+  recorder = null; micStream = null; speaking = false;
   AudioOut.stop();
   WakeWord.stop();
   try{ speechSynthesis?.cancel(); }catch(e){}

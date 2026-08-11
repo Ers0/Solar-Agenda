@@ -1,29 +1,125 @@
 [
   {
-    "title": "Foxess inverter — error 21",
-    "content": "Grid overvoltage. Check AC voltage at the breaker; above 253V the inverter disconnects by regulation. Ask the utility for a tap adjustment if it persists.",
+    "title": "Grid overvoltage — inverter disconnects",
+    "content": "Most common cause of intermittent daytime shutdowns. NBR 16149 requires disconnection above roughly 1.10x nominal (about 233 V on a 220 V phase, 253 V on 230 V). Confirm by logging AC voltage at the inverter terminals across a sunny midday. If it climbs only while producing, the cause is impedance in the run: undersized cable, long distance, or a loose neutral. Fixes in order of cost: re-torque connections, increase cable gauge, shorten the run, then ask the utility for a transformer tap adjustment. Raising the inverter's voltage limit is a workaround, not a fix.",
     "tags": [
-      "foxess",
-      "inverter",
-      "error",
-      "grid"
+      "overvoltage",
+      "grid",
+      "ac",
+      "nbr16149",
+      "shutdown"
     ]
   },
   {
-    "title": "Deye F58 alarm",
-    "content": "Ground fault on the DC side. Inspect string insulation and MC4 connectors for moisture.",
+    "title": "Isolation / ground fault (Riso) alarms",
+    "content": "Riso measures DC-side insulation resistance to earth; alarms typically trip below 1 MOhm. Nearly always moisture: water in an MC4 connector, a cable pinched against the rail, or a damaged junction box. The pattern matters — if it clears mid-morning as panels dry, it is condensation rather than a defect. Isolate by disconnecting strings one at a time and re-testing. Measure each string positive-to-earth and negative-to-earth with a megohmmeter at 500 V. Do not blame the inverter until the array is cleared.",
+    "tags": [
+      "riso",
+      "isolation",
+      "ground fault",
+      "dc",
+      "moisture"
+    ]
+  },
+  {
+    "title": "Reading a string underperformance",
+    "content": "Compare strings on the same MPPT first. 10-20% low usually means soiling or one shaded module; 30%+ suggests a failed bypass diode or a disconnected module; zero is a broken connection or blown fuse. Check open-circuit voltage against expected: modules in series times Voc, corrected for cell temperature (Voc falls roughly 0.3%/degC above 25 C). Voltage right but current low points at shading or soiling; voltage low points at a missing module.",
+    "tags": [
+      "string",
+      "underperformance",
+      "mppt",
+      "voc",
+      "shading"
+    ]
+  },
+  {
+    "title": "Deye hybrid — battery not charging",
+    "content": "Work through in order: 1) battery communication — the wrong BMS protocol selected is the most common cause; confirm the brand in the inverter menu matches the battery. 2) Charge current limit set to zero or very low. 3) Time-of-use settings blocking charge in the current window. 4) SOC already at the configured maximum. 5) Physical: breaker open, reversed polarity, blown fuse in the battery cable. Communication faults usually show as SOC frozen at one value rather than a hard alarm.",
     "tags": [
       "deye",
-      "f58",
-      "alarm"
+      "hybrid",
+      "battery",
+      "bms",
+      "charging"
     ]
   },
   {
-    "title": "PAC opening rules",
-    "content": "Open a PAC when the fault requires a field visit or manufacturer RMA. Attach photos of the display and the plate.",
+    "title": "Foxess — no communication with the portal",
+    "content": "Separate inverter-side from network-side. If the local display shows normal production, the inverter is fine and the datalogger is the problem. Check: dongle seated and screwed in, correct credentials, 2.4 GHz only (most dongles cannot join 5 GHz), router not isolating clients, and signal strength at the inverter location. A dongle with a solid light that never appears online is usually a wrong password or a captive portal. Data gaps of a few hours that self-heal are normal and need no visit.",
+    "tags": [
+      "foxess",
+      "monitoring",
+      "wifi",
+      "datalogger",
+      "portal"
+    ]
+  },
+  {
+    "title": "When to open a PAC",
+    "content": "Open a PAC when the fault needs a field visit or a manufacturer RMA, not for anything answerable remotely. Always attach: photo of the display showing the fault code, photo of the nameplate with serial number, photo of the installation showing array and inverter, and the production curve for the affected period. Missing serial numbers are the single largest cause of RMA delay. State what has already been tested so the manufacturer does not return the same checklist.",
     "tags": [
       "pac",
+      "process",
+      "rma",
+      "documentation"
+    ]
+  },
+  {
+    "title": "Fault codes worth memorising",
+    "content": "Deye F13 grid mode changed or grid abnormal. Deye F58 BMS communication failure. Deye F07 DC bus voltage too high. Growatt Error 117 relay check failure, often a genuine relay fault. Growatt Error 118 GFCI device fault. Foxess Error 21 grid overvoltage. Foxess Error 25 isolation resistance too low. Codes beginning F or Error plus two digits are usually grid-side; anything referencing BMS, battery or CAN is communication.",
+    "tags": [
+      "fault codes",
+      "deye",
+      "growatt",
+      "foxess",
+      "reference"
+    ]
+  },
+  {
+    "title": "Production looks low but nothing is faulted",
+    "content": "Rule out the ordinary before treating it as a defect: recent cloud cover versus the same week last month, soiling after a dry spell, seasonal sun angle, a newly grown tree or new building, and derating from high ambient temperature. Compare against a nearby installation of similar size if one exists. A system 10-15% below its first summer after two or three years is usually normal degradation plus soiling. Ask for monthly figures, not a single bad day.",
+    "tags": [
+      "production",
+      "diagnosis",
+      "soiling",
+      "derating"
+    ]
+  },
+  {
+    "title": "Talking to an angry customer",
+    "content": "Acknowledge the cost of the problem before explaining the cause; people want to know you understand the impact. State plainly what is known, what is not, and what happens next with a date. Never promise a timeline that depends on a manufacturer without saying it depends on them. If a visit is needed, give a window rather than a vague soon. Write the summary into the case notes immediately — the second conversation is far worse if the details have drifted.",
+    "tags": [
+      "customer",
+      "communication",
       "process"
+    ]
+  },
+  {
+    "title": "Safety before any DC work",
+    "content": "DC does not go to zero with the sun up. Switch AC off first, then the DC isolator, and only then work. Treat every string as live regardless of what the isolator indicates. Never disconnect MC4 connectors under load — break the circuit at the isolator first, since an arc under load damages the connector and can injure. Use gloves rated for the array voltage and a meter you trust. If the array is wet or a storm is approaching, stop.",
+    "tags": [
+      "safety",
+      "dc",
+      "field work",
+      "mc4"
+    ]
+  },
+  {
+    "title": "First hour of the day",
+    "content": "Reserve the first working hour for urgent and high priority cases only; everything else waits. In practice: triage overnight arrivals, identify anything blocking a customer's production entirely, and make contact before mid-morning so they know it is being handled. Cases that are annoying but not blocking are better batched later, when interruptions are cheaper.",
+    "tags": [
+      "routine",
+      "priority",
+      "workflow"
+    ]
+  },
+  {
+    "title": "Template — case note",
+    "content": "Symptom as the customer described it. What the data shows (production, voltages, fault codes, timestamps). What was tested and the result. Conclusion or current hypothesis. Next action with an owner and a date. This shape keeps a case readable by someone else six months later, and makes the AI summary useful rather than vague.",
+    "tags": [
+      "template",
+      "notes",
+      "documentation"
     ]
   }
 ]
