@@ -1306,7 +1306,8 @@ function createTranscriptWakeProvider(){
     onWake(cb){ onWakeCb = cb; },
     // called by the STT pipeline with each final transcript
     consider(text){
-      if(!running || !onWakeCb) return false;
+      if(!onWakeCb) return false;
+      if(!running){ console.warn('[wake] provider was not started'); running = true; }
       const low = String(text || '').toLowerCase();
       const hit = WAKE_WORDS.find(w => low.includes(w));
       if(!hit) return false;
@@ -1585,8 +1586,15 @@ async function startVoice(){
   cycleRecorder();
   primeVoices();
   setVoiceState('thinking');
+  WakeWord.start();          // without this the provider rejects every phrase
   calibrateVAD();
   requestAnimationFrame(vadTick);
+  if(!VOICE.greeted){
+    VOICE.greeted = true;
+    const g = TARS.greeting();
+    addAiMessage('assistant', g);
+    speak(g, VOICE.lang);
+  }
 }
 function stopVoice(){
   VOICE.active = false; VOICE.conversing = false;
@@ -1948,7 +1956,7 @@ function kbSearch(q, limit = 4){
   if(!KB.length || !q) return [];
   const words = String(q).toLowerCase().split(/\W+/).filter(w => w.length > 2);
   return KB.map(e => {
-    const hay = [e.title, e.content, (e.tags || []).join(' '), (e.keywords || []).join(' ')].join(' ').toLowerCase();
+    const hay = [e.title, e.content, (e.tags || []).join(' '), (e.keywords || []).join(' '), e.source || ''].join(' ').toLowerCase();
     let score = 0;
     words.forEach(w => { if(hay.includes(w)) score += hay.split(w).length - 1; });
     return { e, score };
@@ -1972,7 +1980,8 @@ document.getElementById('kb-add-btn')?.addEventListener('click', () => {
   const box = document.getElementById('kb-json');
   if(box) box.value = JSON.stringify(KB, null, 2);
   renderKbStatus();
-  Galaxy.build({ folder: false });
+  fileKnowledgeEntry({ title, content, tags, source: 'Knowledge' })
+    .then(() => { renderNotebooksGrid(); Galaxy.build({ folder:false }); });
   SFX.open();
 });
 
@@ -2103,6 +2112,58 @@ document.getElementById('compose-send')?.addEventListener('click', () => {
   closeCompose();
 });
 
+
+// ===== Knowledge -> notebooks sync ===================================
+// Every knowledge entry also exists as a real note, filed in a notebook named
+// after its source. Those notebooks are marked with a leading marker so they
+// stay out of the way in the Notebooks tab, but they are ordinary notes: they
+// open, they search, and they appear in the galaxy with proper structure.
+const SYS_PREFIX = '⌁ ';
+function isSystemNotebook(nb){ return String(nb.title || '').startsWith(SYS_PREFIX); }
+
+async function ensureNotebook(title){
+  const want = SYS_PREFIX + title;
+  let nb = notebooks.find(x => x.title === want);
+  if(nb) return nb;
+  nb = await createNotebookApi({ title: want, color: '#4f9fd8' });
+  notebooks.unshift(nb);
+  return nb;
+}
+
+// Files one entry as a note, updating in place if it is already there.
+async function fileKnowledgeEntry(entry){
+  const source = (entry.source || 'Knowledge').split(/[—:]/)[0].trim();
+  const nb = await ensureNotebook(source);
+  const body = `<p>${escapeHtml(entry.content)}</p>`
+    + (entry.url ? `<p><a href="${entry.url}" target="_blank" rel="noopener">Open the source page</a></p>` : '');
+  const existing = notes.find(n => n.notebook_id === nb.id && n.title === entry.title);
+  try{
+    if(existing){
+      const up = await updateNoteApi(existing.id, { title: entry.title, content: body, tags: entry.tags || [] });
+      notes[notes.findIndex(n => n.id === existing.id)] = up;
+      return up;
+    }
+    const made = await createNoteApi({ notebook_id: nb.id, title: entry.title, content: body, tags: entry.tags || [] });
+    notes.unshift(made);
+    return made;
+  }catch(e){ return null; }
+}
+
+async function syncKnowledgeToNotebooks(){
+  const btn = document.getElementById('kb-sync');
+  if(btn){ btn.disabled = true; btn.textContent = 'Filing…'; }
+  let done = 0;
+  for(const e of KB){
+    if(await fileKnowledgeEntry(e)) done++;
+    if(btn) btn.textContent = `Filing… ${done}/${KB.length}`;
+  }
+  renderNotebooksGrid();
+  Galaxy.build({ folder:false });
+  if(btn){ btn.disabled = false; btn.textContent = 'File knowledge into notebooks'; }
+  alert(`Filed ${done} entries into ${new Set(KB.map(e => (e.source || 'Knowledge').split(/[—:]/)[0].trim())).size} notebooks.`);
+}
+document.getElementById('kb-sync')?.addEventListener('click', syncKnowledgeToNotebooks);
+
 // ===== Knowledge galaxy (3D) =========================================
 // Markdown notes rendered as a star field. Projection, orbit and depth sorting
 // are done by hand on a 2D canvas — no 3D library, so nothing extra to load.
@@ -2179,7 +2240,7 @@ const Galaxy = {
       id: 'kb:' + i, key: String(e.title || '').toLowerCase(), title: e.title || 'Untitled',
       tags: (e.tags || []).map(t => String(t).toLowerCase()), links: [],
       words: String(e.content || '').split(/\s+/).length, excerpt: String(e.content || '').slice(0, 220),
-      folder: 'Knowledge/', source: 'kb' }));
+      folder: (e.source ? e.source.split(/[—:]/)[0].trim() : 'Knowledge') + '/', source: 'kb' }));
     (Memory.cache || []).filter(m => m.kind !== 'template').forEach(m => out.push({
       id: 'mem:' + m.id, key: String(m.content).slice(0, 30).toLowerCase(),
       title: String(m.content).slice(0, 40), tags: (m.keywords || '').split(/\s+/).filter(Boolean).slice(0, 6),
@@ -2225,6 +2286,14 @@ const Galaxy = {
     const edges = [];
     items.forEach(a => {
       a.links.forEach(l => { if(byKey[l] && byKey[l] !== a) edges.push([a.id, byKey[l].id, 'link']); });
+    // knowledge entries reference each other in prose ("ver 4.2", "Seção 6"),
+    // so those become real edges instead of the graph staying flat
+    items.forEach(b => {
+      if(b === a) return;
+      const ref = (b.title || '').match(/^(\d+(?:\.\d+)?)/);
+      if(ref && new RegExp('\\b' + ref[1].replace('.', '\\.') + '\\b').test(a.excerpt || ''))
+        edges.push([a.id, b.id, 'link']);
+    });
     });
     // tag co-occurrence, capped so dense tags do not become hairballs
     const byTag = {};
@@ -2639,7 +2708,7 @@ function buildAiSystemPrompt(spoken){
   // Only the matching entries are sent, never the whole knowledge base.
   lastKbHits = kbSearch(lastUserQuestion || '');
   const kbBlock = lastKbHits.length
-    ? 'Knowledge base matches:\n' + lastKbHits.map((e, i) => `- [KB${i + 1} | ${e.title}] ${e.content}`).join('\n')
+    ? 'Knowledge base matches:\n' + lastKbHits.map((e, i) => `- [KB${i + 1} | ${e.title}${e.source ? ' — ' + e.source : ''}] ${e.content}`).join('\n')
     : (KB.length ? 'Knowledge base: no entry matched this question.' : 'Knowledge base: empty.');
 
   return [
@@ -2800,7 +2869,7 @@ async function runAssistantTurn(text, spoken){
   if(!display) display = 'Done.';
 
   // Knowledge entries actually fed into this turn become citable sources.
-  (lastKbHits || []).forEach((e, i) => sources.push({ type:'kb', label: e.title, id: 'KB' + (i + 1) }));
+  (lastKbHits || []).forEach((e, i) => sources.push({ type:'kb', label: e.title + (e.source ? ' · ' + e.source : ''), id: 'KB' + (i + 1), url: e.url }));
   markKbMapUsed();
   (lastMemHits || []).forEach(m => sources.push({ type:'mem', label: String(m.content).slice(0, 60), id: 'MEM' }));
 
@@ -2827,7 +2896,8 @@ function renderTurn(res){
     s.innerHTML = '<div class="src-head">Sources</div>' + res.sources.map(x => `
       <div class="src-card ${x.type}">
         <span class="src-kind">${x.type === 'web' ? 'WEB' : x.type === 'mem' ? 'MEMORY' : (x.id || 'KB')}</span>
-        <span class="src-label">${escapeHtml(x.label || '')}</span>
+        ${x.url ? `<a class="src-label" href="${x.url}" target="_blank" rel="noopener">${escapeHtml(x.label || '')}</a>`
+                : `<span class="src-label">${escapeHtml(x.label || '')}</span>`}
       </div>`).join('');
     bubble.appendChild(s);
   }
@@ -3168,7 +3238,9 @@ function renderNotebooksGrid(){
     grid.innerHTML = '<div class="nb-grid-empty">No notebooks yet — create one to get started.</div>';
     return;
   }
-  [...notebooks].sort((a,b) => (a.position||0) - (b.position||0)).forEach(nb => {
+  const showSys = !!settings.showSystemNotebooks;
+  [...notebooks].filter(nb => showSys || !isSystemNotebook(nb))
+    .sort((a,b) => (a.position||0) - (b.position||0)).forEach(nb => {
     const nbNotes = notes.filter(n => n.notebook_id === nb.id);
     const latest = nbNotes[0]; // notes are already sorted by updated_at desc
     const { text, hasImg, thumb } = plainTextPreview(latest ? latest.content : '');
@@ -3211,6 +3283,10 @@ document.getElementById('notebook-search')?.addEventListener('keydown', (e) => {
   if(e.key === 'Escape'){ searchShell.classList.remove('open'); e.target.value = ''; notebookSearchQuery=''; renderNotebooksGrid(); }
 });
 
+document.getElementById('toggle-sys')?.addEventListener('click', () => {
+  settings.showSystemNotebooks = !settings.showSystemNotebooks;
+  saveSettings(); renderNotebooksGrid(); SFX.tick();
+});
 document.getElementById('notebooks-back-btn').addEventListener('click', () => { activeFolderId = null; renderNotebooksGrid(); });
 document.getElementById('delete-notebook-btn').addEventListener('click', async () => {
   if(!activeFolderId) return;

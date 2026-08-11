@@ -1,5 +1,241 @@
 [
   {
+    "title": "Deye string on-grid — F30 a F34 (contatora)",
+    "content": "F30 indica falha na contatora CA. F31, F32, F33 e F34 também são falhas de contatora e são passíveis de análise de garantia. Causa frequente: surto externo. Procedimento: verificar instalação e conectores CA, reiniciar o inversor retirando CA e CC por 15 minutos. Se persistir, seguir para os testes de garantia. Atenção: estes alarmes valem para inversores string on-grid — microinversores Deye não emitem alarmes.",
+    "tags": [
+      "deye",
+      "f30",
+      "f31",
+      "f32",
+      "f33",
+      "f34",
+      "contatora",
+      "garantia"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 4.6",
+    "url": "https://app.notion.com/p/3920a92d24ec81898df0e1dbf058e1d9"
+  },
+  {
+    "title": "Deye — F14, F15, F17, F18, F19 (firmware)",
+    "content": "Falha de firmware. Dificilmente se recupera e normalmente decorre de surto externo. Não insistir em reinícios repetidos; encaminhar para análise de garantia com o histórico de alarmes.",
+    "tags": [
+      "deye",
+      "f14",
+      "f15",
+      "f17",
+      "f18",
+      "f19",
+      "firmware",
+      "surto"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 4.6",
+    "url": "https://app.notion.com/p/3920a92d24ec81898df0e1dbf058e1d9"
+  },
+  {
+    "title": "Deye — F35 (falta de rede CA)",
+    "content": "Em 99% dos casos significa falta de CA chegando ao inversor: verificar disjuntores, tensão no conector CA e ligação correta de fase, neutro e terra. Sinal importante: mais de 200 alarmes F35 em pouco tempo indica oscilação forte da concessionária, ou seja, surto externo — e não defeito do equipamento.",
+    "tags": [
+      "deye",
+      "f35",
+      "rede",
+      "ca",
+      "concessionaria"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 4.6",
+    "url": "https://app.notion.com/p/3920a92d24ec81898df0e1dbf058e1d9"
+  },
+  {
+    "title": "Deye — display apagado com monitoramento funcionando",
+    "content": "Possível curto na placa de comunicação. Solicitar medição de Vcc na escala de 20 V nos pinos 5 e 9 do datalogger — o correto é constar 12 V entre esses pinos. Muitos casos são causados por surto externo por exposição ao sol. Observação: se o monitoramento continua reportando, o inversor está gerando e apenas o display está afetado.",
+    "tags": [
+      "deye",
+      "display",
+      "datalogger",
+      "pinos 5 e 9",
+      "comunicacao"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 4.6",
+    "url": "https://app.notion.com/p/3920a92d24ec81898df0e1dbf058e1d9"
+  },
+  {
+    "title": "Growatt — 404 e 405 (falha no inversor)",
+    "content": "Ambos indicam falha no inversor. Procedimento: tentar primeiro a atualização remota de firmware. Se a 405 não for resolvida pela atualização, abrir ticket. Não pular direto para garantia sem tentar o firmware.",
+    "tags": [
+      "growatt",
+      "404",
+      "405",
+      "firmware",
+      "ticket"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 4.6",
+    "url": "https://app.notion.com/p/3920a92d24ec81898df0e1dbf058e1d9"
+  },
+  {
+    "title": "Solis — Relay_check_fail",
+    "content": "Falha no relay. Tentar atualização remota de firmware; se não resolver, abrir protocolo de garantia.",
+    "tags": [
+      "solis",
+      "relay",
+      "relay_check_fail",
+      "firmware",
+      "garantia"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 4.6",
+    "url": "https://app.notion.com/p/3920a92d24ec81898df0e1dbf058e1d9"
+  },
+  {
+    "title": "FoxESS — microinversor em curto",
+    "content": "O microinversor entra em curto-circuito e desarma o disjuntor após o período de anti-ilhamento — por isso o sintoma típico é desarmar alguns minutos depois de ligado. É caso de análise de garantia.",
+    "tags": [
+      "foxess",
+      "microinversor",
+      "curto",
+      "disjuntor",
+      "anti-ilhamento"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 4.6",
+    "url": "https://app.notion.com/p/3920a92d24ec81898df0e1dbf058e1d9"
+  },
+  {
+    "title": "Onde estão as tabelas completas de códigos",
+    "content": "A seção 4.6 é consulta rápida durante o atendimento. O levantamento completo por fabricante está na Seção 6: 6.1 Deye (~35 códigos F01–F64, mais 'não liga' e 'sem comunicação'), 6.2 Growatt (procedimento completo de abertura de ticket), 6.3 Solis (~21 alarmes nomeados: NO GRID, OV-BUS, PV ISO-PRO, Ileak-PRO, GRID INTF), 6.4 FoxESS (~30 códigos ID com padrão de piscada do LED), 6.6 Hoymiles (~35 códigos 121–314), 6.7 Outros (Hyxi, NEP em hexadecimal, AuxSol).",
+    "tags": [
+      "indice",
+      "fabricantes",
+      "codigos",
+      "referencia"
+    ],
+    "source": "BEL SUPPORT RUNBOOK 6",
+    "url": "https://app.notion.com/p/3920a92d24ec8101bf34c902f1d56a25"
+  },
+  {
+    "title": "Estrutura do Runbook de Suporte",
+    "content": "0 Onboarding · 1 Atendimento ao Cliente · 2 Plataformas e Ferramentas · 3 Fluxo de Trabalho Diário · 4 Diagnóstico Técnico (4.1 string, 4.2 micro, 4.3 híbridos, 4.4 baterias, 4.5 módulos, 4.6 códigos, 4.7 coleta de dados, 4.8 acesso remoto, 4.9 segurança) · 5 Processo de Garantia · 6 Fabricantes (334 modelos mapeados modelo → código BEL → fabricante) · 7 Procedimentos Internos · 8 Acompanhamento e Encerramento · 9 FAQ · 10 Estudos de Caso.",
+    "tags": [
+      "runbook",
+      "indice",
+      "processo",
+      "belenergy"
+    ],
+    "source": "BEL SUPPORT RUNBOOK",
+    "url": "https://app.notion.com/p/3920a92d24ec8102b7e1c69ab7c7755e"
+  },
+  {
+    "title": "CORREÇÃO — Solis OV-G-V é tensão CA, não CC",
+    "content": "O código OV-G-V nos inversores Solis refere-se a sobretensão da rede CA. Erro comum: tratá-lo como tensão CC das strings e pedir medição de Voc. O caminho correto é verificar a tensão CA no ponto de conexão e os parâmetros de proteção do inversor.",
+    "tags": [
+      "solis",
+      "ov-g-v",
+      "sobretensao",
+      "ca",
+      "correcao"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "CORREÇÃO — Growatt 409 é sobretensão do barramento",
+    "content": "O alarme 409 nos inversores Growatt é relacionado à sobretensão do barramento (bus). Erro comum: descrevê-lo como falha de isolamento ou aterramento e mandar checar MC4. Verificar tensão de entrada CC e condições de barramento.",
+    "tags": [
+      "growatt",
+      "409",
+      "barramento",
+      "bus",
+      "correcao"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "CORREÇÃO — microinversores Deye não possuem alarmes",
+    "content": "Microinversores Deye não emitem alarmes. Respostas citando F35 ou outros códigos para microinversor Deye estão erradas. O diagnóstico é feito por Voltage Before/After Relay, Active Power Regulation e demais parâmetros — ver 4.2 Microinversores. Os códigos F only se aplicam a inversores string on-grid.",
+    "tags": [
+      "deye",
+      "microinversor",
+      "alarmes",
+      "correcao"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "Deye — sem alarmes mas geração baixa",
+    "content": "Se não há alarme registrado, desconfie de causa que não seja parâmetro de tensão: se fosse limite de tensão, haveria alarme. Avaliar sombreamento, sujidade, degradação, curva de geração mês a mês e queda de tensão do sistema conforme o projeto. Ajuste de Over Voltage em Setup > Protect Param só faz sentido quando há evidência de tensão alta na rede.",
+    "tags": [
+      "deye",
+      "geracao baixa",
+      "diagnostico",
+      "tensao"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "Deye — problema de Wi-Fi no datalogger",
+    "content": "Grande parte dos dataloggers novos é embutida e não tem indicação física de funcionamento, então pedir vídeo dos LEDs frequentemente não se aplica. Caminho correto: verificar a configuração pelo Deye Cloud ou Solarman conforme os guias de monitoramento e, se não resolver, seguir a aba de monitoramento geral. A medição de 12 V só vale para dataloggers removíveis de 9 pinos (entre os pinos 5 e 9) e esse defeito é raro.",
+    "tags": [
+      "deye",
+      "wifi",
+      "datalogger",
+      "solarman",
+      "deye cloud",
+      "monitoramento"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "Huawei — sobretensão CA transitória (2072)",
+    "content": "O alarme 2072 indica que a tensão de fase excede o limite de proteção. Verificar a tensão no ponto de ligação; se estiver acima do limite, acionar a concessionária. O limiar de proteção é configurável e só deve ser alterado com consentimento do operador. Boa prática: enviar ao integrador o guia de ajuste dos parâmetros de tensão para que ele tente resolver antes de escalar ao suporte humano.",
+    "tags": [
+      "huawei",
+      "2072",
+      "sobretensao",
+      "ca",
+      "parametros"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "Hoymiles — falhas 306 e 310 (rede/CA)",
+    "content": "A falha 310 indica problema de rede/CA: se ocorre ocasionalmente e o microinversor segue funcionando, não requer ação; se é frequente e não recupera, acionar revendedor ou suporte Hoymiles. Atenção: a 306 foi respondida como sendo o mesmo que a 310 e isso está incorreto — confirmar na tabela completa em 6.6 Hoymiles antes de responder.",
+    "tags": [
+      "hoymiles",
+      "306",
+      "310",
+      "microinversor",
+      "rede"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "Quando o pedido é de testes, não de abertura de garantia",
+    "content": "Pedir 'quais testes preciso para análise de garantia' NÃO é o mesmo que pedir para abrir uma garantia. Encaminhar direto ao menu de garantia cria um loop e não entrega o que foi pedido. O correto é fornecer os testes padrão do fabricante para o alarme em questão e só então oferecer a abertura do protocolo.",
+    "tags": [
+      "garantia",
+      "rma",
+      "processo",
+      "testes",
+      "atendimento"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
+    "title": "Quando não há informação, diga que não há",
+    "content": "Resposta considerada 100% apropriada no teste: dizer que a informação não foi encontrada nos documentos, oferecer reformulação ou pedir o modelo do equipamento, e oferecer transferência para atendente humano. Preferível a inventar um diagnóstico plausível. Não redirecionar para o menu de garantia quando a pergunta é de diagnóstico.",
+    "tags": [
+      "atendimento",
+      "politica",
+      "honestidade",
+      "escalonamento"
+    ],
+    "source": "Teste IA - Bel",
+    "url": "https://app.notion.com/p/5590a92d24ec83d2bc25018c529b34fb"
+  },
+  {
     "title": "Grid overvoltage — inverter disconnects",
     "content": "Most common cause of intermittent daytime shutdowns. NBR 16149 requires disconnection above roughly 1.10x nominal (about 233 V on a 220 V phase, 253 V on 230 V). Confirm by logging AC voltage at the inverter terminals across a sunny midday. If it climbs only while producing, the cause is impedance in the run: undersized cable, long distance, or a loose neutral. Fixes in order of cost: re-torque connections, increase cable gauge, shorten the run, then ask the utility for a transformer tap adjustment. Raising the inverter's voltage limit is a workaround, not a fix.",
     "tags": [
