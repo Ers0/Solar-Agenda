@@ -836,6 +836,7 @@ const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 const VOICE = {
   supported: !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
   state: 'off', lang: 'en-US', active: false, bargeStart: 0, greeted: false,
+  srcNode: null, peakSeen: 0,
   conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
 };
 
@@ -864,23 +865,44 @@ function setVoiceState(s, detail){
 // --- microphone level, for the reactive orb ---
 async function startMicMeter(stream){
   try{
-    const ctx = acAlways(); if(!ctx || VOICE.analyser) return;
+    const ctx = acAlways();
+    if(!ctx) return;
+    // An AudioContext begins suspended until a gesture; reading it before it
+    // resumes yields silence, which previously looked like a dead microphone.
+    if(ctx.state === 'suspended'){ try{ await ctx.resume(); }catch(e){} }
+
+    // Always rebuild. The old analyser stays wired to the previous stream, and
+    // that stream's tracks were stopped — so reusing it reads silence forever.
+    if(VOICE.analyser){
+      try{ VOICE.srcNode && VOICE.srcNode.disconnect(); }catch(e){}
+      try{ VOICE.analyser.disconnect(); }catch(e){}
+      VOICE.analyser = null; VOICE.srcNode = null;
+    }
     if(!stream) stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+
     const src = ctx.createMediaStreamSource(stream);
-    const an = ctx.createAnalyser(); an.fftSize = 512; an.smoothingTimeConstant = 0.75;
+    const an = ctx.createAnalyser();
+    an.fftSize = 512; an.smoothingTimeConstant = 0.75;
     src.connect(an);
+    VOICE.srcNode = src;
     VOICE.analyser = an;
+    VOICE.level = 0;
+
     const buf = new Uint8Array(an.frequencyBinCount);
     const tick = () => {
+      if(VOICE.analyser !== an) return;          // superseded by a newer meter
       an.getByteTimeDomainData(buf);
       let sum = 0;
       for(let i = 0; i < buf.length; i++){ const v = (buf[i] - 128) / 128; sum += v * v; }
       VOICE.level = Math.min(1, Math.sqrt(sum / buf.length) * 4.5);
+      if(VOICE.level > VOICE.peakSeen) VOICE.peakSeen = VOICE.level;
       drawOrb();
       requestAnimationFrame(tick);
     };
     tick();
-  }catch(e){ /* meter is optional; recognition still works */ }
+  }catch(e){
+    setVoiceState(VSTATE.ERROR, 'microphone unavailable');
+  }
 }
 
 function drawOrb(){
@@ -1225,12 +1247,22 @@ function calibrateVAD(){
     VAD.silenceThresh = Math.max(0.018, floor * 1.5);
     VAD.calibrated = true;
     // If the meter never moved, the microphone is not reaching us at all.
-    const peak = samples[samples.length - 1] || 0;
+    const peak = Math.max(samples[samples.length - 1] || 0, VOICE.peakSeen || 0);
     if(peak < 0.0008){
+      // One retry with a fresh meter before blaming the hardware — a suspended
+      // context or a stale analyser looks identical to a dead microphone.
+      if(!VAD.retried && micStream){
+        VAD.retried = true;
+        showHeard('re-arming the microphone…');
+        VOICE.analyser = null;
+        startMicMeter(micStream).then(() => calibrateVAD());
+        return;
+      }
       setVoiceState(VSTATE.ERROR, 'no microphone signal');
-      showHeard('The microphone is producing no signal. Check the input device and site permissions.');
+      showHeard('No signal from the microphone. Try switching the input device, or reload the page.');
       return;
     }
+    VAD.retried = false;
     setVoiceState(VSTATE.IDLE);
   };
   requestAnimationFrame(step);
@@ -1397,6 +1429,12 @@ function stopVoice(){
   try{ micStream && micStream.getTracks().forEach(t => t.stop()); }catch(e){}
   clearTimeout(cycleTimer); clearTimeout(clipTimer);
   recorder = null; micStream = null; speaking = false;
+  // Without this the analyser survives into the next session still attached to
+  // the stopped stream, and every level reads zero.
+  try{ VOICE.srcNode && VOICE.srcNode.disconnect(); }catch(e){}
+  try{ VOICE.analyser && VOICE.analyser.disconnect(); }catch(e){}
+  VOICE.analyser = null; VOICE.srcNode = null; VOICE.level = 0; VOICE.peakSeen = 0;
+  VAD.calibrated = false;
   AudioOut.stop();
   WakeWord.stop();
   try{ speechSynthesis?.cancel(); }catch(e){}
@@ -1430,6 +1468,10 @@ function paintLevel(){
   if(bar){
     bar.style.width = Math.min(100, VOICE.level * 220) + '%';
     bar.classList.toggle('over', VOICE.level > VAD.speakThresh);
+  }
+  const num = document.getElementById('voice-lvlnum');
+  if(num && VOICE.active){
+    num.textContent = `mic ${VOICE.level.toFixed(3)} · trigger ${VAD.speakThresh.toFixed(3)}`;
   }
   requestAnimationFrame(paintLevel);
 }
