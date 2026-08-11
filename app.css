@@ -671,6 +671,11 @@
 
   .field input.saved{ border-color: var(--ok) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent) !important; }
 
+
+  .galaxy-time-row{ display:flex; align-items:center; gap:10px; margin:2px 0 6px; }
+  .galaxy-time-row input{ flex:1; }
+  #galaxy-time-lab{ font-family:"JetBrains Mono",monospace; font-size:.6rem; color:var(--muted); min-width:96px; text-align:right; }
+
   .galaxy-wrap{ position:relative; height:300px; border-radius:12px; overflow:hidden; margin:6px 0 8px;
     border:1px solid var(--line);
     background: radial-gradient(130% 100% at 50% 15%, var(--panel-2), var(--bg) 60%, var(--bg2)); }

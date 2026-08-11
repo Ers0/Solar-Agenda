@@ -213,12 +213,17 @@
         <div class="galaxy-hud" id="galaxy-hud"></div>
         <button class="galaxy-expand" id="galaxy-expand" title="Expand">⤢</button>
       </div>
+      <div class="galaxy-time-row">
+        <input type="range" id="galaxy-time" class="rain-range" min="5" max="100" step="1" value="100">
+        <span id="galaxy-time-lab">all time</span>
+      </div>
       <div class="set-actions" style="margin:8px 0 4px;">
+        <button class="btn-ghost" id="galaxy-clear">Clear focus</button>
         <button class="btn-ghost" id="galaxy-scan">Scan markdown folder</button>
         <button class="btn-ghost" id="galaxy-drive">Include Drive</button>
         <button class="btn-ghost" id="galaxy-refresh">Refresh</button>
       </div>
-      <p class="hint">Drag to orbit, scroll to zoom, click a star to open it. Notes link through <b>[[wiki links]]</b> and shared <b>#tags</b>; colour is by folder, size by how many links a note has. Amber stars were consulted in the last answer.</p>
+      <p class="hint">Drag to orbit, scroll to zoom. <b>Click</b> a star to focus it and dim everything more than one link away; <b>double-click</b> to open it. Red rings are notes nothing links to. Ask TARS to “find the note about…” to search by voice. Colour is by cluster, size by link count, thickness by how much two notes share.</p>
       <div class="kb-add">
         <div class="field-row">
           <div class="field"><label>New entry — title</label><input type="text" id="kb-new-title" placeholder="e.g. Growatt 117 relay fault"></div>

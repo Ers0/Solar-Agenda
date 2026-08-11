@@ -1699,13 +1699,17 @@ async function callAiAgent(messages, tools, opts){
     const resp = await fetch(FN_URL + "/agenda-ai", { method:"POST", headers: authHeaders(), body: JSON.stringify(body) });
     data = await resp.json().catch(() => ({}));
     if(!resp.ok){
-      const err = new Error(JARVIS.errorFor(data.code));
-      err.code = data.code || 'unknown';
+      const code = data.code || 'unknown';
+      console.error('[assistant]', resp.status, code, data.error || '');
+      const err = new Error(TARS.errorFor(code)
+        + (code === 'unknown' ? ` (HTTP ${resp.status})` : ''));
+      err.code = code;
       throw err;
     }
   }catch(e){
     if(e.code) throw e;
-    const err = new Error(JARVIS.errorFor('network'));  // fetch itself failed
+    console.error('[assistant] transport', e.message);
+    const err = new Error(TARS.errorFor('network'));  // fetch itself failed
     err.code = 'network';
     throw err;
   }
@@ -1797,6 +1801,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'find_in_galaxy',
+    permission: PERM.READ,
+    description: "Find notes, cases, knowledge entries or memories by description and highlight them in the knowledge galaxy. Use when the user asks to locate or find something, e.g. 'find the note that mentions overvoltage'.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'What to look for — words likely to appear in the title or body.' } },
+      required:['query'] },
+    async execute(args){
+      if(!Galaxy.ready) await Galaxy.build({ folder:false });
+      const hits = Galaxy.search(args.query);
+      if(!hits.length) return `Nothing in the galaxy matches "${args.query}".`;
+      switchView('settings');
+      document.querySelector('.sub-tab[data-sub=\"knowledge\"]')?.click();
+      const top = hits[0];
+      return `Found ${hits.length} match${hits.length > 1 ? 'es' : ''}, focused on "${top.title}" in ${top.folder} `
+        + `(${top.deg || 'no'} links). Others: ${hits.slice(1, 4).map(n => n.title).join('; ') || 'none'}. `
+        + `Tell the user the top match and roughly how many others, nothing more.`;
+    },
+  },
+  {
     name: 'save_template',
     permission: PERM.LOW,
     description: "Save a reusable message template. Use {{placeholders}} for the parts that change, e.g. {{client}} or {{date}}.",
@@ -1822,7 +1845,8 @@ const TOOLS = [
     description: "Open a saved template ready to send, filling in the values given. This only PREPARES the message — the user sends it themselves. Say what was prepared and what still needs filling.",
     schema: { type:'object', properties:{
       name:{ type:'string', description:'Which template.' },
-      values:{ type:'object', description:'Placeholder values, e.g. {"client":"Pablo","date":"Monday"}.' } },
+      values:{ type:'object', description:'Placeholder values keyed by placeholder name.',
+        properties:{}, additionalProperties:{ type:'string' } } },
       required:['name'] },
     async execute(args){
       const tpl = await Templates.find(args.name);
@@ -2165,15 +2189,17 @@ async function syncKnowledgeToNotebooks(){
 document.getElementById('kb-sync')?.addEventListener('click', syncKnowledgeToNotebooks);
 
 // ===== Knowledge galaxy (3D) =========================================
-// Markdown notes rendered as a star field. Projection, orbit and depth sorting
-// are done by hand on a 2D canvas — no 3D library, so nothing extra to load.
-// Sources: the app's own notes, .md files in the configured local folder, and
-// (optionally) markdown this app has stored in Drive.
+// Positions come from a force simulation, so distance actually means
+// something: linked notes pull together, everything repels, and clusters
+// emerge rather than being decoration on a spiral.
 const Galaxy = {
-  nodes: [], edges: [], rot: { x: -0.25, y: 0.6 }, zoom: 1,
-  drag: null, raf: null, hover: null, ready: false,
+  nodes: [], edges: [], adj: {}, byId: {},
+  rot: { x: -0.25, y: 0.6 }, zoom: 1, drag: null, raf: null,
+  hover: null, focus: null, ready: false, dirty: true,
+  matches: null,            // set by voice search
+  timeCut: 1,               // 0..1 position of the timeline scrubber
+  camTarget: null,
 
-  // --- parsing ---------------------------------------------------------
   parseMarkdown(name, text){
     const titleM = text.match(/^\s*#\s+(.+)$/m);
     const title = (titleM ? titleM[1] : name.replace(/\.md$/i, '')).trim().slice(0, 60);
@@ -2186,8 +2212,6 @@ const Galaxy = {
     const words = text.replace(/[#*`>\[\]()]/g, ' ').split(/\s+/).filter(Boolean).length;
     return { title, tags, links, words, excerpt: text.replace(/^#.*$/m, '').trim().slice(0, 220) };
   },
-
-  // --- collection ------------------------------------------------------
   async fromLocalFolder(){
     if(!mediaDir || !(await ensureDirPermission())) return [];
     const out = [];
@@ -2209,7 +2233,6 @@ const Galaxy = {
     try{ await walk(mediaDir, '', 0); }catch(e){}
     return out;
   },
-
   async fromDrive(){
     if(!driveToken) return [];
     try{
@@ -2231,9 +2254,6 @@ const Galaxy = {
       return out;
     }catch(e){ return []; }
   },
-
-  // Everything the assistant can draw on becomes a star: notes, cases,
-  // knowledge entries, remembered facts and templates.
   fromEverything(){
     const out = [];
     KB.forEach((e, i) => out.push({
@@ -2245,7 +2265,7 @@ const Galaxy = {
       id: 'mem:' + m.id, key: String(m.content).slice(0, 30).toLowerCase(),
       title: String(m.content).slice(0, 40), tags: (m.keywords || '').split(/\s+/).filter(Boolean).slice(0, 6),
       links: [], words: String(m.content).split(/\s+/).length, excerpt: String(m.content).slice(0, 220),
-      folder: 'Memory/', source: 'mem' }));
+      folder: 'Memory/', source: 'mem', when: Date.parse(m.created_at || 0) || 0 }));
     (Templates.cache || []).forEach(t => out.push({
       id: 'tpl:' + t.id, key: String(t.name || '').toLowerCase(), title: t.name || 'Template',
       tags: ['template', ...(t.tags || [])], links: [],
@@ -2256,10 +2276,10 @@ const Galaxy = {
       tags: (cs.tags || []).map(t => String(t).toLowerCase()), links: [],
       words: (cs.notes_log || []).reduce((n, x) => n + String(x.text).split(/\s+/).length, 0),
       excerpt: (cs.notes_log || []).map(x => x.text).join(' ').slice(0, 220),
-      folder: 'Cases/', source: 'case', caseId: cs.id }));
+      folder: 'Cases/', source: 'case', caseId: cs.id,
+      when: Date.parse(cs.case_date || cs.created_at || 0) || 0 }));
     return out;
   },
-
   fromAppNotes(){
     return notes.map(n => {
       const plain = plainTextPreview(n.content).text;
@@ -2269,11 +2289,59 @@ const Galaxy = {
         title: n.title || 'Untitled', tags: (n.tags || []).map(t => String(t).toLowerCase()),
         links: [], words: plain.split(/\s+/).length, excerpt: plain.slice(0, 220),
         folder: nb + '/', source: 'app', noteId: n.id,
+        when: Date.parse(n.updated_at || n.created_at || 0) || 0,
       };
     });
   },
 
-  // --- build -----------------------------------------------------------
+  // --- force layout --------------------------------------------------
+  // Repulsion is sampled rather than all-pairs: each node is pushed by a
+  // random subset every tick, which converges to the same shape at a fraction
+  // of the cost and keeps 500+ nodes interactive.
+  layout(iterations){
+    const N = this.nodes.length;
+    if(!N) return;
+    const SAMPLE = Math.min(28, N - 1);
+    this.nodes.forEach((n, i) => {
+      const a = (i / N) * Math.PI * 2, r = 0.55 + ((i * 37) % 100) / 250;
+      n.x = Math.cos(a) * r; n.y = (((i * 53) % 100) / 100 - 0.5) * 0.9; n.z = Math.sin(a) * r;
+      n.vx = n.vy = n.vz = 0;
+    });
+    const iters = iterations || (N > 300 ? 90 : 160);
+    for(let it = 0; it < iters; it++){
+      const cool = 1 - it / iters;
+      for(let i = 0; i < N; i++){
+        const a = this.nodes[i];
+        for(let s = 0; s < SAMPLE; s++){
+          const b = this.nodes[(i + 1 + Math.floor(Math.random() * (N - 1))) % N];
+          let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+          let d2 = dx*dx + dy*dy + dz*dz + 0.001;
+          const f = 0.0016 / d2;
+          a.vx += dx * f; a.vy += dy * f; a.vz += dz * f;
+        }
+      }
+      this.edges.forEach(([ia, ib, , w]) => {
+        const a = this.byId[ia], b = this.byId[ib];
+        if(!a || !b) return;
+        const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        const k = 0.012 * Math.min(3, w || 1);
+        a.vx += dx * k; a.vy += dy * k; a.vz += dz * k;
+        b.vx -= dx * k; b.vy -= dy * k; b.vz -= dz * k;
+      });
+      this.nodes.forEach(n => {
+        n.vx -= n.x * 0.004; n.vy -= n.y * 0.004; n.vz -= n.z * 0.004;  // gentle centring
+        n.x += n.vx * cool; n.y += n.vy * cool; n.z += n.vz * cool;
+        n.vx *= 0.82; n.vy *= 0.82; n.vz *= 0.82;
+      });
+    }
+    // normalise into view
+    let max = 0;
+    this.nodes.forEach(n => { max = Math.max(max, Math.hypot(n.x, n.y, n.z)); });
+    const k = max ? 1.15 / max : 1;
+    this.nodes.forEach(n => { n.x *= k; n.y *= k * 0.8; n.z *= k; });
+    this.dirty = true;
+  },
+
   async build(opts){
     const parts = [this.fromAppNotes(), this.fromEverything()];
     if(opts?.folder !== false) parts.push(await this.fromLocalFolder());
@@ -2283,72 +2351,99 @@ const Galaxy = {
     const byKey = {};
     items.forEach(i => { byKey[i.key] = i; });
 
-    const edges = [];
+    // weight = how much two notes actually have in common
+    const pair = {};
+    const bump = (a, b, kind) => {
+      if(a === b) return;
+      const id = a < b ? a + '|' + b : b + '|' + a;
+      pair[id] = pair[id] || { kind, w: 0 };
+      pair[id].w += kind === 'link' ? 3 : 1;
+      if(kind === 'link') pair[id].kind = 'link';
+    };
     items.forEach(a => {
-      a.links.forEach(l => { if(byKey[l] && byKey[l] !== a) edges.push([a.id, byKey[l].id, 'link']); });
-    // knowledge entries reference each other in prose ("ver 4.2", "Seção 6"),
-    // so those become real edges instead of the graph staying flat
-    items.forEach(b => {
-      if(b === a) return;
-      const ref = (b.title || '').match(/^(\d+(?:\.\d+)?)/);
-      if(ref && new RegExp('\\b' + ref[1].replace('.', '\\.') + '\\b').test(a.excerpt || ''))
-        edges.push([a.id, b.id, 'link']);
+      a.links.forEach(l => { if(byKey[l]) bump(a.id, byKey[l].id, 'link'); });
+      items.forEach(b => {
+        if(b === a) return;
+        const ref = (b.title || '').match(/^(\d+(?:\.\d+)?)/);
+        if(ref && new RegExp('\\b' + ref[1].replace('.', '\\.') + '\\b').test(a.excerpt || ''))
+          bump(a.id, b.id, 'link');
+      });
     });
-    });
-    // tag co-occurrence, capped so dense tags do not become hairballs
     const byTag = {};
-    items.forEach(i => i.tags.forEach(t => { (byTag[t] = byTag[t] || []).push(i); }));
+    items.forEach(i => i.tags.forEach(t => { if(t) (byTag[t] = byTag[t] || []).push(i); }));
     Object.values(byTag).forEach(group => {
       if(group.length > 12) return;
       for(let i = 0; i < group.length; i++)
-        for(let j = i + 1; j < group.length; j++) edges.push([group[i].id, group[j].id, 'tag']);
+        for(let j = i + 1; j < group.length; j++) bump(group[i].id, group[j].id, 'tag');
     });
 
-    const degree = {};
-    edges.forEach(([a, b]) => { degree[a] = (degree[a] || 0) + 1; degree[b] = (degree[b] || 0) + 1; });
-
-    // Folders become constellations: each gets its own region of the sphere.
     const folders = [...new Set(items.map(i => i.folder))];
-    this.nodes = items.map((it, i) => {
-      const fIdx = folders.indexOf(it.folder);
-      const fA = (fIdx / Math.max(1, folders.length)) * Math.PI * 2;
-      const gold = Math.PI * (3 - Math.sqrt(5));
-      const t = (i + 0.5) / items.length;
-      const incl = Math.acos(1 - 2 * t);
-      const az = gold * i + fA;
-      const r = 1 + (fIdx % 3) * 0.10;
-      return { ...it, deg: degree[it.id] || 0,
-        x: Math.sin(incl) * Math.cos(az) * r,
-        y: Math.cos(incl) * r * 0.75,
-        z: Math.sin(incl) * Math.sin(az) * r,
-        hue: fIdx };
-    });
+    this.nodes = items.map(it => ({ ...it, deg: 0, hue: folders.indexOf(it.folder),
+                                    when: it.when || 0 }));
     this.byId = Object.fromEntries(this.nodes.map(n => [n.id, n]));
-    this.edges = edges.filter(([a, b]) => this.byId[a] && this.byId[b]);
-    this.folders = folders;
-    this.ready = true;
+    this.edges = Object.entries(pair)
+      .map(([id, v]) => { const [a, b] = id.split('|'); return [a, b, v.kind, v.w]; })
+      .filter(([a, b]) => this.byId[a] && this.byId[b]);
 
+    this.adj = {};
+    this.edges.forEach(([a, b]) => {
+      (this.adj[a] = this.adj[a] || new Set()).add(b);
+      (this.adj[b] = this.adj[b] || new Set()).add(a);
+      this.byId[a].deg++; this.byId[b].deg++;
+    });
+
+    this.folders = folders;
+    this.orphans = this.nodes.filter(n => n.deg === 0);
+    this.ready = true;
+    this.layout();
+    this.updateHud();
     const empty = document.getElementById('kb-map-empty');
     if(empty) empty.style.display = this.nodes.length ? 'none' : 'flex';
-    const hud = document.getElementById('galaxy-hud');
-    if(hud) hud.textContent = `${this.nodes.length} notes · ${this.edges.length} links · ${folders.length} clusters`;
     this.start();
+  },
+
+  updateHud(){
+    const hud = document.getElementById('galaxy-hud');
+    if(hud) hud.textContent = `${this.nodes.length} nodes · ${this.edges.length} links · `
+      + `${(this.folders || []).length} clusters · ${(this.orphans || []).length} unlinked`;
   },
 
   markUsed(){
     const used = new Set([...(lastKbHits || []).map(e => e.title),
                           ...(lastMemHits || []).map(m => String(m.content).slice(0, 40))]);
     this.nodes.forEach(n => { n.used = used.has(n.title); });
+    this.dirty = true;
   },
 
-  // --- render ----------------------------------------------------------
+  // one hop from the focused node
+  inFocus(n){
+    if(!this.focus) return true;
+    if(n === this.focus) return true;
+    return (this.adj[this.focus.id] || new Set()).has(n.id);
+  },
+  visible(n){
+    if(this.timeCut < 1 && n.when && n.when > this.timeMax) return false;
+    return true;
+  },
+
+  setFocus(n){
+    this.focus = (this.focus === n) ? null : n;
+    if(this.focus){
+      // turn the camera so the focused star faces front
+      this.camTarget = { y: -Math.atan2(this.focus.z, this.focus.x) + Math.PI / 2,
+                         x: Math.max(-1.2, Math.min(1.2, -Math.asin(this.focus.y))) };
+      this.zoom = Math.max(this.zoom, 1.8);
+    }
+    this.dirty = true;
+  },
+
   project(n, w, h){
     const cy = Math.cos(this.rot.y), sy = Math.sin(this.rot.y);
     const cx = Math.cos(this.rot.x), sx = Math.sin(this.rot.x);
     let x = n.x * cy - n.z * sy, z = n.x * sy + n.z * cy;
     let y = n.y * cx - z * sx;  z = n.y * sx + z * cx;
     const d = 3.2, s = (d / (d - z)) * this.zoom;
-    return { sx: w / 2 + x * s * Math.min(w, h) * 0.34, sy: h / 2 + y * s * Math.min(w, h) * 0.34, s, z };
+    return { sx: w / 2 + x * s * Math.min(w, h) * 0.36, sy: h / 2 + y * s * Math.min(w, h) * 0.36, s, z };
   },
 
   draw(){
@@ -2356,48 +2451,92 @@ const Galaxy = {
     if(!cv || !cv.clientWidth){ this.raf = null; return; }
     const ctx = cv.getContext('2d');
     const w = cv.width = cv.clientWidth, h = cv.height = cv.clientHeight;
-    ctx.clearRect(0, 0, w, h);
-    if(!this.drag) this.rot.y += 0.0016;            // slow idle drift
 
+    if(this.camTarget){
+      this.rot.y += (this.camTarget.y - this.rot.y) * 0.08;
+      this.rot.x += (this.camTarget.x - this.rot.x) * 0.08;
+      if(Math.abs(this.camTarget.y - this.rot.y) < 0.005) this.camTarget = null;
+    } else if(!this.drag && !this.focus){
+      this.rot.y += 0.0014;
+    }
+
+    ctx.clearRect(0, 0, w, h);
     const css = getComputedStyle(document.documentElement);
-    const palette = [css.getPropertyValue('--accent2'), css.getPropertyValue('--accent3'),
-                     css.getPropertyValue('--dusk'), css.getPropertyValue('--amber')].map(s => s.trim() || '#4f9fd8');
+    const pal = ['--accent2','--accent3','--dusk','--amber'].map(v => css.getPropertyValue(v).trim() || '#4f9fd8');
     const amber = css.getPropertyValue('--amber').trim() || '#f2a71b';
     const line = css.getPropertyValue('--line').trim() || '#2b3d4f';
+    const urg = css.getPropertyValue('--urgente').trim() || '#e15b4c';
+    const txt = css.getPropertyValue('--text').trim() || '#eaf1f8';
+
+    // time window
+    const times = this.nodes.map(n => n.when).filter(Boolean);
+    this.timeMax = times.length ? (Math.min(...times) + (Math.max(...times) - Math.min(...times)) * this.timeCut) : Infinity;
 
     const P = {};
-    this.nodes.forEach(n => { P[n.id] = this.project(n, w, h); });
+    this.nodes.forEach(n => { if(this.visible(n)) P[n.id] = this.project(n, w, h); });
 
-    this.edges.forEach(([a, b, kind]) => {
+    // edges: thickness by weight, curved so parallels separate
+    const heavy = this.edges.length > 1400;
+    ctx.lineCap = 'round';
+    this.edges.forEach(([a, b, kind, wt]) => {
       const pa = P[a], pb = P[b];
-      const lit = this.byId[a].used && this.byId[b].used;
-      ctx.strokeStyle = lit ? amber + '99' : line;
-      ctx.globalAlpha = lit ? 0.9 : (kind === 'link' ? 0.45 : 0.18);
-      ctx.lineWidth = kind === 'link' ? 1.1 : 0.6;
-      ctx.beginPath(); ctx.moveTo(pa.sx, pa.sy); ctx.lineTo(pb.sx, pb.sy); ctx.stroke();
+      if(!pa || !pb) return;
+      if(heavy && kind !== 'link' && wt < 2) return;         // thin out huge graphs
+      const A = this.byId[a], B = this.byId[b];
+      const foc = this.inFocus(A) && this.inFocus(B);
+      if(this.focus && !foc) return;
+      const lit = A.used && B.used;
+      ctx.strokeStyle = lit ? amber + 'aa' : line;
+      const depth = Math.max(0.12, Math.min(1, (pa.s + pb.s) / 2 - 0.15));
+      ctx.globalAlpha = (lit ? 0.95 : (kind === 'link' ? 0.5 : 0.16)) * depth;
+      ctx.lineWidth = Math.min(3, (kind === 'link' ? 1.1 : 0.5) + (wt - 1) * 0.35);
+      const mx = (pa.sx + pb.sx) / 2, my = (pa.sy + pb.sy) / 2;
+      const dx = pb.sx - pa.sx, dy = pb.sy - pa.sy;
+      ctx.beginPath(); ctx.moveTo(pa.sx, pa.sy);
+      ctx.quadraticCurveTo(mx - dy * 0.08, my + dx * 0.08, pb.sx, pb.sy);
+      ctx.stroke();
     });
     ctx.globalAlpha = 1;
 
-    // far stars first, so nearer ones overlap correctly
-    const order = this.nodes.slice().sort((a, b) => P[a.id].z - P[b.id].z);
+    const order = this.nodes.filter(n => P[n.id]).sort((a, b) => P[a.id].z - P[b.id].z);
+    const labels = [];
     order.forEach(n => {
       const p = P[n.id];
-      const r = (2.1 + Math.min(6, n.deg) * 0.5) * p.s;
-      const col = n.used ? amber : palette[n.hue % palette.length];
-      ctx.globalAlpha = Math.max(0.25, Math.min(1, p.s * 0.75));
-      if(n.used || n === this.hover){
-        ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 3.2, 0, Math.PI * 2);
+      const foc = this.inFocus(n);
+      if(this.focus && !foc) return;
+      const isMatch = this.matches && this.matches.has(n.id);
+      const orphan = n.deg === 0;
+      const r = (2.0 + Math.min(7, n.deg) * 0.45) * p.s;
+      const col = isMatch ? amber : n.used ? amber : orphan ? urg : pal[n.hue % pal.length];
+      // depth fade doubles as the fog cue
+      ctx.globalAlpha = Math.max(0.18, Math.min(1, (p.s - 0.35) * 1.25));
+      if(n.used || isMatch || n === this.hover || n === this.focus){
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 3.4, 0, Math.PI * 2);
         ctx.fillStyle = col + '2b'; ctx.fill();
       }
       ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
       ctx.fillStyle = col; ctx.fill();
-      if(this.zoom > 1.5 || n === this.hover || n.used){
-        ctx.globalAlpha = Math.min(1, p.s * 0.9);
-        ctx.fillStyle = css.getPropertyValue('--text').trim() || '#eaf1f8';
-        ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(n.title.slice(0, 24), p.sx, p.sy - r - 5);
+      if(orphan){                                    // hollow ring = nothing links here
+        ctx.strokeStyle = urg; ctx.lineWidth = 1; ctx.globalAlpha *= 0.8;
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 1.9, 0, Math.PI * 2); ctx.stroke();
       }
+      if(p.s > 0.75 && (this.zoom > 1.4 || isMatch || n.used || n === this.hover || n === this.focus))
+        labels.push({ n, p, r, col });
       n._p = p;
+    });
+
+    // labels last, nearest first, skipping any that would overlap
+    ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
+    const taken = [];
+    labels.sort((a, b) => b.p.s - a.p.s).forEach(({ n, p, r, col }) => {
+      const text = n.title.slice(0, 26);
+      const wpx = ctx.measureText(text).width;
+      const box = { x: p.sx - wpx / 2, y: p.sy - r - 16, w: wpx, h: 13 };
+      if(taken.some(t => !(box.x + box.w < t.x || t.x + t.w < box.x || box.y + box.h < t.y || t.y + t.h < box.y))) return;
+      taken.push(box);
+      ctx.globalAlpha = Math.min(1, p.s * 0.95);
+      ctx.fillStyle = (n === this.focus || (this.matches && this.matches.has(n.id))) ? col : txt;
+      ctx.fillText(text, p.sx, p.sy - r - 6);
     });
     ctx.globalAlpha = 1;
     this.raf = requestAnimationFrame(() => this.draw());
@@ -2405,14 +2544,31 @@ const Galaxy = {
 
   start(){ if(!this.raf) this.raf = requestAnimationFrame(() => this.draw()); },
   stop(){ if(this.raf) cancelAnimationFrame(this.raf); this.raf = null; },
+
+  // --- voice search ---------------------------------------------------
+  search(q){
+    const words = String(q || '').toLowerCase().split(/\W+/).filter(x => x.length > 2);
+    if(!words.length) return [];
+    const scored = this.nodes.map(n => {
+      const hay = (n.title + ' ' + (n.excerpt || '') + ' ' + n.tags.join(' ') + ' ' + n.folder).toLowerCase();
+      let sc = 0;
+      words.forEach(x => { if(hay.includes(x)) sc += n.title.toLowerCase().includes(x) ? 3 : 1; });
+      return { n, sc };
+    }).filter(x => x.sc > 0).sort((a, b) => b.sc - a.sc);
+    this.matches = new Set(scored.slice(0, 12).map(x => x.n.id));
+    if(scored.length) this.setFocus(scored[0].n);
+    this.dirty = true;
+    return scored.slice(0, 8).map(x => x.n);
+  },
+  clearSearch(){ this.matches = null; this.focus = null; this.dirty = true; },
 };
 
-// --- interaction --------------------------------------------------------
 (function wireGalaxy(){
   const cv = document.getElementById('kb-map');
   if(!cv) return;
   cv.addEventListener('pointerdown', e => {
     Galaxy.drag = { x: e.clientX, y: e.clientY, rx: Galaxy.rot.x, ry: Galaxy.rot.y, moved: 0 };
+    Galaxy.camTarget = null;
     cv.setPointerCapture?.(e.pointerId);
   });
   cv.addEventListener('pointermove', e => {
@@ -2430,24 +2586,34 @@ const Galaxy = {
     const tip = document.getElementById('kb-map-tip');
     if(tip){
       if(hit){
-        tip.innerHTML = `<b>${escapeHtml(hit.title)}</b><br><span class="tip-meta">${escapeHtml(hit.folder)} · ${hit.words} words · ${hit.deg} links</span>`
+        tip.innerHTML = `<b>${escapeHtml(hit.title)}</b><br>`
+          + `<span class="tip-meta">${escapeHtml(hit.folder)} · ${hit.words} words · `
+          + `${hit.deg ? hit.deg + ' links' : 'unlinked'}</span>`
           + (hit.tags.length ? `<br><span class="tip-tags">${hit.tags.slice(0,5).map(t => '#' + escapeHtml(t)).join(' ')}</span>` : '');
         tip.style.display = 'block';
       } else tip.style.display = 'none';
     }
     cv.style.cursor = hit ? 'pointer' : 'grab';
   });
-  const endDrag = () => { Galaxy.drag = null; };
   cv.addEventListener('pointerup', e => {
-    const wasClick = Galaxy.drag && Galaxy.drag.moved < 5;
-    endDrag();
-    if(wasClick && Galaxy.hover) openGalaxyNode(Galaxy.hover);
+    const click = Galaxy.drag && Galaxy.drag.moved < 5;
+    Galaxy.drag = null;
+    if(!click || !Galaxy.hover) return;
+    if(e.shiftKey || e.detail === 2) openGalaxyNode(Galaxy.hover);
+    else Galaxy.setFocus(Galaxy.hover);       // single click explores, shift opens
   });
-  cv.addEventListener('pointercancel', endDrag);
+  cv.addEventListener('dblclick', () => { if(Galaxy.hover) openGalaxyNode(Galaxy.hover); });
+  cv.addEventListener('pointercancel', () => { Galaxy.drag = null; });
   cv.addEventListener('wheel', e => {
     e.preventDefault();
-    Galaxy.zoom = Math.max(0.5, Math.min(4, Galaxy.zoom * (e.deltaY > 0 ? 0.92 : 1.08)));
+    Galaxy.zoom = Math.max(0.5, Math.min(5, Galaxy.zoom * (e.deltaY > 0 ? 0.92 : 1.08)));
   }, { passive: false });
+  document.getElementById('galaxy-time')?.addEventListener('input', e => {
+    Galaxy.timeCut = +e.target.value / 100;
+    const lab = document.getElementById('galaxy-time-lab');
+    if(lab) lab.textContent = Galaxy.timeCut >= 1 ? 'all time' : Math.round(Galaxy.timeCut * 100) + '% of history';
+  });
+  document.getElementById('galaxy-clear')?.addEventListener('click', () => { Galaxy.clearSearch(); });
 })();
 
 function openGalaxyNode(n){
