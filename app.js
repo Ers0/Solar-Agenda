@@ -188,7 +188,12 @@ function attachCardGestures(cardEl, c){
         cardEl.style.transform = `translateX(500px)`; cardEl.style.opacity = '0';
         const nowTime = new Date().toTimeString().slice(0,5);
         SFX.success();
-        try{ await updateCase(c.id, { status: 'success', actual_end: nowTime }); c.status = 'success'; c.actual_end = nowTime; }catch(err){ alert(err.message); }
+        try{ await updateCase(c.id, { status: 'success', actual_end: nowTime });
+          // The record of what happened is captured; any lesson from it is
+          // only stored when the user actually states one.
+          Learn.addEpisode({ summary: `${c.titulo}${c.ticket ? ' (' + c.ticket + ')' : ''} — resolved. `
+            + (c.notes_log || []).map(n => n.text).join(' ').slice(0, 500),
+            kind:'case', caseId: c.id, outcome:'resolved' }); c.status = 'success'; c.actual_end = nowTime; }catch(err){ alert(err.message); }
         render(); renderHistory();
       } else if(dx < -THRESHOLD){
         cardEl.style.transform = `translateX(-500px)`; cardEl.style.opacity = '0';
@@ -1129,6 +1134,456 @@ const SFX = {
 
 
 
+
+// ===== Learning ======================================================
+// Episodes are what happened; rules are what was concluded. Kept apart so a
+// rule can always be traced to the events behind it, and so a wrong rule can
+// be retired without losing the record.
+const Learn = {
+  rules: [], episodes: [], loaded: false,
+
+  async load(force){
+    if(this.loaded && !force) return;
+    try{
+      const [r1, r2] = await Promise.all([
+        fetch(FN_URL + "/agenda-learn?what=rules", { headers: authHeaders() }),
+        fetch(FN_URL + "/agenda-learn?what=episodes", { headers: authHeaders() }),
+      ]);
+      if(r1.ok){
+        const d = await r1.json();
+        this.rules = await Promise.all((d.rules || []).map(async x => ({ ...x, statement: await decStr(x.statement) })));
+      }
+      if(r2.ok){
+        const d = await r2.json();
+        this.episodes = await Promise.all((d.episodes || []).map(async x => ({ ...x, summary: await decStr(x.summary) })));
+      }
+      this.loaded = true;
+      renderLearnStats();
+    }catch(e){}
+  },
+
+  kw(text){
+    return relevantWords(text).slice(0, 20).join(' ');
+  },
+
+  async addEpisode({ summary, kind, caseId, outcome, detail }){
+    const r = await fetch(FN_URL + "/agenda-learn", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ type:'episode', kind: kind || 'case', case_id: caseId || null,
+        summary: await encStr(summary), keywords: this.kw(summary),
+        outcome: outcome || null, detail: detail || {} }),
+    });
+    if(!r.ok) return null;
+    const d = await r.json();
+    this.loaded = false;
+    return d.episode;
+  },
+
+  // A new rule that contradicts an existing one is surfaced, not merged.
+  findConflict(statement){
+    const words = new Set(relevantWords(statement));
+    if(!words.size) return null;
+    return this.rules.find(r => {
+      if(r.status === 'retired') return false;
+      const rw = new Set(relevantWords(r.statement));
+      const shared = [...words].filter(w => rw.has(w)).length;
+      const overlap = shared / Math.max(1, Math.min(words.size, rw.size));
+      if(overlap < 0.5) return false;
+      // strong topical overlap but opposite polarity reads as a contradiction
+      const neg = s => /\b(not|never|n[ãa]o|nunca|isn'?t|does ?n'?t|without|sem)\b/i.test(s);
+      return neg(statement) !== neg(r.statement);
+    }) || null;
+  },
+
+  async addRule({ statement, source, confidence, episodeIds, supersedes, conflictsWith }){
+    const r = await fetch(FN_URL + "/agenda-learn", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ statement: await encStr(statement), keywords: this.kw(statement),
+        source: source || 'correction', confidence: confidence ?? 60,
+        episode_ids: episodeIds || [], supersedes: supersedes || null,
+        conflicts_with: conflictsWith || null }),
+    });
+    if(!r.ok) return null;
+    const d = await r.json();
+    await this.load(true);
+    return d.rule;
+  },
+
+  async adjust(id, how){
+    const body = { id };
+    if(how === 'confirm') body.confirm = true;
+    if(how === 'contradict') body.contradict = true;
+    if(how === 'retire') body.status = 'retired';
+    const r = await fetch(FN_URL + "/agenda-learn", { method:'PUT', headers: authHeaders(), body: JSON.stringify(body) });
+    if(r.ok) await this.load(true);
+    return r.ok;
+  },
+
+  // Only rules relevant to the question, ranked by confidence.
+  search(q, limit = 5){
+    const words = relevantWords(q);
+    if(!words.length || !this.rules.length) return [];
+    return this.rules.map(r => {
+      const hay = (r.statement + ' ' + (r.keywords || '')).toLowerCase();
+      let hits = 0;
+      words.forEach(w => { if(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(hay)) hits++; });
+      return { r, cov: hits / words.length, score: hits * 10 + r.confidence / 10 };
+    }).filter(x => x.cov >= 0.34)
+      .sort((a, b) => b.score - a.score).slice(0, limit).map(x => x.r);
+  },
+
+  // Similar past cases, for "have I seen this before?".
+  similar(q, limit = 3){
+    const words = relevantWords(q);
+    if(!words.length) return [];
+    return this.episodes.map(e => {
+      const hay = (e.summary + ' ' + (e.keywords || '')).toLowerCase();
+      let hits = 0;
+      words.forEach(w => { if(hay.includes(w)) hits++; });
+      return { e, cov: hits / words.length };
+    }).filter(x => x.cov >= 0.4)
+      .sort((a, b) => b.cov - a.cov).slice(0, limit).map(x => x.e);
+  },
+
+  brief(q){
+    const rs = this.search(q);
+    const conflicted = this.rules.filter(r => r.status === 'conflicted');
+    const parts = [];
+    if(rs.length) parts.push('Learned rules that apply:\n' + rs.map(r =>
+      `- ${r.statement} [${r.confidence}% confident, from ${r.source}${r.times_confirmed > 1 ? `, confirmed ${r.times_confirmed}×` : ''}]`).join('\n'));
+    if(conflicted.length) parts.push(`${conflicted.length} rule(s) are marked as conflicting and need the user to decide.`);
+    const sim = this.similar(q);
+    if(sim.length) parts.push('Similar past cases:\n' + sim.map(e =>
+      `- ${e.summary.slice(0, 160)}${e.outcome ? ` (${e.outcome})` : ''}`).join('\n'));
+    return parts.length ? parts.join('\n') : 'No learned rules match this.';
+  },
+};
+let lastRuleHits = [];
+
+function renderLearnStats(){
+  const el = document.getElementById('learn-status');
+  if(!el) return;
+  const conf = Learn.rules.filter(r => r.status === 'conflicted').length;
+  el.textContent = `${Learn.rules.length} rules · ${Learn.episodes.length} episodes`
+    + (conf ? ` · ${conf} conflicting` : '');
+  el.className = conf ? '' : 'ok';
+}
+
+
+
+// ===== Self-model ====================================================
+// What TARS actually has to work with, computed from real counts rather than
+// claimed. Used both to ground confidence and to answer "what do you know?"
+// honestly — including the parts it does not.
+const SelfModel = {
+  // Domains it can genuinely speak to, derived from the knowledge base.
+  domains(){
+    const tally = {};
+    (KB || []).forEach(e => (e.tags || []).forEach(t => {
+      const k = String(t).toLowerCase();
+      tally[k] = (tally[k] || 0) + 1;
+    }));
+    return Object.entries(tally).sort((a, b) => b[1] - a[1]);
+  },
+
+  coverage(){
+    const d = this.domains();
+    return {
+      kbEntries: (KB || []).length,
+      rules: (Learn.rules || []).length,
+      conflicted: (Learn.rules || []).filter(r => r.status === 'conflicted').length,
+      episodes: (Learn.episodes || []).length,
+      memories: (Memory.cache || []).length,
+      cases: (cases || []).length,
+      strong: d.filter(([, n]) => n >= 3).map(([t]) => t).slice(0, 8),
+      thin: d.filter(([, n]) => n === 1).map(([t]) => t).slice(0, 8),
+      sources: [...new Set((KB || []).map(e => (e.source || 'manual').split(/[—:]/)[0].trim()))],
+    };
+  },
+
+  // Honest grounding for a given question: what is actually available, and
+  // what is missing. This is what stops confident answers from thin air.
+  assess(question){
+    const kbHits = kbSearch(question, 4);
+    const ruleHits = Learn.search(question, 4);
+    const past = Learn.similar(question, 2);
+    const words = relevantWords(question);
+    let basis = 'none';
+    if(kbHits.length) basis = 'knowledge base';
+    else if(ruleHits.length) basis = 'learned experience';
+    else if(past.length) basis = 'a similar past case';
+    const ceiling = kbHits.length ? 92
+      : ruleHits.length ? Math.min(85, Math.max(...ruleHits.map(r => r.confidence)))
+      : past.length ? 60 : 40;
+    return { basis, ceiling, kb: kbHits.length, rules: ruleHits.length, past: past.length, words };
+  },
+
+  brief(question){
+    const a = this.assess(question);
+    const c = this.coverage();
+    const bits = [
+      `Grounding for this question: ${a.basis}`
+        + (a.kb ? ` (${a.kb} knowledge entries` : '')
+        + (a.rules ? `${a.kb ? ', ' : ' ('}${a.rules} learned rules` : '')
+        + (a.past ? `${a.kb || a.rules ? ', ' : ' ('}${a.past} similar cases` : '')
+        + (a.kb || a.rules || a.past ? ')' : '') + '.',
+      `Do not claim more than ${a.ceiling}% confidence on this.`,
+    ];
+    if(a.basis === 'none')
+      bits.push('You have NOTHING stored on this. Say so plainly and answer from general reasoning, clearly labelled as such — or offer to search the web.');
+    if(c.conflicted) bits.push(`${c.conflicted} learned rule(s) are in conflict.`);
+    return bits.join(' ');
+  },
+
+  // Straight answer to "what do you know / what are you unsure about".
+  report(){
+    const c = this.coverage();
+    return [
+      `Knowledge: ${c.kbEntries} entries from ${c.sources.length} source(s) — ${c.sources.slice(0, 4).join(', ')}.`,
+      `Learned: ${c.rules} rules${c.conflicted ? ` (${c.conflicted} conflicting)` : ''}, ${c.episodes} recorded episodes.`,
+      `Personal: ${c.memories} remembered facts. History: ${c.cases} cases.`,
+      c.strong.length ? `Strongest on: ${c.strong.join(', ')}.` : 'No topic has enough entries to be a strength yet.',
+      c.thin.length ? `Thin on: ${c.thin.join(', ')} — one entry each.` : null,
+    ].filter(Boolean).join(' ');
+  },
+};
+let lastAssessment = null;
+
+// ===== Reflection ====================================================
+// Periodically inspects its own knowledge and proposes improvements. It
+// never edits anything itself: every proposal waits for a decision.
+const Reflect_ = {
+  proposals: [],
+  lastRun: 0,
+
+  async run(){
+    this.lastRun = Date.now();
+    const p = [];
+    const c = SelfModel.coverage();
+
+    // 1. Conflicting rules need a human decision, not a guess.
+    (Learn.rules || []).filter(r => r.status === 'conflicted').forEach(r => {
+      p.push({ kind:'conflict', text:`Rule in conflict: "${r.statement}"`,
+               action:'Decide which version holds.', ref:r.id });
+    });
+
+    // 2. Rules that have never been reconfirmed since being learned.
+    (Learn.rules || []).filter(r => r.times_confirmed <= 1 && r.confidence < 70
+      && Date.now() - Date.parse(r.created_at) > 14 * 86400000).forEach(r => {
+      p.push({ kind:'stale', text:`"${r.statement}" was learned once and never confirmed since.`,
+               action:'Confirm or retire it.', ref:r.id });
+    });
+
+    // 3. Repeated case subjects with no knowledge entry behind them.
+    const subj = {};
+    (cases || []).forEach(x => {
+      const k = String(x.titulo || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ')
+        .split(/\s+/).filter(w => w.length > 4).slice(0, 2).join(' ');
+      if(k) subj[k] = (subj[k] || 0) + 1;
+    });
+    Object.entries(subj).filter(([, n]) => n >= 3).forEach(([k, n]) => {
+      if(!kbSearch(k, 1).length)
+        p.push({ kind:'gap', text:`"${k}" has come up in ${n} cases but has no knowledge entry.`,
+                 action:'Worth writing one.' });
+    });
+
+    // 4. Knowledge that connects to nothing.
+    if(Galaxy.ready && (Galaxy.orphans || []).length >= 5){
+      p.push({ kind:'orphan', text:`${Galaxy.orphans.length} entries are unlinked.`,
+               action:'Tagging them would make retrieval better.' });
+    }
+
+    // 5. Outcomes recorded but never turned into a rule.
+    const unlearned = (Learn.episodes || []).filter(e => e.outcome === 'resolved').length
+                    - (Learn.rules || []).filter(r => r.source === 'observation').length;
+    if(unlearned >= 5)
+      p.push({ kind:'unlearned', text:`${unlearned} resolved cases have not produced any rule.`,
+               action:'Tell me what the pattern was and I will store it.' });
+
+    this.proposals = p;
+    renderReflection();
+    return p;
+  },
+
+  brief(){
+    if(!this.proposals.length) return 'Nothing to propose.';
+    return this.proposals.slice(0, 6).map(x => `- ${x.text} ${x.action}`).join('\n');
+  },
+};
+
+function renderReflection(){
+  const el = document.getElementById('reflect-status');
+  if(!el) return;
+  const n = Reflect_.proposals.length;
+  el.textContent = n ? `${n} suggestion${n > 1 ? 's' : ''}` : 'nothing to suggest';
+  el.className = n ? '' : 'ok';
+}
+
+// ===== Proactive engine ==============================================
+// Detects things worth saying, then decides how loudly to say them. The
+// interruption level is deliberately conservative: most findings wait until
+// asked, because an assistant that interrupts constantly gets muted.
+const LEVEL = { SILENT:0, AMBIENT:1, GENTLE:2, ACTIVE:3, URGENT:4 };
+
+const Proactive = {
+  seen: new Set(),          // event keys already raised
+  queue: [],                // findings not yet surfaced
+  timer: null,
+  lastRunAt: 0,
+
+  key(e){ return `${e.type}:${e.ref || ''}:${new Date().toDateString()}`; },
+
+  // --- detection ------------------------------------------------------
+  // Every rule reads real data. Nothing here invents a reason to speak.
+  scan(){
+    const out = [];
+    const now = new Date();
+    const hh = now.getHours() + now.getMinutes() / 60;
+    const today = todayStr();
+
+    // 1. Urgent case still open late in the working day.
+    pendingTodaysCases().filter(c => c.prioridade === 'urgente').forEach(c => {
+      if(hh >= 16) out.push({
+        type:'urgent_open', ref:c.id, level:LEVEL.ACTIVE,
+        text:`"${c.titulo}" is still urgent and still open, and it is past four.`,
+        action:{ tool:'open_case', args:{ query: c.ticket || c.titulo } },
+      });
+    });
+
+    // 2. A scheduled case whose start time has passed.
+    pendingTodaysCases().filter(c => c.horario).forEach(c => {
+      const [h, m] = c.horario.split(':').map(Number);
+      const due = h + (m || 0) / 60;
+      if(hh > due + 0.5) out.push({
+        type:'overdue', ref:c.id, level:LEVEL.GENTLE,
+        text:`"${c.titulo}" was set for ${c.horario} and has not been closed.`,
+        action:{ tool:'open_case', args:{ query: c.ticket || c.titulo } },
+      });
+    });
+
+    // 3. A focus parked on someone else for too long.
+    (Focus.all || []).filter(f => f.status === 'waiting' && f.waiting_on).forEach(f => {
+      const days = (Date.now() - Date.parse(f.updated_at)) / 86400000;
+      if(days >= 2) out.push({
+        type:'stalled', ref:f.id, level:LEVEL.GENTLE,
+        text:`${f.label} has been waiting on ${f.waiting_on} for ${Math.floor(days)} days.`,
+      });
+    });
+
+    // 4. The same client recurring — a pattern worth naming.
+    const byClient = {};
+    cases.forEach(c => {
+      const k = String(c.titulo || '').toLowerCase().split(/[—-]/)[0].trim().slice(0, 24);
+      if(k.length > 3) (byClient[k] = byClient[k] || []).push(c);
+    });
+    Object.entries(byClient).forEach(([k, list]) => {
+      const recent = list.filter(c => (Date.now() - Date.parse(c.case_date || 0)) < 30 * 86400000);
+      if(recent.length >= 3) out.push({
+        type:'repeat_client', ref:k, level:LEVEL.AMBIENT,
+        text:`${recent.length} cases for "${k}" in the last month — possibly one underlying fault rather than three.`,
+      });
+    });
+
+    // 5. Weather that affects a site visit.
+    if(wxSnapshot && wxSnapshot.rain >= 10 && pendingTodaysCases().length){
+      out.push({ type:'weather', ref:today, level:LEVEL.AMBIENT,
+        text:`${wxSnapshot.rain.toFixed(0)} mm of rain forecast today — worth checking before any roof work.` });
+    }
+
+    // 6. Knowledge that never got connected to anything.
+    if(Galaxy.ready && (Galaxy.orphans || []).length >= 8){
+      out.push({ type:'orphans', ref:'kb', level:LEVEL.AMBIENT,
+        text:`${Galaxy.orphans.length} knowledge entries are unlinked to anything else.` });
+    }
+
+    // 7b. Reflection findings, held at ambient so they never interrupt.
+    if(Reflect_.proposals.length >= 3) out.push({
+      type:'reflection', ref:'kb', level:LEVEL.AMBIENT,
+      text:`${Reflect_.proposals.length} improvements to the knowledge base are worth a look.`,
+      action:{ tool:'reflect', args:{} },
+    });
+
+    // 7. Rules that disagree and need a decision.
+    const conflicted = (Learn.rules || []).filter(r => r.status === 'conflicted');
+    if(conflicted.length) out.push({
+      type:'rule_conflict', ref:'rules', level:LEVEL.GENTLE,
+      text:`${conflicted.length} learned rule${conflicted.length > 1 ? 's' : ''} contradict each other and need your decision.`,
+      action:{ tool:'review_rules', args:{ only_conflicts:true } },
+    });
+
+    return out.filter(e => !this.seen.has(this.key(e)));
+  },
+
+  // --- surfacing ------------------------------------------------------
+  raise(e){
+    this.seen.add(this.key(e));
+    const pref = settings.proactiveLevel || 'normal';
+    if(pref === 'off') return;
+    // The setting can only ever lower the volume, never raise it above what
+    // the finding itself justifies.
+    if(pref === 'quiet' && e.level < LEVEL.ACTIVE) e.level = LEVEL.AMBIENT;
+    if(pref === 'high' && e.level === LEVEL.AMBIENT) e.level = LEVEL.GENTLE;
+    if(e.level <= LEVEL.SILENT) return;
+
+    if(e.level === LEVEL.AMBIENT){
+      // Held until asked, or shown in the morning brief.
+      this.queue.push(e);
+      renderProactiveDot();
+      return;
+    }
+    if(e.level === LEVEL.GENTLE){
+      this.queue.push(e);
+      TarsPresence.notify(e.text, 'silent');
+      renderProactiveDot();
+      return;
+    }
+    if(e.level === LEVEL.ACTIVE){
+      TarsPresence.notify(e.text, 'speak');
+      return;
+    }
+    TarsPresence.notify(e.text, 'urgent');
+  },
+
+  run(){
+    if(!session) return;
+    this.lastRunAt = Date.now();
+    const found = this.scan();
+    // At most one spoken interruption per cycle, highest level first.
+    found.sort((a, b) => b.level - a.level);
+    let spoke = false;
+    found.forEach(e => {
+      if(e.level >= LEVEL.ACTIVE && spoke){ e.level = LEVEL.GENTLE; }
+      if(e.level >= LEVEL.ACTIVE) spoke = true;
+      this.raise(e);
+    });
+  },
+
+  start(){
+    if(this.timer || settings.proactive === false) return;
+    // A first pass shortly after load, then every ten minutes.
+    setTimeout(() => this.run(), 20000);
+    this.timer = setInterval(() => this.run(), 10 * 60 * 1000);
+  },
+  stop(){ clearInterval(this.timer); this.timer = null; },
+
+  pending(){ return this.queue.slice(); },
+  clear(){ this.queue = []; renderProactiveDot(); },
+
+  // Everything held back, as one summary.
+  brief(){
+    if(!this.queue.length) return 'Nothing outstanding.';
+    return this.queue.map(e => '- ' + e.text).join('\n');
+  },
+};
+
+function renderProactiveDot(){
+  const b = document.getElementById('tars-badge');
+  if(!b) return;
+  const n = Proactive.queue.length;
+  b.hidden = n === 0;
+  b.textContent = n > 9 ? '9+' : String(n);
+}
+
 // ===== Focus mode ====================================================
 // Structured working state rather than conversation history. Survives a
 // reload, so unfinished work can be resumed rather than re-explained.
@@ -1289,6 +1744,11 @@ const TarsPresence = {
 document.getElementById('tars-dock')?.addEventListener('click', async () => {
   const panel = document.getElementById('voice-panel');
   TarsPresence.clearBadge();
+  const held = Proactive.pending();
+  if(held.length){
+    addAiMessage('assistant', held.map(e => e.text).join('\n'));
+    Proactive.clear();
+  }
   if(!VOICE.active) await startVoice();
   panel?.classList.toggle('open');
 });
@@ -1877,6 +2337,14 @@ const TOOL_HINTS = {
   create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
   create_notebook: /\b(notebook|folder|caderno|pasta)\b/i,
   create_note:     /\b(note|write down|jot|nota|anota)\b/i,
+  self_report:     /\b(what do you know|how confident|unsure|uncertain|do you know|your knowledge|sabe|confian)\b/i,
+  reflect:         /\b(improve|review your|gaps?|reflect|what should we|melhorar|revisar)\b/i,
+  get_briefing:    /\b(brief|briefing|plan|good morning|what'?s (up|new|today)|anything I should|resumo|bom dia|novidade)\b/i,
+  set_proactivity: /\b(interrupt|proactive|quiet|notify|notifications?|leave me alone|interromp|avisar)\b/i,
+  learn_rule:      /\b(wrong|incorrect|actually|no,|remember that|always|never|correction|errado|na verdade|sempre|nunca)\b/i,
+  recall_experience: /\b(before|similar|last time|usually|typically|seen this|j[aá] vi|parecido|normalmente)\b/i,
+  record_outcome:  /\b(resolved|fixed|solved|closed|turned out|resolvi|resolvido|foi o)\b/i,
+  review_rules:    /\b(rules?|learned|conflict|regras?|aprendeu)\b/i,
   start_focus:     /\b(working on|work on|focus|let'?s do|start(ing)? (on|with)|trabalhando|foco)\b/i,
   update_focus:    /\b(done|finished|completed|next|missing|waiting|remaining|step|falta|pronto|conclu)\b/i,
   get_focus:       /\b(missing|where were we|status|progress|what'?s left|falta|onde par|andamento)\b/i,
@@ -2063,6 +2531,145 @@ const TOOLS = [
       providerCache = null;
       renderProviderStatus();
       return `Switched to ${d.label}, model ${d.model}. This takes effect from the next message.`;
+    },
+  },
+  {
+    name: 'self_report',
+    permission: PERM.READ,
+    description: "Report honestly what TARS knows, where it is weak, and what it is uncertain about. Use for 'what do you know', 'how confident are you', 'what are you unsure about'.",
+    schema: { type:'object', properties:{
+      about:{ type:'string', description:'Optional topic to assess specifically.' } } },
+    async execute(args){
+      await Learn.load();
+      if(args.about){
+        const a = SelfModel.assess(args.about);
+        return `On "${args.about}": grounded in ${a.basis}. `
+          + `${a.kb} knowledge entries, ${a.rules} learned rules, ${a.past} similar past cases. `
+          + `Confidence ceiling ${a.ceiling}%. `
+          + (a.basis === 'none' ? 'Say plainly that you have nothing stored on this.' : '');
+      }
+      return SelfModel.report() + ' Summarise this in two or three sentences, and do not overstate it.';
+    },
+  },
+  {
+    name: 'reflect',
+    permission: PERM.READ,
+    description: "Review the knowledge base and learned rules for gaps, conflicts and stale entries, and propose improvements. Use for 'what should we improve', 'review your knowledge'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      await Learn.load();
+      const p = await Reflect_.run();
+      if(!p.length) return 'Nothing to propose — no conflicts, gaps or stale rules found.';
+      return `${p.length} suggestion(s):\n` + Reflect_.brief()
+        + '\nPresent the two most useful ones only, and ask before changing anything.';
+    },
+  },
+  {
+    name: 'get_briefing',
+    permission: PERM.READ,
+    description: "Give the day's briefing, or report anything TARS noticed but held back. Use for 'what's the plan', 'anything I should know', 'brief me', 'good morning'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      const open = pendingTodaysCases();
+      const urgent = open.filter(c => c.prioridade === 'urgente');
+      const next = open.filter(c => c.horario).sort((a, b) => a.horario.localeCompare(b.horario))[0];
+      const parts = [
+        open.length ? `${open.length} case${open.length > 1 ? 's' : ''} open today, ${urgent.length} urgent.` : 'Nothing scheduled today.',
+        next ? `Next at ${next.horario}: ${next.titulo}.` : null,
+        wxSnapshot ? `Weather ${wxSnapshot.tmin}-${wxSnapshot.tmax}°C, ${wxSnapshot.rain.toFixed(1)} mm rain.` : null,
+        Focus.current ? `Still in focus: ${Focus.current.label}.` : null,
+      ].filter(Boolean);
+      const held = Proactive.brief();
+      Proactive.clear();
+      return parts.join(' ') + (held !== 'Nothing outstanding.' ? `\nAlso noticed:\n${held}` : '')
+        + '\nSummarise this in two short sentences; do not read it as a list.';
+    },
+  },
+  {
+    name: 'set_proactivity',
+    permission: PERM.LOW,
+    description: "Change how much TARS interrupts, e.g. 'stop interrupting', 'tell me about urgent things only', 'be more proactive'.",
+    schema: { type:'object', properties:{
+      level:{ type:'string', enum:['off','quiet','normal','high'], description:'off = never interrupt; quiet = urgent only; normal = default; high = surface everything.' } },
+      required:['level'] },
+    async execute(args){
+      settings.proactiveLevel = args.level;
+      settings.proactive = args.level !== 'off';
+      saveSettings();
+      renderProactiveStatus();
+      if(args.level === 'off') Proactive.stop(); else Proactive.start();
+      return `Interruptions set to ${args.level}. Acknowledge in one line.`;
+    },
+  },
+  {
+    name: 'learn_rule',
+    permission: PERM.LOW,
+    description: "Record a correction or a lesson as a durable rule, e.g. when the user says you got something wrong, or 'always do X for Y'. Only when they actually correct or instruct you — never from your own reasoning.",
+    schema: { type:'object', properties:{
+      statement:{ type:'string', description:'The rule, as one standalone sentence.' },
+      source:{ type:'string', enum:['correction','observation','manual'], description:'correction when the user corrected you.' },
+      confidence:{ type:'number', description:'0-100. A direct correction is 85+.' } },
+      required:['statement'] },
+    async execute(args){
+      await Learn.load();
+      const clash = Learn.findConflict(args.statement);
+      const rule = await Learn.addRule({
+        statement: args.statement, source: args.source || 'correction',
+        confidence: args.confidence ?? (args.source === 'correction' ? 85 : 60),
+        conflictsWith: clash?.id || null,
+      });
+      if(!rule) return 'Could not store that rule.';
+      if(clash)
+        return `Stored, but it contradicts an existing rule: "${clash.statement}". Both are now flagged as conflicting. `
+             + 'Tell the user plainly that the two disagree and ask which one holds — do not choose for them.';
+      return `Rule stored at ${rule.confidence}% confidence. Acknowledge briefly.`;
+    },
+  },
+  {
+    name: 'recall_experience',
+    permission: PERM.READ,
+    description: "Look up learned rules and similar past cases before answering a technical question, or when asked 'have we seen this before?'.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'The problem or topic.' } },
+      required:['query'] },
+    async execute(args){
+      await Learn.load();
+      const out = Learn.brief(args.query);
+      lastRuleHits = Learn.search(args.query);
+      return out;
+    },
+  },
+  {
+    name: 'record_outcome',
+    permission: PERM.LOW,
+    description: "Record how a case turned out once it is resolved or closed, so it can inform later work. Use when the user says what fixed it.",
+    schema: { type:'object', properties:{
+      summary:{ type:'string', description:'What the problem was and what resolved it.' },
+      outcome:{ type:'string', enum:['resolved','failed','unknown'] },
+      case_query:{ type:'string', description:'Ticket or client, to link the case.' } },
+      required:['summary'] },
+    async execute(args){
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const q = norm(args.case_query || '');
+      const hit = q ? (cases.find(c => c.ticket && norm(c.ticket).includes(q)) || cases.find(c => norm(c.titulo).includes(q))) : null;
+      const ep = await Learn.addEpisode({ summary: args.summary, kind:'outcome',
+        caseId: hit?.id || Focus.current?.case_id || null, outcome: args.outcome || 'unknown' });
+      if(!ep) return 'Could not record that.';
+      return `Recorded${hit ? ` against "${hit.titulo}"` : ''}. It will surface on similar problems later.`;
+    },
+  },
+  {
+    name: 'review_rules',
+    permission: PERM.READ,
+    description: "List learned rules, or the ones that conflict, so the user can resolve or retire them.",
+    schema: { type:'object', properties:{
+      only_conflicts:{ type:'boolean' } } },
+    async execute(args){
+      await Learn.load(true);
+      const list = args.only_conflicts ? Learn.rules.filter(r => r.status === 'conflicted') : Learn.rules;
+      if(!list.length) return args.only_conflicts ? 'No conflicting rules.' : 'No rules learned yet.';
+      return list.slice(0, 15).map(r =>
+        `- [${r.confidence}%${r.status === 'conflicted' ? ', CONFLICTED' : ''}] ${r.statement}`).join('\n');
     },
   },
   {
@@ -3133,6 +3740,7 @@ const Memory = {
   },
 };
 let lastMemHits = [];
+let lastLearnBrief = 'No learned rules yet.';
 
 
 // ===== TARS context ==================================================
@@ -3367,6 +3975,14 @@ function buildAiSystemPrompt(spoken){
     "LANGUAGE: answer in the language the user used. Portuguese means natural Brazilian Portuguese (você, agendar) — never European Portuguese (tu, ecrã).",
     "FOLLOW-UPS: resolve pronouns and elisions from the conversation above. 'and the one before that' refers to whatever was just discussed. Ask for clarification only when genuinely ambiguous.",
     "",
+    "=== YOUR OWN GROUNDING ===",
+    lastAssessment || 'Not assessed.',
+    "Never exceed the stated confidence ceiling. If the grounding is 'none', say you have nothing stored on it and label any answer as general reasoning rather than knowledge. Distinguish what you know from what you are inferring.",
+    "",
+    "=== LEARNED FROM EXPERIENCE ===",
+    lastLearnBrief,
+    "Treat a learned rule as stronger than your own assumption but weaker than the knowledge base. State the confidence when it is below 70. If two rules conflict, say so and ask which holds — never pick silently.",
+    "",
     "=== CURRENT WORK ===",
     Focus.brief(),
     "",
@@ -3462,6 +4078,10 @@ async function runAssistantTurn(text, spoken){
 
   lastUserQuestion = text;
   lastMemHits = await Memory.search(text);   // relevant only, never the whole store
+  await Learn.load();
+  lastRuleHits = Learn.search(text);
+  lastLearnBrief = Learn.brief(text);
+  lastAssessment = SelfModel.brief(text);
   aiHistory.push({ role: 'user', content: text });
 
   // Only a bounded slice of history goes over the wire.
@@ -3534,6 +4154,9 @@ async function runAssistantTurn(text, spoken){
   let conf = null;
   display = display.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i,
     (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();
+  // A stated ceiling is enforced here, not merely requested in the prompt.
+  const ceiling = SelfModel.assess(text).ceiling;
+  if(conf !== null && conf > ceiling) conf = ceiling;
   if(!display) display = 'Done.';
 
   // Knowledge entries actually fed into this turn become citable sources.
@@ -3541,6 +4164,11 @@ async function runAssistantTurn(text, spoken){
   // its distinctive words appear in the reply.
   const lower = display.toLowerCase();
   markKbMapUsed();
+  (lastRuleHits || []).forEach(r => {
+    const key = relevantWords(r.statement).filter(w => w.length > 4).slice(0, 6);
+    if(key.length && key.filter(w => lower.includes(w)).length / key.length >= 0.4)
+      sources.push({ type:'rule', label: `${r.statement.slice(0, 60)} · ${r.confidence}%`, id:'RULE' });
+  });
   const drewOn = (e, i) => {
     if(new RegExp('\\bKB' + (i + 1) + '\\b', 'i').test(display)) return true;
     const key = relevantWords(e.title).filter(w => w.length > 4);
@@ -3577,7 +4205,7 @@ function renderTurn(res){
     s.className = 'msg-sources';
     s.innerHTML = '<div class="src-head">Sources</div>' + res.sources.map(x => `
       <div class="src-card ${x.type}">
-        <span class="src-kind">${x.type === 'web' ? 'WEB' : x.type === 'mem' ? 'MEMORY' : (x.id || 'KB')}</span>
+        <span class="src-kind">${x.type === 'web' ? 'WEB' : x.type === 'mem' ? 'MEMORY' : x.type === 'rule' ? 'LEARNED' : (x.id || 'KB')}</span>
         ${x.url ? `<a class="src-label" href="${x.url}" target="_blank" rel="noopener">${escapeHtml(x.label || '')}</a>`
                 : `<span class="src-label">${escapeHtml(x.label || '')}</span>`}
       </div>`).join('');
@@ -4598,6 +5226,38 @@ async function renderProviderStatus(){
       `<option value="${p.id}" disabled>${p.label} — set ${p.keyEnv}</option>`).join('');
   }
 }
+document.getElementById('reflect-run')?.addEventListener('click', async () => {
+  await Learn.load(true);
+  const p = await Reflect_.run();
+  alert(p.length ? p.map(x => `• ${x.text}\n   ${x.action}`).join('\n\n')
+                 : 'Nothing to propose — no conflicts, gaps or stale rules.');
+});
+function renderProactiveStatus(){
+  const el = document.getElementById('proactive-status');
+  const sel = document.getElementById('proactive-select');
+  const lvl = settings.proactiveLevel || 'normal';
+  if(el) el.textContent = { off:'never', quiet:'urgent only', normal:'normal', high:'everything' }[lvl];
+  if(sel) sel.value = lvl;
+}
+document.getElementById('proactive-select')?.addEventListener('change', (e) => {
+  settings.proactiveLevel = e.target.value;
+  settings.proactive = e.target.value !== 'off';
+  saveSettings(); renderProactiveStatus();
+  if(settings.proactive) Proactive.start(); else Proactive.stop();
+  SFX.tick();
+});
+document.getElementById('learn-review')?.addEventListener('click', async () => {
+  await Learn.load(true);
+  if(!Learn.rules.length){ alert('Nothing learned yet. Correct TARS and it will remember.'); return; }
+  const lines = Learn.rules.slice(0, 30).map((r, i) =>
+    `${i + 1}. [${r.confidence}%${r.status === 'conflicted' ? ' CONFLICT' : ''}] ${r.statement}`);
+  const pick = prompt(lines.join('\n') + '\n\nType a number to retire that rule, or Cancel.');
+  const n = parseInt(pick, 10);
+  if(n >= 1 && n <= Learn.rules.length){
+    await Learn.adjust(Learn.rules[n - 1].id, 'retire');
+    renderLearnStats();
+  }
+});
 document.getElementById('autolisten-toggle')?.addEventListener('click', () => {
   settings.tarsAutoListen = settings.tarsAutoListen === false;
   saveSettings();
@@ -4840,7 +5500,9 @@ function renderSettings(){
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
   const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
   const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
-  probeTts(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen();
+  probeTts(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus();
+  Reflect_.run();
+  Learn.load().then(renderLearnStats);
   bindPercent('humour-slider', 'humour-val', 'humour', 70);
   bindPercent('honesty-slider', 'honesty-val', 'honesty', 95);
   requestAnimationFrame(startKbMap);
@@ -5623,6 +6285,8 @@ async function bootApp(){
   }
   syncPhase();
   detectHud();
+  Learn.load();
+  Proactive.start();
   Focus.load().then(() => {
     const pend = Focus.pending();
     if(pend.length){

@@ -171,6 +171,23 @@
       <div class="day-panel-header"><h2>Knowledge base</h2></div>
       <p class="hint">Feeds the assistant with your own reference material. It answers from these entries first and shows a confidence bar. Either commit a <b>kb.json</b> file to the site root, or paste the JSON below.</p>
       <div class="set-row">
+        <div class="set-info"><b>Self review</b><span id="reflect-status">not run</span></div>
+        <button class="btn-ghost" id="reflect-run">Review knowledge</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>Interruptions</b><span id="proactive-status">normal</span></div>
+        <select class="voice-select" id="proactive-select" style="max-width:150px">
+          <option value="off">Never</option>
+          <option value="quiet">Urgent only</option>
+          <option value="normal">Normal</option>
+          <option value="high">Everything</option>
+        </select>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>Learned experience</b><span id="learn-status">loading…</span></div>
+        <button class="btn-ghost" id="learn-review">Review rules</button>
+      </div>
+      <div class="set-row">
         <div class="set-info"><b>Always listening</b><span id="autolisten-status">On — TARS waits for “Hey TARS”</span></div>
         <button class="btn-ghost" id="autolisten-toggle">Toggle</button>
       </div>
