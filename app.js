@@ -55,6 +55,7 @@ document.getElementById("tab-calendar").addEventListener("click", () => switchVi
 document.getElementById("tab-notebooks").addEventListener("click", () => switchView("notebooks"));
 document.getElementById("tab-settings").addEventListener("click", () => switchView("settings"));
 function switchView(view){
+  TarsContext.page = view;
   ["agenda","history","calendar","notebooks","settings"].forEach(v => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
     document.getElementById("tab-" + v).classList.toggle("active", v === view);
@@ -701,6 +702,7 @@ document.getElementById('sticky-del').addEventListener('click', async () => {
 
 function openModal(id, presetDate){
   editingId = id || null;
+  if(id) TarsContext.selectedCaseId = id;
   const c = id ? cases.find(x => x.id === id) : null;
   document.getElementById('modal-title').textContent = c ? 'Edit case' : 'New case';
   document.getElementById('f-titulo').value = c?.titulo || '';
@@ -849,6 +851,9 @@ function detectLang(text){
 
 function setVoiceState(s, detail){
   VOICE.state = s;
+  const dock = document.getElementById('tars-dock');
+  if(dock && s !== 'off') dock.dataset.state =
+    (s === 'idle' ? 'standby' : s === 'wake' ? 'listening' : s);
   const orb = document.getElementById('voice-orb');
   const lab = document.getElementById('voice-state');
   if(orb) orb.dataset.state = s;
@@ -1121,6 +1126,172 @@ const SFX = {
     }
   },
 };
+
+
+
+// ===== Focus mode ====================================================
+// Structured working state rather than conversation history. Survives a
+// reload, so unfinished work can be resumed rather than re-explained.
+const Focus = {
+  current: null,
+  all: [],
+
+  async load(){
+    try{
+      const r = await fetch(FN_URL + "/agenda-focus", { headers: authHeaders() });
+      if(!r.ok) return;
+      const d = await r.json();
+      // Labels and objectives can name clients, so they travel encrypted.
+      this.all = await Promise.all((d.focuses || []).map(async f => ({
+        ...f,
+        label: await decStr(f.label),
+        objective: f.objective ? await decStr(f.objective) : null,
+      })));
+      this.current = this.all.find(f => f.status === 'active') || null;
+      renderFocusBar();
+    }catch(e){}
+  },
+
+  async start(label, opts){
+    const payload = {
+      label: await encStr(label),
+      objective: opts?.objective ? await encStr(opts.objective) : null,
+      case_id: opts?.caseId || null,
+      subtasks: opts?.subtasks || [],
+      facts: opts?.facts || {},
+    };
+    const r = await fetch(FN_URL + "/agenda-focus", {
+      method:'POST', headers: authHeaders(), body: JSON.stringify(payload) });
+    if(!r.ok) return null;
+    const d = await r.json();
+    await this.load();
+    return this.current;
+  },
+
+  async update(patch){
+    if(!this.current) return null;
+    const body = { id: this.current.id, ...patch };
+    if(body.label) body.label = await encStr(body.label);
+    if(body.objective) body.objective = await encStr(body.objective);
+    const r = await fetch(FN_URL + "/agenda-focus", {
+      method:'PUT', headers: authHeaders(), body: JSON.stringify(body) });
+    if(!r.ok) return null;
+    await this.load();
+    return this.current;
+  },
+
+  async tick(text, done){
+    if(!this.current) return false;
+    const subs = (this.current.subtasks || []).slice();
+    const i = subs.findIndex(s => s.text.toLowerCase().includes(String(text).toLowerCase()));
+    if(i === -1) return false;
+    subs[i] = { ...subs[i], done: done !== false, at: new Date().toISOString() };
+    await this.update({ subtasks: subs });
+    return true;
+  },
+
+  // Compact enough to sit in every prompt without eating the budget.
+  brief(){
+    const f = this.current;
+    if(!f) return 'No active focus.';
+    const subs = (f.subtasks || []);
+    const doneN = subs.filter(s => s.done).length;
+    const next = subs.find(s => !s.done);
+    return [
+      `ACTIVE FOCUS: ${f.label}`,
+      f.objective ? `Objective: ${f.objective}` : null,
+      subs.length ? `Progress: ${doneN}/${subs.length}. ` +
+        subs.map(s => `${s.done ? '[x]' : '[ ]'} ${s.text}`).join(' · ') : null,
+      next ? `Next step: ${next.text}` : (subs.length ? 'All steps done.' : null),
+      f.waiting_on ? `Waiting on: ${f.waiting_on}` : null,
+      f.due_at ? `Due: ${new Date(f.due_at).toLocaleString('en-GB')}` : null,
+      Object.keys(f.facts || {}).length ? `Known: ${JSON.stringify(f.facts).slice(0, 300)}` : null,
+    ].filter(Boolean).join('\n');
+  },
+
+  // Anything parked and still open, for the resumption line at startup.
+  pending(){
+    return this.all.filter(f => f.status === 'waiting' ||
+      (f.status === 'active' && (f.subtasks || []).some(s => !s.done)));
+  },
+};
+
+function renderFocusBar(){
+  const bar = document.getElementById('focus-bar');
+  if(!bar) return;
+  const f = Focus.current;
+  if(!f){ bar.classList.add('hidden'); return; }
+  const subs = f.subtasks || [];
+  const doneN = subs.filter(s => s.done).length;
+  bar.classList.remove('hidden');
+  bar.innerHTML = `
+    <span class="fb-tag">FOCUS</span>
+    <span class="fb-label">${escapeHtml(f.label)}</span>
+    ${subs.length ? `<span class="fb-prog"><span style="width:${Math.round(doneN/subs.length*100)}%"></span></span>
+      <span class="fb-count">${doneN}/${subs.length}</span>` : ''}
+    ${f.waiting_on ? `<span class="fb-wait">waiting: ${escapeHtml(f.waiting_on)}</span>` : ''}
+    <button class="fb-open" id="fb-open" title="Show steps">▾</button>
+    <button class="fb-end" id="fb-end" title="End focus">✕</button>`;
+  bar.querySelector('#fb-end').addEventListener('click', async () => {
+    await Focus.update({ status:'done' }); Focus.current = null; renderFocusBar(); SFX.tick();
+  });
+  bar.querySelector('#fb-open').addEventListener('click', () => {
+    const f2 = Focus.current; if(!f2) return;
+    alert([f2.label, f2.objective ? '\nObjective: ' + f2.objective : '',
+      '\n' + (f2.subtasks || []).map(s => `${s.done ? '✓' : '○'} ${s.text}`).join('\n')].join(''));
+  });
+}
+
+// ===== Persistent TARS ===============================================
+// TARS starts with the application and sits in a passive state. The wake word
+// is matched locally on short transcripts; the full pipeline only engages
+// after it fires, so audio is never streamed continuously to a paid service.
+const TarsPresence = {
+  autostart: true,
+  started: false,
+
+  async init(){
+    if(this.started || !session) return;
+    this.started = true;
+    const dock = document.getElementById('tars-dock');
+    if(dock) dock.dataset.state = 'standby';
+    // Browsers require a gesture before microphone access, so passive
+    // listening arms on the first interaction rather than failing silently.
+    if(settings.tarsAutoListen === false) return;
+    const arm = async () => {
+      if(VOICE.active) return;
+      try{ await startVoice({ quiet: true }); }catch(e){}
+    };
+    ['pointerdown','keydown'].forEach(ev =>
+      window.addEventListener(ev, arm, { once: true }));
+  },
+
+  setState(s){
+    const dock = document.getElementById('tars-dock');
+    if(dock) dock.dataset.state = s;
+  },
+
+  // Proactive surface: TARS initiated this, and the dock says so.
+  notify(text, level){
+    const badge = document.getElementById('tars-badge');
+    if(badge){ badge.hidden = false; badge.textContent = '!'; }
+    this.setState('alert');
+    addAiMessage('assistant', text);
+    if(level === 'speak' || level === 'urgent') speak(text, VOICE.lang);
+    if(level === 'urgent') document.getElementById('voice-panel')?.classList.add('open');
+  },
+  clearBadge(){
+    const b = document.getElementById('tars-badge');
+    if(b) b.hidden = true;
+    if(VOICE.active) this.setState(VOICE.conversing ? 'listening' : 'standby');
+  },
+};
+document.getElementById('tars-dock')?.addEventListener('click', async () => {
+  const panel = document.getElementById('voice-panel');
+  TarsPresence.clearBadge();
+  if(!VOICE.active) await startVoice();
+  panel?.classList.toggle('open');
+});
 
 // ===== Voice state machine ===========================================
 // One owner for voice state. Nothing else sets it directly.
@@ -1561,12 +1732,12 @@ async function handleVoiceInput(text){
   if(VOICE.active){ setVoiceState('listening'); armFollowUp(); }
 }
 
-async function startVoice(){
+async function startVoice(opts){
   if(!VOICE.supported){
     alert('This browser cannot record audio. Chrome, Edge or Safari is required. The typed assistant still works.');
     return;
   }
-  document.getElementById('voice-panel')?.classList.add('open');
+  if(!opts?.quiet) document.getElementById('voice-panel')?.classList.add('open');
   setVoiceState('thinking');
   // Explicit permission first: without it Chrome can fail silently and never fire an event.
   try{
@@ -1589,7 +1760,7 @@ async function startVoice(){
   WakeWord.start();          // without this the provider rejects every phrase
   calibrateVAD();
   requestAnimationFrame(vadTick);
-  if(!VOICE.greeted){
+  if(!VOICE.greeted && !opts?.quiet){
     VOICE.greeted = true;
     const g = TARS.greeting();
     addAiMessage('assistant', g);
@@ -1706,6 +1877,14 @@ const TOOL_HINTS = {
   create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
   create_notebook: /\b(notebook|folder|caderno|pasta)\b/i,
   create_note:     /\b(note|write down|jot|nota|anota)\b/i,
+  start_focus:     /\b(working on|work on|focus|let'?s do|start(ing)? (on|with)|trabalhando|foco)\b/i,
+  update_focus:    /\b(done|finished|completed|next|missing|waiting|remaining|step|falta|pronto|conclu)\b/i,
+  get_focus:       /\b(missing|where were we|status|progress|what'?s left|falta|onde par|andamento)\b/i,
+  navigate:        /\b(open|show|go to|take me|navigate|abre|abrir|mostra|v[aá] para)\b/i,
+  open_case:       /\b(case|ticket|caso|chamado|open the|abre o|working on|trabalhando)\b/i,
+  get_context:     /\b(this|these|it|current|on screen|here|isso|esse|essa|aqui|atual)\b/i,
+  set_personality: /\b(humou?r|humor|funny|joke|honest|blunt|settings?|personality|serious|piada|s[eé]rio)\b/i,
+  switch_provider: /\b(switch|change|use|running|model|provider|gemini|groq|openai|deepseek|openrouter|reasoning|troca|muda|modelo)\b/i,
 };
 function toolsFor(text){
   const t = String(text || '');
@@ -1834,6 +2013,174 @@ const TOOLS = [
     }
     const ok = await Memory.remove(hits[0].id);
     return ok ? 'Forgotten: "' + hits[0].content + '"' : 'Could not delete that one.';
+    },
+  },
+  {
+    name: 'set_personality',
+    permission: PERM.LOW,
+    description: "Read or change your humour and honesty settings, e.g. 'set your humour to 20 percent', 'what are your settings'. Omit both to just report them.",
+    schema: { type:'object', properties:{
+      humour:{ type:'number', description:'0 to 100.' },
+      honesty:{ type:'number', description:'40 to 100.' } } },
+    async execute(args){
+      const clamp = (v, lo) => Math.max(lo, Math.min(100, Math.round(v)));
+      const changed = [];
+      if(typeof args.humour === 'number'){ TARS.humour = settings.humour = clamp(args.humour, 0); changed.push(`humour ${TARS.humour}`); }
+      if(typeof args.honesty === 'number'){ TARS.honesty = settings.honesty = clamp(args.honesty, 40); changed.push(`honesty ${TARS.honesty}`); }
+      if(!changed.length) return `Humour is ${TARS.humour} percent, honesty ${TARS.honesty} percent.`;
+      saveSettings();
+      const set = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
+      const lab = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v + '%'; };
+      set('humour-slider', TARS.humour); lab('humour-val', TARS.humour);
+      set('honesty-slider', TARS.honesty); lab('honesty-val', TARS.honesty);
+      return `Set: ${changed.join(', ')} percent. Takes effect from the next message. Acknowledge in one short line.`;
+    },
+  },
+  {
+    name: 'switch_provider',
+    permission: PERM.LOW,
+    description: "Change which AI service does the reasoning, e.g. 'switch to Gemini', 'use Groq again'. Accepted: groq, gemini, openai, deepseek, openrouter. Also use it when the user asks which model you are running.",
+    schema: { type:'object', properties:{
+      provider:{ type:'string', description:'groq | gemini | openai | deepseek | openrouter. Omit to just report the current one.' },
+      model:{ type:'string', description:'Optional specific model id.' } } },
+    async execute(args){
+      if(!args.provider){
+        const cur = await providerStatus(true);
+        return `Currently on ${cur.label} using ${cur.model}. Available: `
+             + (cur.providers || []).map(p => p.label).join(', ')
+             + ((cur.unconfigured || []).length ? `. Not configured: ${cur.unconfigured.map(p => p.label).join(', ')}.` : '');
+      }
+      const r = await fetch(FN_URL + "/agenda-ai", {
+        method:'POST', headers: authHeaders(),
+        body: JSON.stringify({ setProvider: args.provider, model: args.model }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if(!r.ok){
+        if(d.code === 'provider_unconfigured')
+          return `${args.provider} has no API key set. Tell the user to add ${d.keyEnv} in Supabase Edge Function secrets. Do not claim the switch happened.`;
+        return `Could not switch: ${d.error || 'unknown error'}. Do not claim the switch happened.`;
+      }
+      providerCache = null;
+      renderProviderStatus();
+      return `Switched to ${d.label}, model ${d.model}. This takes effect from the next message.`;
+    },
+  },
+  {
+    name: 'start_focus',
+    permission: PERM.LOW,
+    description: "Begin working on something, e.g. 'I'm working on case 18372'. Creates a structured working context with an objective and steps, which later commands resolve against.",
+    schema: { type:'object', properties:{
+      label:{ type:'string', description:'What is being worked on, e.g. the case name or ticket.' },
+      objective:{ type:'string', description:'What finishing looks like.' },
+      subtasks:{ type:'array', items:{ type:'string' }, description:'Steps needed, in order.' },
+      case_query:{ type:'string', description:'Ticket or client name, to link an existing case.' } },
+      required:['label'] },
+    async execute(args){
+      let caseId = null, facts = {};
+      if(args.case_query || args.label){
+        const q = String(args.case_query || args.label).toLowerCase().replace(/[^a-z0-9]/g, '');
+        const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const hit = cases.find(c => c.ticket && norm(c.ticket).includes(q)) || cases.find(c => norm(c.titulo).includes(q));
+        if(hit){
+          caseId = hit.id;
+          TarsContext.selectedCaseId = hit.id;
+          const snap = TarsContext.snapshot().focusedCase;
+          facts = { ticket: hit.ticket || null, status: hit.status || 'pending',
+                    serials: snap?.serials || [], evidence: snap?.evidence || [] };
+        }
+      }
+      const subs = (args.subtasks || []).map(t => ({ text: t, done: false }));
+      const f = await Focus.start(args.label, { objective: args.objective, subtasks: subs, caseId, facts });
+      if(!f) return 'Could not start a focus — the store is unavailable.';
+      return `Focus set: "${args.label}"` + (subs.length ? ` with ${subs.length} steps.` : '.')
+           + (caseId ? ' Linked to the matching case.' : ' No matching case found, so it is standalone.');
+    },
+  },
+  {
+    name: 'update_focus',
+    permission: PERM.LOW,
+    description: "Update the active focus: tick a step, add steps, set what it is waiting on, or finish it.",
+    schema: { type:'object', properties:{
+      complete_step:{ type:'string', description:'Text of a step to mark done.' },
+      add_steps:{ type:'array', items:{ type:'string' } },
+      waiting_on:{ type:'string', description:"e.g. 'Deye response'." },
+      objective:{ type:'string' },
+      finish:{ type:'boolean', description:'True when the work is complete.' } } },
+    async execute(args){
+      if(!Focus.current) return 'Nothing is in focus right now. Say what you are working on first.';
+      const notes = [];
+      if(args.complete_step){
+        const ok = await Focus.tick(args.complete_step, true);
+        notes.push(ok ? `Ticked "${args.complete_step}".` : `No step matches "${args.complete_step}".`);
+      }
+      if(Array.isArray(args.add_steps) && args.add_steps.length){
+        const subs = (Focus.current.subtasks || []).concat(args.add_steps.map(t => ({ text:t, done:false })));
+        await Focus.update({ subtasks: subs });
+        notes.push(`Added ${args.add_steps.length} step(s).`);
+      }
+      if(args.waiting_on){ await Focus.update({ waiting_on: args.waiting_on, status:'waiting' }); notes.push(`Waiting on ${args.waiting_on}.`); }
+      if(args.objective){ await Focus.update({ objective: args.objective }); notes.push('Objective updated.'); }
+      if(args.finish){ await Focus.update({ status:'done' }); Focus.current = null; renderFocusBar(); notes.push('Focus closed.'); }
+      return notes.join(' ') || 'Nothing changed.';
+    },
+  },
+  {
+    name: 'get_focus',
+    permission: PERM.READ,
+    description: "Read the active focus and what remains, e.g. for 'what's missing?' or 'where were we?'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      const cur = Focus.brief();
+      const pend = Focus.pending().filter(f => f.id !== Focus.current?.id);
+      return cur + (pend.length ? `\nAlso open: ${pend.map(f => f.label).join('; ')}.` : '');
+    },
+  },
+  {
+    name: 'navigate',
+    permission: PERM.READ,
+    description: "Move the user to a screen: agenda, history, calendar, notebooks or settings. Use when they ask to open or show a section.",
+    schema: { type:'object', properties:{
+      screen:{ type:'string', enum:['agenda','history','calendar','notebooks','settings'] },
+      section:{ type:'string', description:'Optional settings sub-tab: assistant, knowledge, media, appearance, data.' } },
+      required:['screen'] },
+    async execute(args){
+      switchView(args.screen);
+      if(args.screen === 'settings' && args.section){
+        const b = document.querySelector(`.sub-tab[data-sub="${args.section}"]`);
+        if(b) b.click();
+      }
+      return `Now showing ${args.screen}${args.section ? ' / ' + args.section : ''}.`;
+    },
+  },
+  {
+    name: 'open_case',
+    permission: PERM.READ,
+    description: "Open a specific case by ticket number or by name, and make it the focused case for later commands.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'Ticket number, client name or subject.' } },
+      required:['query'] },
+    async execute(args){
+      const q = String(args.query || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const hit = cases.find(c => c.ticket && norm(c.ticket).includes(q))
+               || cases.find(c => norm(c.titulo).includes(q))
+               || cases.find(c => norm(c.titulo).split(' ').some(w => q.includes(w)));
+      if(!hit) return `No case matches "${args.query}". Say so — do not invent one.`;
+      TarsContext.selectedCaseId = hit.id;
+      switchView(statusRank(hit.status) === 1 ? 'history' : 'agenda');
+      openModal(hit.id);
+      return `Opened "${hit.titulo}" (${hit.status || 'pending'}${hit.ticket ? ', ticket ' + hit.ticket : ''}). It is now the focused case.`;
+    },
+  },
+  {
+    name: 'get_context',
+    permission: PERM.READ,
+    description: "Read what is currently on screen: the focused case, its serial numbers, evidence links, notes and the visible records. Use before acting on 'this', 'these' or 'it'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      const s = TarsContext.snapshot();
+      if(!s.focusedCase && !s.visibleRecords.length) return `Screen: ${s.page}. Nothing selected and no records visible.`;
+      return JSON.stringify(s).slice(0, 1600);
     },
   },
   {
@@ -2012,15 +2359,53 @@ function renderKbStatus(){
     el.className = KB.length ? 'ok' : '';
   }
 }
+const STOP_WORDS = new Set([
+  'the','and','for','are','but','not','you','your','with','this','that','have','has','had',
+  'was','were','will','can','could','would','should','from','they','them','their','what','when',
+  'where','which','who','why','how','all','any','some','one','two','get','got','put','set','see',
+  'now','out','off','its','please','thanks','hello','okay',
+  'que','nao','não','com','uma','para','por','dos','das','isso','esse','essa','meu','minha',
+  'seu','sua','tem','ter','foi','ser','esta','está','mais','mas','como','pelo',
+  'today','tonight','tomorrow','morning','night','oclock','clock','meeting','schedule','about',
+  'urgent','due','actually','really','just','also','very','much','more','make','made','need','want',
+]);
+// Words shorter than four characters were matching inside unrelated words —
+// "for" inside "formação", "at" inside "cusat" — which is how irrelevant
+// entries were being cited.
+function relevantWords(q){
+  return [...new Set(String(q || '').toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !STOP_WORDS.has(w)))];
+}
+// Word-boundary matching, plus a floor: citing a weak match is worse than
+// citing nothing, because it makes every source card untrustworthy.
 function kbSearch(q, limit = 4){
-  if(!KB.length || !q) return [];
-  const words = String(q).toLowerCase().split(/\W+/).filter(w => w.length > 2);
-  return KB.map(e => {
-    const hay = [e.title, e.content, (e.tags || []).join(' '), (e.keywords || []).join(' '), e.source || ''].join(' ').toLowerCase();
-    let score = 0;
-    words.forEach(w => { if(hay.includes(w)) score += hay.split(w).length - 1; });
-    return { e, score };
-  }).filter(x => x.score > 0).sort((a,b) => b.score - a.score).slice(0, limit).map(x => x.e);
+  const words = relevantWords(q);
+  if(!KB.length || !words.length) return [];
+  const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const scored = KB.map(e => {
+    const title = String(e.title || '').toLowerCase();
+    const tags = (e.tags || []).map(t => String(t).toLowerCase());
+    const body = String(e.content || '').toLowerCase();
+    let score = 0, matched = 0;
+    words.forEach(w => {
+      const re = new RegExp('\\b' + esc(w), 'i');
+      let hit = 0;
+      if(tags.some(t => t === w || t.includes(w))) hit += 6;
+      if(re.test(title)) hit += 4;
+      else if(re.test(body)) hit += 1;
+      if(hit) matched++;
+      score += hit;
+    });
+    return { e, score, coverage: matched / words.length, matched };
+  }).filter(x => x.matched > 0);
+  const best = Math.max(0, ...scored.map(x => x.score));
+  return scored
+    .filter(x => x.score >= 4 && x.coverage >= 0.34 && x.score >= best * 0.4)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(x => x.e);
 }
 
 
@@ -2749,6 +3134,65 @@ const Memory = {
 };
 let lastMemHits = [];
 
+
+// ===== TARS context ==================================================
+// Structured application state, so "these serial numbers" or "this case"
+// resolve against what is actually on screen. Deliberately reads app state
+// rather than scraping the DOM or capturing the screen.
+const TarsContext = {
+  page: 'agenda',
+  selectedCaseId: null,
+
+  snapshot(){
+    const view = this.page;
+    const cse = this.selectedCaseId ? cases.find(c => c.id === this.selectedCaseId) : null;
+    const visible = (() => {
+      if(view === 'agenda') return pendingTodaysCases().slice(0, 12);
+      if(view === 'history') return cases.filter(c => statusRank(c.status) === 1).slice(0, 12);
+      return [];
+    })().map(c => ({ id: c.id, title: c.titulo, time: c.horario || null,
+                     priority: prioLabel(c.prioridade), ticket: c.ticket || null }));
+
+    // Serial-like tokens from the focused case, so warranty flows can use them.
+    const serials = cse
+      ? [...new Set(((cse.titulo || '') + ' ' + (cse.notes_log || []).map(n => n.text).join(' '))
+          .match(/\b[A-Z0-9]{6,}(?:-[A-Z0-9]+)?\b/g) || [])].slice(0, 12)
+      : [];
+    const links = cse
+      ? ((cse.notes_log || []).map(n => n.text).join(' ').match(/https?:\/\/\S+/g) || []).slice(0, 6)
+      : [];
+
+    return {
+      page: view,
+      focusedCase: cse ? {
+        id: cse.id, title: cse.titulo, date: cse.case_date, ticket: cse.ticket || null,
+        phone: cse.phone || null, priority: prioLabel(cse.prioridade),
+        status: cse.status || 'pending', tags: cse.tags || [],
+        notes: (cse.notes_log || []).map(n => n.text).slice(-4),
+        serials, evidence: links,
+      } : null,
+      visibleRecords: visible,
+      openToday: pendingTodaysCases().length,
+      notebooks: notebooks.filter(nb => !isSystemNotebook(nb)).map(nb => nb.title).slice(0, 12),
+    };
+  },
+
+  // A compact line for the prompt; the full object is only used by tools.
+  brief(){
+    const s = this.snapshot();
+    const bits = [`Screen: ${s.page}`];
+    if(s.focusedCase){
+      bits.push(`Focused case: "${s.focusedCase.title}" (${s.focusedCase.status}`
+        + (s.focusedCase.ticket ? `, ticket ${s.focusedCase.ticket}` : '') + ')');
+      if(s.focusedCase.serials.length) bits.push(`Serial numbers on it: ${s.focusedCase.serials.join(', ')}`);
+      if(s.focusedCase.evidence.length) bits.push(`Evidence links: ${s.focusedCase.evidence.length}`);
+    } else if(s.visibleRecords.length){
+      bits.push(`On screen: ${s.visibleRecords.slice(0, 5).map(r => r.title).join('; ')}`);
+    }
+    return bits.join('. ') + '.';
+  },
+};
+
 // ===== JARVIS core ===================================================
 // One place for personality and response policy. Nothing about who JARVIS is
 // should live anywhere else.
@@ -2913,7 +3357,7 @@ function buildAiSystemPrompt(spoken){
   const kbBlock = lastKbHits.length
     ? 'Knowledge base matches:\n' + lastKbHits.map((e, i) =>
         `- [KB${i + 1} | ${e.title}${e.source ? ' — ' + e.source : ''}] ${String(e.content).slice(0, 420)}`).join('\n')
-    : (KB.length ? 'Knowledge base: no entry matched this question.' : 'Knowledge base: empty.');
+    : 'Knowledge base: nothing relevant to this question.';
 
   return [
     ...JARVIS.persona,
@@ -2922,6 +3366,14 @@ function buildAiSystemPrompt(spoken){
       : "WRITTEN: brief and direct. Plain text. Lists only when the answer genuinely is a list."),
     "LANGUAGE: answer in the language the user used. Portuguese means natural Brazilian Portuguese (você, agendar) — never European Portuguese (tu, ecrã).",
     "FOLLOW-UPS: resolve pronouns and elisions from the conversation above. 'and the one before that' refers to whatever was just discussed. Ask for clarification only when genuinely ambiguous.",
+    "",
+    "=== CURRENT WORK ===",
+    Focus.brief(),
+    "",
+    "=== WHAT THE USER IS LOOKING AT ===",
+    TarsContext.brief(),
+    "Resolve 'this', 'these', 'it' and 'the case' against the active focus first, then the focused case. If neither applies and the reference is unclear, ask which one.",
+    "When the user says they are working on something, start a focus with sensible steps rather than only replying.",
     "",
     "=== REAL DATA SNAPSHOT (the ONLY source of truth) ===",
     `Today's date: ${todayStr()}`,
@@ -2941,7 +3393,7 @@ function buildAiSystemPrompt(spoken){
     "3. Tools are for explicit creation requests only. Remarks about how the day went are not requests. Never create a record to illustrate a point, and never auto-complete one you just created.",
     "4. Weather comes from the block above. Vinhedo and Campinas are ~15 km apart, so the same figures apply — say so rather than refusing.",
     "5b. MEMORY: the memory block holds facts the user explicitly asked you to keep. Use them naturally. Save one only when asked outright, never volunteer. Never store credentials - say a password manager is the right place.",
-    "5. Knowledge base first for technical questions, and name the entry used (e.g. 'per KB2'). web_search only for public or current information. Never invent a search result.",
+    "5. Use a knowledge entry ONLY if it genuinely answers the question. If the entries above are not relevant, ignore them entirely and say nothing about them — never cite one just because it was offered.",
     spoken
       ? "6. Do not append a confidence line when speaking."
       : "6. End EVERY written answer with a final line exactly like: CONFIDENCE: 85 — 90-100 straight from the snapshot or knowledge base, 50-80 reasoned, under 40 unsure.",
@@ -3085,9 +3537,23 @@ async function runAssistantTurn(text, spoken){
   if(!display) display = 'Done.';
 
   // Knowledge entries actually fed into this turn become citable sources.
-  (lastKbHits || []).forEach((e, i) => sources.push({ type:'kb', label: e.title + (e.source ? ' · ' + e.source : ''), id: 'KB' + (i + 1), url: e.url }));
+  // Cite an entry only when the answer drew on it: the model referenced it, or
+  // its distinctive words appear in the reply.
+  const lower = display.toLowerCase();
   markKbMapUsed();
-  (lastMemHits || []).forEach(m => sources.push({ type:'mem', label: String(m.content).slice(0, 60), id: 'MEM' }));
+  const drewOn = (e, i) => {
+    if(new RegExp('\\bKB' + (i + 1) + '\\b', 'i').test(display)) return true;
+    const key = relevantWords(e.title).filter(w => w.length > 4);
+    return key.length ? key.filter(w => lower.includes(w)).length / key.length >= 0.5 : false;
+  };
+  (lastKbHits || []).forEach((e, i) => {
+    if(drewOn(e, i)) sources.push({ type:'kb', label: e.title + (e.source ? ' · ' + e.source : ''), id: 'KB' + (i + 1), url: e.url });
+  });
+  (lastMemHits || []).forEach(m => {
+    const key = relevantWords(String(m.content)).filter(w => w.length > 4).slice(0, 5);
+    if(key.length && key.filter(w => lower.includes(w)).length / key.length >= 0.5)
+      sources.push({ type:'mem', label: String(m.content).slice(0, 60), id: 'MEM' });
+  });
 
   const res = {
     spoken: toSpoken(display),
@@ -4102,6 +4568,59 @@ async function hydrateMedia(root){
 
 
 
+
+// --- provider status ---------------------------------------------------
+// The switch is stored server-side, so it survives a browser reset and the
+// keys it selects between are never exposed here.
+let providerCache = null;
+async function providerStatus(force){
+  if(providerCache && !force) return providerCache;
+  try{
+    const r = await fetch(FN_URL + "/agenda-ai", {
+      method:'POST', headers: authHeaders(), body: JSON.stringify({ probe:true }),
+    });
+    providerCache = r.ok ? await r.json() : null;
+  }catch(e){ providerCache = null; }
+  return providerCache || { label:'unknown', model:'unknown', providers:[], unconfigured:[] };
+}
+async function renderProviderStatus(){
+  const el = document.getElementById('prov-status');
+  const sel = document.getElementById('prov-select');
+  if(!el) return;
+  const d = await providerStatus(true);
+  el.textContent = `${d.label || d.provider} · ${d.model || '?'}`;
+  el.className = 'ok';
+  if(sel){
+    const opts = (d.providers || []);
+    sel.innerHTML = opts.map(p =>
+      `<option value="${p.id}"${p.id === d.provider ? ' selected' : ''}>${p.label}</option>`).join('')
+      + (d.unconfigured || []).map(p =>
+      `<option value="${p.id}" disabled>${p.label} — set ${p.keyEnv}</option>`).join('');
+  }
+}
+document.getElementById('autolisten-toggle')?.addEventListener('click', () => {
+  settings.tarsAutoListen = settings.tarsAutoListen === false;
+  saveSettings();
+  renderAutoListen();
+  if(settings.tarsAutoListen === false) stopVoice(); else TarsPresence.init();
+});
+function renderAutoListen(){
+  const el = document.getElementById('autolisten-status');
+  if(el) el.textContent = settings.tarsAutoListen === false
+    ? 'Off — open the panel to talk'
+    : 'On — TARS waits for “Hey TARS”';
+}
+document.getElementById('prov-select')?.addEventListener('change', async (e) => {
+  const r = await fetch(FN_URL + "/agenda-ai", {
+    method:'POST', headers: authHeaders(), body: JSON.stringify({ setProvider: e.target.value }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if(!r.ok){ alert(d.error || 'Could not switch provider.'); }
+  providerCache = null;
+  renderProviderStatus();
+  SFX.open();
+});
+
 // ===== Encryption status =============================================
 function renderEncStatus(){
   const s = document.getElementById('enc-status');
@@ -4321,7 +4840,9 @@ function renderSettings(){
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
   const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
   const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
-  probeTts(); renderConfirmStatus(); renderAuditStatus();
+  probeTts(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen();
+  bindPercent('humour-slider', 'humour-val', 'humour', 70);
+  bindPercent('honesty-slider', 'honesty-val', 'honesty', 95);
   requestAnimationFrame(startKbMap);
   const sx = document.getElementById('set-sfx-status');
   if(sx) sx.textContent = settings.muted ? 'Muted' : 'On';
@@ -4370,7 +4891,7 @@ document.getElementById('diag-run')?.addEventListener('click', async () => {
       const r = await fetch(FN_URL + path, { method:'POST', headers: authHeaders(), body: JSON.stringify(body) });
       const d = await r.json().catch(() => ({}));
       if(!r.ok) return lines.push(`${name}: HTTP ${r.status}${d.code ? ' ' + d.code : ''}`);
-      if(name === 'assistant') return lines.push(`assistant: ok — model ${d.model || '?'} (${d.available || 0} available)`);
+      if(name === 'assistant') return lines.push(`assistant: ok — ${d.label || d.provider} / ${d.model || '?'} (${d.available || 0} models)`);
       if(name === 'search') return lines.push(`search: ok — ${d.keyed_provider ? 'key set (' + d.keyed_provider + ')' : 'no key, using ' + (d.fallbacks || []).join('/')}`);
       if(name === 'speech') return lines.push(`speech: ${d.configured ? 'ElevenLabs configured' : 'no key, browser voice'}`);
       lines.push(`${name}: ok`);
@@ -4413,7 +4934,8 @@ function renderConfirmStatus(){
 // save on every keystroke and confirm visibly.
 function bindPercent(id, valId, key, def){
   const el = document.getElementById(id), out = document.getElementById(valId);
-  if(!el) return;
+  if(!el || el._bound) return;
+  el._bound = true;
   const cur = typeof settings[key] === 'number' ? settings[key] : def;
   el.value = cur; if(out) out.textContent = cur + '%';
   TARS[key] = cur;
@@ -4423,6 +4945,11 @@ function bindPercent(id, valId, key, def){
     if(out) out.textContent = v + '%';
   });
 }
+// The sliders exist only after Settings renders, so apply the stored values to
+// TARS directly at startup — otherwise the persona ran on its defaults until
+// the panel happened to be opened.
+TARS.humour  = typeof settings.humour  === 'number' ? settings.humour  : 70;
+TARS.honesty = typeof settings.honesty === 'number' ? settings.honesty : 95;
 bindPercent('humour-slider', 'humour-val', 'humour', 70);
 bindPercent('honesty-slider', 'honesty-val', 'honesty', 95);
 
@@ -5096,5 +5623,17 @@ async function bootApp(){
   }
   syncPhase();
   detectHud();
+  Focus.load().then(() => {
+    const pend = Focus.pending();
+    if(pend.length){
+      // Resumption comes from persisted state, never from invented memory.
+      const f = pend[0];
+      const left = (f.subtasks || []).filter(s => !s.done).length;
+      addAiMessage('assistant', `Unfinished: ${f.label}`
+        + (f.waiting_on ? ` — waiting on ${f.waiting_on}` : '')
+        + (left ? `, ${left} step${left > 1 ? 's' : ''} remaining.` : '.'));
+    }
+  });
+  TarsPresence.init();
 }
 bootApp();
