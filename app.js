@@ -83,13 +83,15 @@ async function loadCases(){
 }
 async function createCase(payload){
   const resp = await fetch(FN_URL + "/agenda-cases", { method: "POST", headers: authHeaders(), body: JSON.stringify(await sealCase(payload)) });
-  if(!resp.ok) throw new Error((await resp.json()).error || "Error creating case.");
-  return openCase(await resp.json());
+  const out = await readJson(resp);
+  if(!out.ok) throw new Error(out.json.error || "Error creating case.");
+  return openCase(out.json);
 }
 async function updateCase(id, payload){
   const resp = await fetch(FN_URL + "/agenda-cases", { method: "PUT", headers: authHeaders(), body: JSON.stringify({ id, ...(await sealCase(payload)) }) });
-  if(!resp.ok) throw new Error((await resp.json()).error || "Error updating case.");
-  return openCase(await resp.json());
+  const out = await readJson(resp);
+  if(!out.ok) throw new Error(out.json.error || "Error updating case.");
+  return openCase(out.json);
 }
 async function deleteCaseApi(id){
   const resp = await fetch(FN_URL + "/agenda-cases", { method: "DELETE", headers: authHeaders(), body: JSON.stringify({ id }) });
@@ -1135,6 +1137,27 @@ const SFX = {
 
 
 
+
+// Bare hours are ambiguous. At 18:00, "eight o'clock" almost always means
+// 20:00, not tomorrow morning — so an hour that has already passed today is
+// read as the PM one when a PM reading exists.
+function resolveHour(raw, spokenAt){
+  const s = String(raw || '').trim();
+  const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)?$/i);
+  if(!m) return s;
+  let h = parseInt(m[1], 10);
+  const min = m[2] || '00';
+  const suffix = (m[3] || '').toLowerCase();
+  if(suffix === 'am') return `${String(h % 12).padStart(2,'0')}:${min}`;
+  if(suffix === 'pm') return `${String(h % 12 + 12).padStart(2,'0')}:${min}`;
+  if(h > 12) return `${String(h).padStart(2,'0')}:${min}`;   // already 24h
+  const now = spokenAt instanceof Date ? spokenAt : new Date();
+  const nowH = now.getHours() + now.getMinutes() / 60;
+  // Prefer the next occurrence of that hour today.
+  if(h < 12 && h + 12 >= nowH && h < nowH) h += 12;
+  return `${String(h).padStart(2,'0')}:${min}`;
+}
+
 // ===== Learning ======================================================
 // Episodes are what happened; rules are what was concluded. Kept apart so a
 // rule can always be traced to the events behind it, and so a wrong rule can
@@ -1418,6 +1441,69 @@ function renderReflection(){
   el.textContent = n ? `${n} suggestion${n > 1 ? 's' : ''}` : 'nothing to suggest';
   el.className = n ? '' : 'ok';
 }
+
+
+// ===== Background findings ===========================================
+// A scheduled scan runs server-side twice a day, so things are noticed while
+// the app is closed. It works only on unencrypted fields — dates, times,
+// priority — because case titles are encrypted and the server genuinely
+// cannot read them. Names are resolved here, on the client, at render time.
+const Background = {
+  items: [],
+
+  async load(scanNow){
+    try{
+      const r = await fetch(FN_URL + "/agenda-cron", {
+        method:'POST', headers: authHeaders(),
+        body: JSON.stringify(scanNow ? { scanNow:true } : {}),
+      });
+      if(!r.ok) return [];
+      const d = await r.json();
+      this.items = d.notifications || [];
+      return this.items;
+    }catch(e){ return []; }
+  },
+
+  async ack(){
+    this.items = [];
+    try{ await fetch(FN_URL + "/agenda-cron", { method:'POST', headers: authHeaders(), body: JSON.stringify({ ack:true }) }); }catch(e){}
+  },
+
+  // Turn a server finding into a sentence, filling in the name locally.
+  describe(n){
+    const p = n.payload || {};
+    const nameOf = id => {
+      const cse = cases.find(x => x.id === id);
+      return cse ? `"${cse.titulo}"` : 'a case';
+    };
+    switch(n.kind){
+      case 'carried_urgent':
+        return `${nameOf(p.case_id)} has been urgent and open since ${p.since}.`;
+      case 'backlog':
+        return `${p.count} cases are still open from earlier days, the oldest from ${p.oldest}.`;
+      case 'day_ahead':
+        return `${p.count} case${p.count > 1 ? 's' : ''} today${p.urgent ? `, ${p.urgent} urgent` : ''}`
+             + `, first at ${p.first_at}${p.first_id ? ` — ${nameOf(p.first_id)}` : ''}.`;
+      case 'stalled_focus': {
+        const f = (Focus.all || []).find(x => x.id === p.focus_id);
+        return `${f ? f.label : 'A thread'} has been waiting ${p.days} days`
+             + (f?.waiting_on ? ` on ${f.waiting_on}` : '') + '.';
+      }
+      case 'rule_conflict':
+        return `${p.count} learned rule${p.count > 1 ? 's' : ''} still contradict each other.`;
+      default: return null;
+    }
+  },
+
+  // Fold them into the proactive queue rather than inventing a second channel.
+  feed(){
+    this.items.forEach(n => {
+      const text = this.describe(n);
+      if(!text) return;
+      Proactive.raise({ type:'bg_' + n.kind, ref:n.ref, level: Math.min(LEVEL.GENTLE, n.level), text });
+    });
+  },
+};
 
 // ===== Proactive engine ==============================================
 // Detects things worth saying, then decides how loudly to say them. The
@@ -1823,8 +1909,8 @@ const AudioOut = {
       body: JSON.stringify({ text, voiceId: settings.ttsVoiceId || undefined, modelId: settings.ttsModelId || undefined }),
     });
     if(!r.ok){
-      const d = await r.json().catch(() => ({}));
-      const err = new Error(JARVIS.errorFor(d.code)); err.code = d.code || 'unknown';
+      const out = await readJson(r);
+      const err = new Error(TARS.errorFor(out.json.code)); err.code = out.json.code || 'unknown';
       throw err;
     }
 
@@ -2334,9 +2420,13 @@ const TOOL_HINTS = {
   save_template:   /\b(template|model[oe]|boilerplate|standard (email|message))\b/i,
   use_template:    /\b(send|email|message|template|envi|mandar|manda)\b/i,
   list_templates:  /\b(templates?|model[oe]s)\b/i,
+  delete_case:     /\b(delete|remove|erase|apagar?|excluir|deletar|remover)\b/i,
+  update_case:     /\b(change|move|reschedule|update|set .* to|mudar?|alterar|remarcar)\b/i,
+  add_knowledge:   /\b(save|store|note down|knowledge|remember .*(error|code|fault)|salvar|guardar|anotar|erro)\b/i,
   create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
   create_notebook: /\b(notebook|folder|caderno|pasta)\b/i,
   create_note:     /\b(note|write down|jot|nota|anota)\b/i,
+  check_background: /\b(miss|missed|overnight|while I was|catch me up|happen|perdi|enquanto)\b/i,
   self_report:     /\b(what do you know|how confident|unsure|uncertain|do you know|your knowledge|sabe|confian)\b/i,
   reflect:         /\b(improve|review your|gaps?|reflect|what should we|melhorar|revisar)\b/i,
   get_briefing:    /\b(brief|briefing|plan|good morning|what'?s (up|new|today)|anything I should|resumo|bom dia|novidade)\b/i,
@@ -2371,6 +2461,19 @@ function estimateTokens(messages, tools){
 }
 const TOKEN_CEILING = 5200;   // well under Groq's per-minute allowance
 
+
+// A Response body can only be read once; a second read throws "body already
+// consumed", which then masks whatever actually went wrong. Every response is
+// reduced to a plain object immediately, so the mistake is impossible rather
+// than merely avoided.
+async function readJson(resp){
+  let text = '';
+  try{ text = await resp.text(); }catch(e){}
+  let json = null;
+  try{ json = JSON.parse(text); }catch(e){}
+  return { ok: resp.ok, status: resp.status, json: json || {}, text };
+}
+
 let lastLatency = null;
 async function callAiAgent(messages, tools, opts){
   const body = tools && tools.length ? { messages, tools } : { messages };
@@ -2378,10 +2481,11 @@ async function callAiAgent(messages, tools, opts){
   let data;
   try{
     const resp = await fetch(FN_URL + "/agenda-ai", { method:"POST", headers: authHeaders(), body: JSON.stringify(body) });
-    data = await resp.json().catch(() => ({}));
-    if(!resp.ok){
+    const out = await readJson(resp);
+    data = out.json;
+    if(!out.ok){
       const code = data.code || 'unknown';
-      console.error('[assistant]', resp.status, code, data.error || '');
+      console.error('[assistant]', out.status, code, data.error || '', data.detail || '');
       const err = new Error(TARS.errorFor(code)
         + (data.detail ? ` — ${String(data.detail).slice(0, 120)}` : ` (HTTP ${resp.status})`));
       err.code = code;
@@ -2427,9 +2531,9 @@ const WebSearch = {
         method:'POST', headers: authHeaders(),
         body: JSON.stringify({ query, lang: lang || VOICE.lang }),
       });
-      if(!r.ok) return { ok:false, error:'search service returned an error', results:[] };
-      const d = await r.json();
-      return { ok:true, results: d.results || [], via: d.via, tried: d.tried };
+      const out = await readJson(r);
+      if(!out.ok) return { ok:false, error: out.json.error || 'search service returned an error', results:[] };
+      return { ok:true, results: out.json.results || [], via: out.json.via, tried: out.json.tried };
     }catch(e){ return { ok:false, error:'search service unreachable', results:[] }; }
   },
 };
@@ -2522,8 +2626,9 @@ const TOOLS = [
         method:'POST', headers: authHeaders(),
         body: JSON.stringify({ setProvider: args.provider, model: args.model }),
       });
-      const d = await r.json().catch(() => ({}));
-      if(!r.ok){
+      const out = await readJson(r);
+      const d = out.json;
+      if(!out.ok){
         if(d.code === 'provider_unconfigured')
           return `${args.provider} has no API key set. Tell the user to add ${d.keyEnv} in Supabase Edge Function secrets. Do not claim the switch happened.`;
         return `Could not switch: ${d.error || 'unknown error'}. Do not claim the switch happened.`;
@@ -2531,6 +2636,19 @@ const TOOLS = [
       providerCache = null;
       renderProviderStatus();
       return `Switched to ${d.label}, model ${d.model}. This takes effect from the next message.`;
+    },
+  },
+  {
+    name: 'check_background',
+    permission: PERM.READ,
+    description: "Check what was noticed while the app was closed — overnight backlog, carried-over urgent work, stalled threads. Use for 'anything happen', 'what did I miss', 'catch me up'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      const items = await Background.load(true);
+      if(!items.length) return 'Nothing was flagged while you were away.';
+      const lines = items.map(n => Background.describe(n)).filter(Boolean);
+      await Background.ack();
+      return lines.join('\n') + '\nSummarise in two sentences at most.';
     },
   },
   {
@@ -2864,6 +2982,96 @@ const TOOLS = [
     },
   },
   {
+    name: 'delete_case',
+    permission: PERM.HIGH,
+    description: "Permanently delete a case. Always requires the user's confirmation first.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'Ticket, client or subject identifying the case.' } },
+      required:['query'] },
+    async execute(args){
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const q = norm(args.query);
+      const matches = cases.filter(x => (x.ticket && norm(x.ticket).includes(q)) || norm(x.titulo).includes(q));
+      if(!matches.length) return `No case matches "${args.query}". Say so — do not claim anything was deleted.`;
+      if(matches.length > 1)
+        return `${matches.length} cases match "${args.query}": ${matches.map(m => m.titulo).join('; ')}. `
+             + 'Ask which one — do not delete several.';
+      const hit = matches[0];
+      try{
+        await deleteCaseApi(hit.id);
+        cases = cases.filter(x => x.id !== hit.id);
+        if(TarsContext.selectedCaseId === hit.id) TarsContext.selectedCaseId = null;
+        render();
+        return `Deleted "${hit.titulo}".`;
+      }catch(err){
+        return `Deletion FAILED: ${err.message}. Tell the user it was not deleted.`;
+      }
+    },
+  },
+  {
+    name: 'update_case',
+    permission: PERM.LOW,
+    description: "Change a field on an existing case: time, priority, block, ticket, phone or title.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'Which case.' },
+      horario:{ type:'string' }, horario_fim:{ type:'string' },
+      prioridade:{ type:'string', enum:['urgente','alta','media','baixa'] },
+      bloco:{ type:'string', enum:['primeira-hora','manha','tarde','fim-do-dia'] },
+      ticket:{ type:'string' }, phone:{ type:'string' }, titulo:{ type:'string' } },
+      required:['query'] },
+    async execute(args){
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const q = norm(args.query);
+      const hit = cases.find(x => (x.ticket && norm(x.ticket).includes(q))) || cases.find(x => norm(x.titulo).includes(q));
+      if(!hit) return `No case matches "${args.query}". Do not claim anything changed.`;
+      if(statusRank(hit.status) === 1) return `"${hit.titulo}" is closed and cannot be edited.`;
+      const patch = {};
+      ['prioridade','bloco','ticket','phone','titulo'].forEach(k => { if(args[k]) patch[k] = args[k]; });
+      if(args.horario) patch.horario = resolveHour(args.horario);
+      if(args.horario_fim) patch.horario_fim = resolveHour(args.horario_fim);
+      if(!Object.keys(patch).length) return 'Nothing to change was given.';
+      try{
+        const up = await updateCase(hit.id, patch);
+        const i = cases.findIndex(x => x.id === hit.id);
+        if(i > -1) cases[i] = up;
+        render();
+        return `Updated "${hit.titulo}": ${Object.entries(patch).map(([k, v]) => `${k} → ${v}`).join(', ')}.`;
+      }catch(err){ return `Update FAILED: ${err.message}. Tell the user nothing changed.`; }
+    },
+  },
+  {
+    name: 'add_knowledge',
+    permission: PERM.LOW,
+    description: "Add a technical fact, procedure or fault code to the knowledge base, e.g. 'save error 303 Hoymiles as a firmware update needing the manufacturer'. Use whenever the user tells you to remember something technical for future reference.",
+    schema: { type:'object', properties:{
+      title:{ type:'string', description:'Short identifying title, e.g. "Hoymiles 303 — firmware".' },
+      content:{ type:'string', description:'The full explanation, as you would tell a colleague.' },
+      tags:{ type:'array', items:{ type:'string' }, description:'Manufacturer, code, category.' } },
+      required:['title','content'] },
+    async execute(args){
+      const entry = { title: args.title, content: args.content,
+                      tags: (args.tags || []).map(t => String(t).toLowerCase()), source: 'Voice' };
+      KB = [entry, ...KB];
+      try{
+        localStorage.setItem('agenda-solar-kb', JSON.stringify(KB));
+      }catch(err){
+        KB = KB.slice(1);
+        return `Could NOT save: ${err.message}. Tell the user it was not stored.`;
+      }
+      renderKbStatus();
+      const box = document.getElementById('kb-json');
+      if(box) box.value = JSON.stringify(KB, null, 2);
+      // Filed as a note too, so it exists as a real record and not only in
+      // browser storage.
+      let filed = false;
+      try{ filed = !!(await fileKnowledgeEntry(entry)); }catch(e){}
+      renderNotebooksGrid();
+      Galaxy.build({ folder:false });
+      return `Saved "${args.title}" to the knowledge base`
+           + (filed ? ' and filed it as a note.' : ' (local only — the note could not be filed).');
+    },
+  },
+  {
     name: 'create_case',
     permission: PERM.LOW,
     description: "Create a new support case in the user's agenda. Only when they clearly ask to create, add or schedule a case.",
@@ -2880,8 +3088,8 @@ const TOOLS = [
     const payload = {
       titulo: args.titulo,
       ticket: args.ticket || '',
-      horario: args.horario || '',
-      horario_fim: args.horario_fim || '',
+      horario: resolveHour(args.horario) || '',
+      horario_fim: resolveHour(args.horario_fim) || '',
       case_date: args.case_date || todayStr(),
       prioridade: args.prioridade || 'media',
       bloco: args.bloco || 'manha',
@@ -3216,6 +3424,35 @@ async function syncKnowledgeToNotebooks(){
 }
 document.getElementById('kb-sync')?.addEventListener('click', syncKnowledgeToNotebooks);
 
+// Removes a whole import that went wrong, including the notes filed from it.
+document.getElementById('kb-purge')?.addEventListener('click', async () => {
+  const sources = [...new Set(KB.map(e => (e.source || 'manual').split(/[—:]/)[0].trim()))];
+  if(!sources.length){ alert('The knowledge base is empty.'); return; }
+  const counts = sources.map(s => `${s} (${KB.filter(e => (e.source || 'manual').startsWith(s)).length})`);
+  const pick = prompt('Remove which source?\n\n' + counts.map((s, i) => `${i + 1}. ${s}`).join('\n')
+    + '\n\nType a number.');
+  const n = parseInt(pick, 10);
+  if(!(n >= 1 && n <= sources.length)) return;
+  const src = sources[n - 1];
+  const before = KB.length;
+  KB = KB.filter(e => !(e.source || 'manual').startsWith(src));
+  localStorage.setItem('agenda-solar-kb', JSON.stringify(KB));
+  // The notebook filed from that source goes too, so the galaxy matches.
+  const nb = notebooks.find(x => x.title === SYS_PREFIX + src);
+  if(nb){
+    for(const nt of notes.filter(x => x.notebook_id === nb.id)){
+      try{ await deleteNoteApi(nt.id); }catch(e){}
+    }
+    notes = notes.filter(x => x.notebook_id !== nb.id);
+    try{ await deleteNotebookApi(nb.id); notebooks = notebooks.filter(x => x.id !== nb.id); }catch(e){}
+  }
+  renderKbStatus(); renderNotebooksGrid();
+  const box = document.getElementById('kb-json');
+  if(box) box.value = JSON.stringify(KB, null, 2);
+  Galaxy.build({ folder:false });
+  alert(`Removed ${before - KB.length} entries from "${src}".`);
+});
+
 // ===== Knowledge galaxy (3D) =========================================
 // Positions come from a force simulation, so distance actually means
 // something: linked notes pull together, everything repels, and clusters
@@ -3408,10 +3645,33 @@ const Galaxy = {
     const folders = [...new Set(items.map(i => i.folder))];
     this.nodes = items.map(it => ({ ...it, deg: 0, hue: folders.indexOf(it.folder),
                                     when: it.when || 0 }));
+
+    // Main and sub: numbered titles nest ("6" is parent of "6.1"), and
+    // otherwise the best-connected node in a cluster becomes its hub. This is
+    // what makes the map readable rather than a uniform scatter.
+    const numbered = {};
+    this.nodes.forEach(n => {
+      const m = String(n.title || '').match(/^(\d+(?:\.\d+)*)/);
+      if(m) numbered[m[1]] = n;
+      n.rank = m ? m[1].split('.').length : null;
+    });
+    this.nodes.forEach(n => {
+      const m = String(n.title || '').match(/^(\d+(?:\.\d+)*)/);
+      if(!m) return;
+      const parts = m[1].split('.');
+      if(parts.length < 2) return;
+      const parentKey = parts.slice(0, -1).join('.');
+      if(numbered[parentKey]) n.parentId = numbered[parentKey].id;
+    });
     this.byId = Object.fromEntries(this.nodes.map(n => [n.id, n]));
     this.edges = Object.entries(pair)
       .map(([id, v]) => { const [a, b] = id.split('|'); return [a, b, v.kind, v.w]; })
       .filter(([a, b]) => this.byId[a] && this.byId[b]);
+
+    // Parent links are structural, so they carry the heaviest weight.
+    this.nodes.forEach(n => {
+      if(n.parentId && this.byId[n.parentId]) this.edges.push([n.parentId, n.id, 'parent', 5]);
+    });
 
     this.adj = {};
     this.edges.forEach(([a, b]) => {
@@ -3422,6 +3682,14 @@ const Galaxy = {
 
     this.folders = folders;
     this.orphans = this.nodes.filter(n => n.deg === 0);
+    // The most-connected node of each cluster is its hub, drawn larger.
+    folders.forEach(f => {
+      const inF = this.nodes.filter(n => n.folder === f);
+      if(inF.length < 3) return;
+      const hub = inF.reduce((a, b) => (b.deg > a.deg ? b : a), inF[0]);
+      hub.isHub = true;
+      inF.forEach(n => { if(n !== hub && !n.parentId) n.hubId = hub.id; });
+    });
     this.ready = true;
     this.layout();
     this.updateHud();
@@ -3516,8 +3784,8 @@ const Galaxy = {
       const lit = A.used && B.used;
       ctx.strokeStyle = lit ? amber + 'aa' : line;
       const depth = Math.max(0.12, Math.min(1, (pa.s + pb.s) / 2 - 0.15));
-      ctx.globalAlpha = (lit ? 0.95 : (kind === 'link' ? 0.5 : 0.16)) * depth;
-      ctx.lineWidth = Math.min(3, (kind === 'link' ? 1.1 : 0.5) + (wt - 1) * 0.35);
+      ctx.globalAlpha = (lit ? 0.95 : kind === 'parent' ? 0.7 : kind === 'link' ? 0.5 : 0.16) * depth;
+      ctx.lineWidth = Math.min(3.4, (kind === 'parent' ? 1.8 : kind === 'link' ? 1.1 : 0.5) + (wt - 1) * 0.3);
       const mx = (pa.sx + pb.sx) / 2, my = (pa.sy + pb.sy) / 2;
       const dx = pb.sx - pa.sx, dy = pb.sy - pa.sy;
       ctx.beginPath(); ctx.moveTo(pa.sx, pa.sy);
@@ -3534,7 +3802,7 @@ const Galaxy = {
       if(this.focus && !foc) return;
       const isMatch = this.matches && this.matches.has(n.id);
       const orphan = n.deg === 0;
-      const r = (2.0 + Math.min(7, n.deg) * 0.45) * p.s;
+      const r = ((n.isHub ? 4.2 : 2.0) + Math.min(7, n.deg) * 0.45) * p.s;
       const col = isMatch ? amber : n.used ? amber : orphan ? urg : pal[n.hue % pal.length];
       // depth fade doubles as the fog cue
       ctx.globalAlpha = Math.max(0.18, Math.min(1, (p.s - 0.35) * 1.25));
@@ -3548,7 +3816,7 @@ const Galaxy = {
         ctx.strokeStyle = urg; ctx.lineWidth = 1; ctx.globalAlpha *= 0.8;
         ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 1.9, 0, Math.PI * 2); ctx.stroke();
       }
-      if(p.s > 0.75 && (this.zoom > 1.4 || isMatch || n.used || n === this.hover || n === this.focus))
+      if(p.s > 0.75 && (n.isHub || this.zoom > 1.4 || isMatch || n.used || n === this.hover || n === this.focus))
         labels.push({ n, p, r, col });
       n._p = p;
     });
@@ -3644,15 +3912,54 @@ const Galaxy = {
   document.getElementById('galaxy-clear')?.addEventListener('click', () => { Galaxy.clearSearch(); });
 })();
 
-function openGalaxyNode(n){
-  if(n.source === 'tpl' && n.tpl){ openCompose(n.tpl, {}); return; }
-  if(n.source === 'case' && n.caseId){ openModal(n.caseId); return; }
+// A themed viewer rather than a browser dialog: this is part of the app, and
+// a native alert cannot show links, tags or connections.
+let starNode = null;
+function showStar(n){
+  starNode = n;
+  const kindLabel = { kb:'KNOWLEDGE', mem:'MEMORY', tpl:'TEMPLATE', case:'CASE', app:'NOTE', folder:'FILE', drive:'DRIVE' };
+  document.getElementById('star-kind').textContent = kindLabel[n.source] || 'NODE';
+  document.getElementById('star-title').textContent = n.title || 'Untitled';
+  document.getElementById('star-meta').innerHTML =
+    `<span>${escapeHtml(n.folder || '')}</span><span>${n.words || 0} words</span>`
+    + `<span>${n.deg ? n.deg + ' connections' : 'unlinked'}</span>`
+    + (n.tags || []).slice(0, 6).map(t => `<span class="star-tag">#${escapeHtml(t)}</span>`).join('');
+  document.getElementById('star-body').textContent = n.excerpt || '(no preview available)';
+
+  // Its neighbours, so the connections are explorable from here.
+  const near = [...(Galaxy.adj[n.id] || [])].map(id => Galaxy.byId[id]).filter(Boolean).slice(0, 8);
+  document.getElementById('star-links').innerHTML = near.length
+    ? '<div class="star-links-head">Connected to</div>' + near.map(x =>
+        `<button class="star-link" data-id="${x.id}">${escapeHtml(x.title.slice(0, 42))}</button>`).join('')
+    : '<div class="star-links-head">Nothing links to this yet</div>';
+  document.getElementById('star-links').querySelectorAll('.star-link').forEach(b =>
+    b.addEventListener('click', () => { const t = Galaxy.byId[b.dataset.id]; if(t) showStar(t); }));
+
+  document.getElementById('star-open').style.display =
+    (n.source === 'app' || n.source === 'case' || n.source === 'tpl') ? 'inline-block' : 'none';
+  document.getElementById('star-backdrop').classList.add('open');
+  SFX.open();
+}
+function hideStar(){ document.getElementById('star-backdrop')?.classList.remove('open'); starNode = null; }
+document.getElementById('star-close')?.addEventListener('click', hideStar);
+document.getElementById('star-backdrop')?.addEventListener('click', e => {
+  if(e.target.id === 'star-backdrop') hideStar();
+});
+document.getElementById('star-focus')?.addEventListener('click', () => {
+  if(starNode) Galaxy.setFocus(starNode);
+  hideStar();
+});
+document.getElementById('star-open')?.addEventListener('click', () => {
+  const n = starNode; hideStar();
+  if(!n) return;
+  if(n.source === 'tpl' && n.tpl) return openCompose(n.tpl, {});
+  if(n.source === 'case' && n.caseId) return openModal(n.caseId);
   if(n.source === 'app' && n.noteId){
     const note = notes.find(x => x.id === n.noteId);
-    if(note){ switchView('notebooks'); activeFolderId = note.notebook_id; renderNotebooksGrid(); openNote(note.id); return; }
+    if(note){ switchView('notebooks'); activeFolderId = note.notebook_id; renderNotebooksGrid(); openNote(note.id); }
   }
-  alert(`${n.title}\n${n.folder} · ${n.words} words\n\n${n.excerpt || '(no preview)'}`);
-}
+});
+function openGalaxyNode(n){ showStar(n); }
 
 document.getElementById('galaxy-scan')?.addEventListener('click', async () => {
   if(!mediaDir) await pickMediaDir();
@@ -3709,11 +4016,10 @@ const Memory = {
       method:'POST', headers: authHeaders(),
       body: JSON.stringify({ content: await encStr(content), keywords }),
     });
-    if(!r.ok){
-      const d = await r.json().catch(() => ({}));
-      return { ok:false, reason: d.code === 'secret_refused' ? 'secret' : (d.code || 'error') };
-    }
-    const d = await r.json();
+    const out = await readJson(r);
+    if(!out.ok)
+      return { ok:false, reason: out.json.code === 'secret_refused' ? 'secret' : (out.json.code || 'error') };
+    const d = out.json;
     this.cache = [{ ...d.memory, content }, ...(this.cache || [])];
     return { ok:true, memory: { ...d.memory, content } };
   },
@@ -3937,7 +4243,7 @@ function toSpoken(text){
 
 // The assistant sees a factual snapshot of the real data; without it, it
 // answered schedule questions from imagination.
-function buildAiSystemPrompt(spoken){
+function buildAiSystemPrompt(spoken, R){
   const today = todaysCases();
   const pending = today.filter(c => statusRank(c.status) === 0);
   const done = today.filter(c => statusRank(c.status) === 1);
@@ -3956,14 +4262,17 @@ function buildAiSystemPrompt(spoken){
       + (w.wettest ? ` Heaviest rain in Brazil: ${w.wettest.n} (${w.wettest.v.toFixed(0)} mm). Strongest wind: ${w.windiest.n} (${Math.round(w.windiest.v)} km/h).` : '')
     : 'Weather: not loaded yet.';
 
-  const memBlock = lastMemHits.length
-    ? 'Things you were asked to remember (relevant ones only):\n' + lastMemHits.map(m => '- ' + m.content).join('\n')
+  const memBlock = R.mem.length
+    ? 'Things you were asked to remember (relevant ones only):\n' + R.mem.map(m => '- ' + m.content).join('\n')
     : 'No stored memories match this request.';
 
   // Only the matching entries are sent, never the whole knowledge base.
-  lastKbHits = kbSearch(lastUserQuestion || '');
-  const kbBlock = lastKbHits.length
-    ? 'Knowledge base matches:\n' + lastKbHits.map((e, i) =>
+  // Retrieval belongs to the turn, not to the module. These used to be shared
+  // globals, so a fast follow-up could overwrite the previous turn's hits and
+  // an answer would be cited against a different question's sources.
+  R = R || { kb: [], mem: [], rules: [], learnBrief: '', assessment: '' };
+  const kbBlock = R.kb.length
+    ? 'Knowledge base matches:\n' + R.kb.map((e, i) =>
         `- [KB${i + 1} | ${e.title}${e.source ? ' — ' + e.source : ''}] ${String(e.content).slice(0, 420)}`).join('\n')
     : 'Knowledge base: nothing relevant to this question.';
 
@@ -3976,11 +4285,11 @@ function buildAiSystemPrompt(spoken){
     "FOLLOW-UPS: resolve pronouns and elisions from the conversation above. 'and the one before that' refers to whatever was just discussed. Ask for clarification only when genuinely ambiguous.",
     "",
     "=== YOUR OWN GROUNDING ===",
-    lastAssessment || 'Not assessed.',
+    R.assessment || 'Not assessed.',
     "Never exceed the stated confidence ceiling. If the grounding is 'none', say you have nothing stored on it and label any answer as general reasoning rather than knowledge. Distinguish what you know from what you are inferring.",
     "",
     "=== LEARNED FROM EXPERIENCE ===",
-    lastLearnBrief,
+    R.learnBrief || 'No learned rules yet.',
     "Treat a learned rule as stronger than your own assumption but weaker than the knowledge base. State the confidence when it is below 70. If two rules conflict, say so and ask which holds — never pick silently.",
     "",
     "=== CURRENT WORK ===",
@@ -4077,15 +4386,22 @@ async function runAssistantTurn(text, spoken){
   }
 
   lastUserQuestion = text;
-  lastMemHits = await Memory.search(text);   // relevant only, never the whole store
+  // One retrieval bundle, owned by this turn. Nothing here is read from a
+  // module global, so concurrent or rapid turns cannot cross-contaminate.
+  const R = { kb: [], mem: [], rules: [], learnBrief: '', assessment: '' };
+  R.mem = await Memory.search(text);          // relevant only, never the whole store
   await Learn.load();
-  lastRuleHits = Learn.search(text);
-  lastLearnBrief = Learn.brief(text);
-  lastAssessment = SelfModel.brief(text);
+  R.kb = kbSearch(text, 4);
+  R.rules = Learn.search(text);
+  R.learnBrief = Learn.brief(text);
+  R.assessment = SelfModel.brief(text);
+  // The galaxy highlight is a display concern and may lag a turn; the sources
+  // shown beside the answer never do.
+  lastKbHits = R.kb; lastMemHits = R.mem; lastRuleHits = R.rules;
   aiHistory.push({ role: 'user', content: text });
 
   // Only a bounded slice of history goes over the wire.
-  let convo = [{ role: 'system', content: buildAiSystemPrompt(spoken) }, ...trimHistory(aiHistory)];
+  let convo = [{ role: 'system', content: buildAiSystemPrompt(spoken, R) }, ...trimHistory(aiHistory)];
   let turnTools = toolsFor(text);
 
   // If the turn is still oversized, drop history first, then tools — a reply
@@ -4155,7 +4471,11 @@ async function runAssistantTurn(text, spoken){
   display = display.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i,
     (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();
   // A stated ceiling is enforced here, not merely requested in the prompt.
-  const ceiling = SelfModel.assess(text).ceiling;
+  // Grounded in what this turn actually retrieved. With nothing retrieved the
+  // ceiling is low, so a confident-sounding answer cannot show a high figure.
+  const ceiling = R.kb.length ? 92
+    : R.rules.length ? Math.min(85, Math.max(...R.rules.map(r => r.confidence)))
+    : 45;
   if(conf !== null && conf > ceiling) conf = ceiling;
   if(!display) display = 'Done.';
 
@@ -4164,7 +4484,7 @@ async function runAssistantTurn(text, spoken){
   // its distinctive words appear in the reply.
   const lower = display.toLowerCase();
   markKbMapUsed();
-  (lastRuleHits || []).forEach(r => {
+  (R.rules || []).forEach(r => {
     const key = relevantWords(r.statement).filter(w => w.length > 4).slice(0, 6);
     if(key.length && key.filter(w => lower.includes(w)).length / key.length >= 0.4)
       sources.push({ type:'rule', label: `${r.statement.slice(0, 60)} · ${r.confidence}%`, id:'RULE' });
@@ -4174,10 +4494,10 @@ async function runAssistantTurn(text, spoken){
     const key = relevantWords(e.title).filter(w => w.length > 4);
     return key.length ? key.filter(w => lower.includes(w)).length / key.length >= 0.5 : false;
   };
-  (lastKbHits || []).forEach((e, i) => {
+  (R.kb || []).forEach((e, i) => {
     if(drewOn(e, i)) sources.push({ type:'kb', label: e.title + (e.source ? ' · ' + e.source : ''), id: 'KB' + (i + 1), url: e.url });
   });
-  (lastMemHits || []).forEach(m => {
+  (R.mem || []).forEach(m => {
     const key = relevantWords(String(m.content)).filter(w => w.length > 4).slice(0, 5);
     if(key.length && key.filter(w => lower.includes(w)).length / key.length >= 0.5)
       sources.push({ type:'mem', label: String(m.content).slice(0, 60), id: 'MEM' });
@@ -4295,8 +4615,9 @@ async function loadNotebooks(){
 }
 async function createNotebookApi(payload){
   const resp = await fetch(FN_URL + "/agenda-notebooks", { method: "POST", headers: authHeaders(), body: JSON.stringify(payload) });
-  if(!resp.ok) throw new Error((await resp.json()).error || 'Error creating notebook.');
-  return resp.json();
+  const out = await readJson(resp);
+  if(!out.ok) throw new Error(out.json.error || 'Error creating notebook.');
+  return out.json;
 }
 async function deleteNotebookApi(id){
   const resp = await fetch(FN_URL + "/agenda-notebooks", { method: "DELETE", headers: authHeaders(), body: JSON.stringify({ id }) });
@@ -4313,13 +4634,15 @@ async function loadNotes(){
 }
 async function createNoteApi(payload){
   const resp = await fetch(FN_URL + "/agenda-notes", { method: "POST", headers: authHeaders(), body: JSON.stringify(await sealNote(payload)) });
-  if(!resp.ok) throw new Error((await resp.json()).error || 'Error creating note.');
-  return openNoteRec(await resp.json());
+  const out = await readJson(resp);
+  if(!out.ok) throw new Error(out.json.error || 'Error creating note.');
+  return openNoteRec(out.json);
 }
 async function updateNoteApi(id, payload){
   const resp = await fetch(FN_URL + "/agenda-notes", { method: "PUT", headers: authHeaders(), body: JSON.stringify({ id, ...(await sealNote(payload)) }) });
-  if(!resp.ok) throw new Error((await resp.json()).error || 'Error saving note.');
-  return openNoteRec(await resp.json());
+  const out = await readJson(resp);
+  if(!out.ok) throw new Error(out.json.error || 'Error saving note.');
+  return openNoteRec(out.json);
 }
 async function deleteNoteApi(id){
   const resp = await fetch(FN_URL + "/agenda-notes", { method: "DELETE", headers: authHeaders(), body: JSON.stringify({ id }) });
@@ -4417,8 +4740,9 @@ function openColorPicker(kind, id, anchor){
 
 async function updateNotebookApi(id, payload){
   const r = await fetch(FN_URL + "/agenda-notebooks", { method:"PUT", headers: authHeaders(), body: JSON.stringify({ id, ...payload }) });
-  if(!r.ok) throw new Error((await r.json()).error || 'Error saving notebook.');
-  return r.json();
+  const out = await readJson(r);
+  if(!out.ok) throw new Error(out.json.error || 'Error saving notebook.');
+  return out.json;
 }
 
 // Press and hold to pick a card up, then drag it over its neighbours.
@@ -5274,8 +5598,8 @@ document.getElementById('prov-select')?.addEventListener('change', async (e) => 
   const r = await fetch(FN_URL + "/agenda-ai", {
     method:'POST', headers: authHeaders(), body: JSON.stringify({ setProvider: e.target.value }),
   });
-  const d = await r.json().catch(() => ({}));
-  if(!r.ok){ alert(d.error || 'Could not switch provider.'); }
+  const out = await readJson(r);
+  if(!out.ok){ alert(out.json.error || 'Could not switch provider.'); }
   providerCache = null;
   renderProviderStatus();
   SFX.open();
@@ -5551,8 +5875,9 @@ document.getElementById('diag-run')?.addEventListener('click', async () => {
   const ping = async (name, path, body) => {
     try{
       const r = await fetch(FN_URL + path, { method:'POST', headers: authHeaders(), body: JSON.stringify(body) });
-      const d = await r.json().catch(() => ({}));
-      if(!r.ok) return lines.push(`${name}: HTTP ${r.status}${d.code ? ' ' + d.code : ''}`);
+      const out = await readJson(r);
+      const d = out.json;
+      if(!out.ok) return lines.push(`${name}: HTTP ${out.status}${d.code ? ' ' + d.code : ''}`);
       if(name === 'assistant') return lines.push(`assistant: ok — ${d.label || d.provider} / ${d.model || '?'} (${d.available || 0} models)`);
       if(name === 'search') return lines.push(`search: ok — ${d.keyed_provider ? 'key set (' + d.keyed_provider + ')' : 'no key, using ' + (d.fallbacks || []).join('/')}`);
       if(name === 'speech') return lines.push(`speech: ${d.configured ? 'ElevenLabs configured' : 'no key, browser voice'}`);
@@ -6287,6 +6612,8 @@ async function bootApp(){
   detectHud();
   Learn.load();
   Proactive.start();
+  // Anything the scheduled scan found while the app was shut.
+  Background.load().then(() => setTimeout(() => Background.feed(), 2500));
   Focus.load().then(() => {
     const pend = Focus.pending();
     if(pend.length){

@@ -771,6 +771,27 @@
   .fb-end:hover{ color:var(--urgente); border-color:var(--urgente); }
   @media (max-width:860px){ .fb-prog{ display:none; } .fb-label{ max-width:44vw; } }
 
+
+  .star-modal{ max-width:520px; }
+  .star-head{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .star-head h2{ flex:1; margin:0; font-size:1.02rem; }
+  .star-kind{ font-family:"JetBrains Mono",monospace; font-size:.55rem; letter-spacing:.14em;
+    color:var(--amber); border:1px solid var(--amber); border-radius:5px; padding:3px 7px; }
+  .star-close{ background:none; border:none; color:var(--muted); font-size:1.3rem; line-height:1; }
+  .star-close:hover{ color:var(--urgente); }
+  .star-meta{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+  .star-meta span{ font-size:.62rem; color:var(--muted); background:var(--bg);
+    border:1px solid var(--line); border-radius:999px; padding:2px 8px; }
+  .star-meta .star-tag{ color:var(--accent3); }
+  .star-body{ font-size:.84rem; line-height:1.6; color:var(--text); max-height:34vh; overflow:auto;
+    padding:12px; border-radius:10px; background:var(--bg); border:1px solid var(--line); white-space:pre-wrap; }
+  .star-links{ margin-top:12px; }
+  .star-links-head{ font-size:.58rem; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--muted); margin-bottom:6px; }
+  .star-link{ display:inline-block; margin:0 5px 5px 0; padding:4px 9px; border-radius:7px;
+    border:1px solid var(--line); background:var(--panel-2); color:var(--text); font-size:.7rem; }
+  .star-link:hover{ border-color:var(--amber); color:var(--amber); }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

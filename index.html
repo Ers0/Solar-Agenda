@@ -264,6 +264,7 @@
         <div class="field"><label>What to remember</label><textarea id="kb-new-body" style="min-height:80px" placeholder="Write it as you would explain it to a colleague."></textarea></div>
         <button class="btn-primary" id="kb-add-btn" style="width:100%">Add to knowledge base</button>
         <button class="btn-ghost" id="kb-sync" style="width:100%; margin-top:8px">File knowledge into notebooks</button>
+        <button class="btn-ghost" id="kb-purge" style="width:100%; margin-top:6px">Remove entries by source…</button>
       </div>
 
       <div class="tpl-list-wrap">
@@ -569,6 +570,23 @@
       <button class="btn-danger" id="sticky-del">Delete</button>
       <button class="btn-ghost" id="sticky-close">Close</button>
       <button class="btn-primary" id="sticky-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="star-backdrop" style="z-index:160">
+  <div class="modal star-modal">
+    <div class="star-head">
+      <span class="star-kind" id="star-kind">NODE</span>
+      <h2 id="star-title">—</h2>
+      <button class="star-close" id="star-close" aria-label="Close">×</button>
+    </div>
+    <div class="star-meta" id="star-meta"></div>
+    <div class="star-body" id="star-body"></div>
+    <div class="star-links" id="star-links"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="star-focus">Focus in galaxy</button>
+      <button class="btn-primary" id="star-open">Open</button>
     </div>
   </div>
 </div>
