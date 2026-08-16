@@ -792,6 +792,15 @@
     border:1px solid var(--line); background:var(--panel-2); color:var(--text); font-size:.7rem; }
   .star-link:hover{ border-color:var(--amber); color:var(--amber); }
 
+
+  /* The dock shows an unmissable ring whenever a window is being shared. */
+  .tars-dock.watching{ border-color: var(--urgente) !important;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--urgente) 45%, transparent), 0 0 24px -6px var(--urgente) !important; }
+  .tars-dock.watching::after{
+    content:''; position:absolute; inset:-5px; border-radius:50%;
+    border:1px solid var(--urgente); opacity:.6; animation: dockPulse 1.8s ease-out infinite;
+  }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

@@ -2287,6 +2287,61 @@ WakeWord.onWake((remainder) => {
   else { setVoiceState(VSTATE.LISTENING); armFollowUp(); }
 });
 
+
+// A clip that ends mid-thought is almost always a pause, not a finished
+// sentence. Rather than guess from the audio, judge the transcript: hold an
+// incomplete utterance briefly and stitch the next one onto it.
+const TRAILING = new RegExp(
+  '^(' +
+  // English conjunctions, prepositions, articles
+  'and|or|but|so|because|that|which|who|if|when|while|with|without|for|to|of|in|on|at|by|from|' +
+  'the|a|an|my|your|our|is|are|was|were|do|does|did|can|could|would|should|about|into|over|' +
+  // Portuguese equivalents
+  'e|ou|mas|porque|que|qual|quando|enquanto|com|sem|para|pra|de|do|da|dos|das|em|no|na|por|' +
+  'o|os|as|um|uma|meu|minha|seu|sua|é|são|foi|era|pode|deve|sobre'
+  + ')$', 'i');
+
+function looksIncomplete(text){
+  const t = String(text || '').trim();
+  if(!t) return false;
+  if(/[.!?…]$/.test(t)) return false;          // clearly terminated
+  if(/[,;:]$/.test(t)) return true;            // clearly mid-clause
+  const words = t.split(/\s+/);
+  const last = words[words.length - 1].replace(/[^\p{L}\p{N}]/gu, '');
+  if(TRAILING.test(last)) return true;
+  // A lone fragment with no punctuation is usually the start of something.
+  if(words.length <= 2 && !/^(yes|no|sim|não|nao|ok|okay|stop|cancel|para)$/i.test(t)) return true;
+  return false;
+}
+
+let pendingSpeech = '', pendingTimer = null;
+const CONTINUE_MS = 3500;      // how long to wait for the rest of a sentence
+
+function flushPending(){
+  clearTimeout(pendingTimer); pendingTimer = null;
+  const t = pendingSpeech.trim();
+  pendingSpeech = '';
+  if(t) handleVoiceInput(t);
+  else if(VOICE.active) setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+}
+
+// Returns true when the text was held back rather than acted on.
+function holdIfIncomplete(said){
+  const joined = (pendingSpeech ? pendingSpeech + ' ' : '') + said;
+  if(looksIncomplete(joined)){
+    pendingSpeech = joined;
+    showHeard(joined + ' …');
+    clearTimeout(pendingTimer);
+    // If nothing more arrives, send what there is rather than losing it.
+    pendingTimer = setTimeout(flushPending, CONTINUE_MS);
+    if(VOICE.active) setVoiceState(VSTATE.LISTENING);
+    return true;
+  }
+  clearTimeout(pendingTimer); pendingTimer = null;
+  pendingSpeech = '';
+  return false;
+}
+
 // --- capture: rolling MediaRecorder segments + Groq Whisper -----------
 // ScriptProcessorNode proved unreliable in current Chrome, so capture is back
 // on MediaRecorder. Pre-roll is achieved by restarting the recorder on a cycle:
@@ -2295,7 +2350,10 @@ WakeWord.onWake((remainder) => {
 // blob keeps a valid header.
 const VAD = {
   speakThresh: 0.055, silenceThresh: 0.032,
-  minSpeechMs: 240, silenceMs: 800, maxClipMs: 12000,
+  minSpeechMs: 240, silenceMs: 1300, maxClipMs: 20000,
+  // A pause early in a sentence is usually thinking, not finishing, so the
+  // window starts generous and tightens once enough has been said.
+  silenceEarlyMs: 2000, earlyUntilMs: 2500,
   cycleMs: 5000,
   floor: 0, calibrated: false,
   // A single calibration at startup cannot cope with a room that gets louder.
@@ -2491,7 +2549,9 @@ async function onClipReady(blob){
     if(!WakeWord.consider(said)) setVoiceState(VSTATE.IDLE);
     return;
   }
-  handleVoiceInput(said);
+  // Stitch a paused sentence back together before acting on it.
+  if(holdIfIncomplete(said)) return;
+  handleVoiceInput(pendingSpeech ? pendingSpeech + ' ' + said : said);
 }
 
 function vadTick(){
@@ -2521,7 +2581,11 @@ function vadTick(){
     if(!speaking && now - VAD.loudSince >= VAD.sustainMs) beginClip();
   } else {
     if(now - lastLoud > 250) VAD.loudSince = 0;
-    if(speaking && lvl < VAD.silenceThresh && now - lastLoud > VAD.silenceMs) endClip();
+    // Short utterances get the longer window; by the time someone has spoken
+    // for a couple of seconds, a pause more often means they are done.
+    const spokenFor = now - speechStart;
+    const window = spokenFor < VAD.earlyUntilMs ? VAD.silenceEarlyMs : VAD.silenceMs;
+    if(speaking && lvl < VAD.silenceThresh && now - lastLoud > window) endClip();
   }
 }
 
@@ -2603,6 +2667,7 @@ function stopVoice(){
   // Timers and the keep-alive tone must be released, or a stopped voice mode
   // keeps sampling the microphone and holding the tab audible.
   stopKeepAlive();
+  clearTimeout(pendingTimer); pendingTimer = null; pendingSpeech = '';
   clearInterval(VOICE.vadTimer); VOICE.vadTimer = null;
   clearInterval(VOICE.sampleTimer); VOICE.sampleTimer = null;
   try{ speechSynthesis?.cancel(); }catch(e){}
@@ -2694,6 +2759,7 @@ const TOOL_HINTS = {
   find_in_galaxy:  /\b(find|locate|where is|which note|show me the note|encontr|localiz|ach[ae])\b/i,
   remember:        /\b(remember|note that|keep in mind|don'?t forget|lembr|anota que|guarda)\b/i,
   forget:          /\b(forget|delete the memory|esquec|apaga)\b/i,
+  look_at_screen:  /\b(screen|look at|see this|what does .* say|read (this|the)|tela|olha|vê isso|ler)\b/i,
   search_email:    /\b(email|mail|reply|replied|inbox|said|wrote|responded|respondeu|e-?mail|caixa)\b/i,
   analyse_email:   /\b(what did .* say|analyse|analyze|response|reply|resposta|o que .* disse)\b/i,
   create_reminder: /\b(remind|reminder|follow.?up|chase|lembr|cobrar|acompanhar)\b/i,
@@ -3209,6 +3275,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'look_at_screen',
+    permission: PERM.READ,
+    description: "Read what is on a window the user shares — a manufacturer portal, an inverter dashboard, an error dialog. Use for 'look at my screen', 'what does this say', 'read the fault code'. The user picks the window; a single frame is read and discarded.",
+    schema: { type:'object', properties:{
+      question:{ type:'string', description:'What to look for, e.g. "what fault code is shown" or "read the serial numbers".' } } },
+    async execute(args){
+      const q = args.question || 'What is shown here? Report any fault codes, serial numbers or error text exactly.';
+      const res = await Screen_.ask(q);
+      if(!res.ok){
+        if(res.error === 'no screen shared')
+          return 'The user did not share a window, so nothing was read. Ask them to press Share screen and pick the window — do not guess what was on it.';
+        if(res.error === 'rate_limit') return 'The vision service is rate limited right now. Say so and suggest trying again shortly.';
+        return `Could not read the screen (${res.error}). Say so plainly — never invent what was on it.`;
+      }
+      return `Read from the shared window:\n${res.reply}\n\n`
+        + 'Answer the user from this. If a value looks cut off or unreadable, say so rather than filling it in.';
+    },
+  },
+  {
     name: 'search_email',
     permission: PERM.READ,
     description: "Search the local Thunderbird mailbox, e.g. 'what did Deye say', 'any reply from the manufacturer'. Reads mail already on this machine — it does not connect to any mail server.",
@@ -3479,17 +3564,23 @@ const TOOLS = [
     schema: { type:'object', properties:{
       titulo:{ type:'string', description:'Client name and/or short subject.' },
       case_date:{ type:'string', description:'YYYY-MM-DD. Defaults to today.' },
-      horario:{ type:'string', description:'Start time HH:MM, 24h.' },
+      horario:{ type:'string', description:'Start time as HH:MM (24h). Relative phrasing like "in 30 minutes" is also accepted.' },
+      minutes_from_now:{ type:'number', description:'Use for "in N minutes" when you would rather not compute the clock time.' },
       horario_fim:{ type:'string', description:'End time HH:MM, 24h.' },
       prioridade:{ type:'string', enum:['urgente','alta','media','baixa'] },
       bloco:{ type:'string', enum:['primeira-hora','manha','tarde','fim-do-dia'] },
       ticket:{ type:'string' }, tags:{ type:'array', items:{ type:'string' } },
-      note:{ type:'string', description:'An initial note.' } }, required:['titulo'] },
+      note:{ type:'string', description:'An initial note.' },
+      remind_minutes_before:{ type:'number', description:'Also set a reminder this many minutes before the case starts.' } },
+      required:['titulo'] },
     async execute(args){
     const payload = {
       titulo: args.titulo,
       ticket: args.ticket || '',
-      horario: resolveHour(args.horario) || '',
+      horario: (typeof args.minutes_from_now === 'number' && args.minutes_from_now > 0
+        ? (() => { const t = new Date(Date.now() + args.minutes_from_now * 60000);
+                   return `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`; })()
+        : resolveHour(args.horario)) || '',
       horario_fim: resolveHour(args.horario_fim) || '',
       case_date: args.case_date || todayStr(),
       prioridade: args.prioridade || 'media',
@@ -3500,7 +3591,30 @@ const TOOLS = [
     const created = await createCase(payload);
     cases.push(created);
     render(); renderCalendar(); renderHistory();
-    return `Case created: "${created.titulo}" on ${created.case_date}.`;
+
+    // One request often means both a case and its reminder; chaining them here
+    // saves a second round trip and keeps the two consistent.
+    let extra = '';
+    if(typeof args.remind_minutes_before === 'number' && args.remind_minutes_before > 0 && created.horario){
+      const [hh, mm] = created.horario.split(':').map(Number);
+      const total = hh * 60 + (mm || 0) - args.remind_minutes_before;
+      if(total >= 0){
+        const rt = `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`;
+        try{
+          const rem = await createCase({
+            titulo: 'Reminder: ' + created.titulo,
+            case_date: created.case_date, horario: rt,
+            prioridade: 'media', bloco: blocoForTime(rt), tags: ['follow-up'],
+            notes_log: [{ text: 'Set by TARS.', at: new Date().toISOString() }],
+          });
+          cases.push(rem); render();
+          DueWatch.check();
+          extra = ` Reminder set for ${rt}.`;
+        }catch(e){ extra = ' The reminder could NOT be set — say so.'; }
+      } else extra = ' The reminder would fall before midnight, so it was not set.';
+    }
+    return `Case created: "${created.titulo}" on ${created.case_date}`
+      + (created.horario ? ` at ${created.horario}.` : '.') + extra;
     },
   },
   {
@@ -3628,6 +3742,23 @@ function kbSearch(q, limit = 4){
 
 
 // --- manual knowledge entry -------------------------------------------
+document.getElementById('screen-share')?.addEventListener('click', async () => {
+  if(Screen_.stream && Screen_.stream.active){ Screen_.close(); return; }
+  const ok = await Screen_.open();
+  if(!ok) alert('Screen sharing was refused or is unsupported. Chrome or Edge on desktop is required.');
+});
+document.getElementById('screen-keep')?.addEventListener('click', () => {
+  Screen_.keepOpen = !Screen_.keepOpen;
+  settings.screenKeep = Screen_.keepOpen; saveSettings();
+  renderScreenKeep(); renderScreenStatus();
+});
+function renderScreenKeep(){
+  Screen_.keepOpen = !!settings.screenKeep;
+  const el = document.getElementById('screen-keep-status');
+  if(el) el.textContent = Screen_.keepOpen
+    ? 'On — stays shared until you stop it'
+    : 'Off — asks each time';
+}
 document.getElementById('mail-pick')?.addEventListener('click', async () => {
   if(await Mail.pickFolder()){ renderMailStatus(); Mail.scan().then(renderMailStatus); }
 });
@@ -3744,6 +3875,94 @@ const Outcomes = {
     return candidate;
   },
 };
+
+
+// ===== Screen reading ================================================
+// Captures a single frame from a window you choose and sends it for reading.
+// Deliberate constraints:
+//   - nothing is ever written to disk or to localStorage
+//   - the frame exists only as a variable and is released immediately after
+//   - the stream is opened on request and stopped the moment it is done,
+//     except when you explicitly keep it open for repeat questions
+//   - the browser's own sharing indicator is always visible while it is live
+const Screen_ = {
+  stream: null, video: null, keepOpen: false,
+
+  async open(){
+    if(this.stream && this.stream.active) return true;
+    if(!navigator.mediaDevices?.getDisplayMedia) return false;
+    try{
+      this.stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 1 },        // one frame a second is ample
+        audio: false,
+      });
+      // If the user stops sharing from the browser's own control, forget it.
+      this.stream.getVideoTracks()[0].addEventListener('ended', () => this.close());
+      this.video = document.createElement('video');
+      this.video.srcObject = this.stream;
+      this.video.muted = true;
+      await this.video.play();
+      renderScreenStatus();
+      return true;
+    }catch(e){ this.stream = null; return false; }
+  },
+
+  close(){
+    try{ this.stream && this.stream.getTracks().forEach(t => t.stop()); }catch(e){}
+    if(this.video){ this.video.srcObject = null; this.video = null; }
+    this.stream = null;
+    renderScreenStatus();
+  },
+
+  // Returns a data URL held only in memory. Never stored anywhere.
+  async grab(){
+    if(!this.stream || !this.stream.active){
+      if(!(await this.open())) return null;
+    }
+    // Give the first frame a moment to arrive after the picker closes.
+    if(!this.video.videoWidth) await new Promise(r => setTimeout(r, 350));
+    const vw = this.video.videoWidth, vh = this.video.videoHeight;
+    if(!vw) return null;
+    // Downscale: legible text at a fraction of the upload size.
+    const maxW = 1280;
+    const scale = Math.min(1, maxW / vw);
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(vw * scale);
+    cv.height = Math.round(vh * scale);
+    cv.getContext('2d').drawImage(this.video, 0, 0, cv.width, cv.height);
+    const url = cv.toDataURL('image/jpeg', 0.72);
+    cv.width = cv.height = 0;              // release the backing bitmap
+    return url;
+  },
+
+  async ask(question){
+    const img = await this.grab();
+    if(!img) return { ok:false, error:'no screen shared' };
+    try{
+      const r = await fetch(FN_URL + "/agenda-vision", {
+        method:'POST', headers: authHeaders(),
+        body: JSON.stringify({ image: img, question }),
+      });
+      const out = await readJson(r);
+      if(!out.ok) return { ok:false, error: out.json.code || 'vision failed', detail: out.json.detail };
+      return { ok:true, reply: out.json.reply, model: out.json.model };
+    }catch(e){ return { ok:false, error:'network' }; }
+    finally{
+      // The frame goes out of scope here; if the share was one-shot, the
+      // stream is closed too so the indicator does not linger.
+      if(!this.keepOpen) this.close();
+    }
+  },
+};
+
+function renderScreenStatus(){
+  const el = document.getElementById('screen-status');
+  if(el) el.textContent = Screen_.stream && Screen_.stream.active
+    ? (Screen_.keepOpen ? 'sharing — stays open for follow-ups' : 'sharing')
+    : 'not sharing';
+  const dock = document.getElementById('tars-dock');
+  if(dock) dock.classList.toggle('watching', !!(Screen_.stream && Screen_.stream.active));
+}
 
 // ===== Thunderbird mail ==============================================
 // Thunderbird stores mail locally in mbox files inside its profile, so it can
@@ -5016,7 +5235,8 @@ function buildAiSystemPrompt(spoken, R){
     "When the user says they are working on something, start a focus with sensible steps rather than only replying.",
     "",
     "=== REAL DATA SNAPSHOT (the ONLY source of truth) ===",
-    `Today's date: ${todayStr()}`,
+    `Today's date: ${todayStr()} (${new Date().toLocaleDateString('en-GB', { weekday:'long' })})`,
+    `Current time: ${new Date().toTimeString().slice(0, 5)}. Use this to work out relative times like "in 30 minutes" yourself, and pass a real HH:MM — or pass minutes_from_now and let the app do it.`,
     `Open cases today (${pending.length}):`,
     caseLines,
     `Cases already finished today: ${done.length}`,
@@ -6297,6 +6517,24 @@ document.getElementById('learn-review')?.addEventListener('click', async () => {
     renderLearnStats();
   }
 });
+function renderPauseTol(){
+  const el = document.getElementById('pause-tol'), out = document.getElementById('pause-val');
+  const v = typeof settings.pauseMs === 'number' ? settings.pauseMs : 1300;
+  VAD.silenceMs = v;
+  VAD.silenceEarlyMs = Math.round(v * 1.55);
+  if(el && !el._bound){
+    el._bound = true;
+    el.addEventListener('input', () => {
+      const n = +el.value;
+      settings.pauseMs = n; saveSettings();
+      VAD.silenceMs = n; VAD.silenceEarlyMs = Math.round(n * 1.55);
+      if(out) out.textContent = n < 1000 ? 'short — quick replies'
+        : n > 1800 ? 'long — for slower speech' : 'normal';
+    });
+  }
+  if(el) el.value = v;
+  if(out) out.textContent = v < 1000 ? 'short — quick replies' : v > 1800 ? 'long — for slower speech' : 'normal';
+}
 function renderMicSens(){
   const el = document.getElementById('mic-sens'), out = document.getElementById('mic-sens-val');
   const v = typeof settings.micSensitivity === 'number' ? settings.micSensitivity : 100;
@@ -6642,10 +6880,11 @@ function renderSettings(){
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
   const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
   const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
-  probeTts(); renderTtsStatus(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens(); renderBgListen();
+  probeTts(); renderTtsStatus(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens(); renderBgListen(); renderPauseTol();
   Reflect_.run();
   Learn.load().then(renderLearnStats);
   Mail.restore().then(renderMailStatus);
+  renderScreenKeep(); renderScreenStatus();
   bindPercent('humour-slider', 'humour-val', 'humour', 70);
   bindPercent('honesty-slider', 'honesty-val', 'honesty', 95);
   requestAnimationFrame(startKbMap);

@@ -188,6 +188,11 @@
         <button class="btn-ghost" id="learn-review">Review rules</button>
       </div>
       <div class="set-row" style="display:block">
+        <div class="set-info" style="margin-bottom:8px"><b>Pause tolerance</b><span id="pause-val">normal</span></div>
+        <input type="range" id="pause-tol" class="rain-range" min="700" max="2600" step="100" value="1300">
+        <p class="hint" style="margin:6px 0 0">How long a gap can be before TARS treats your sentence as finished. Raise it if you pause while thinking.</p>
+      </div>
+      <div class="set-row" style="display:block">
         <div class="set-info" style="margin-bottom:8px"><b>Microphone sensitivity</b><span id="mic-sens-val">normal</span></div>
         <input type="range" id="mic-sens" class="rain-range" min="60" max="160" step="10" value="100">
         <p class="hint" style="margin:6px 0 0">Lower it in a noisy room so TARS only reacts to you speaking directly.</p>
@@ -266,6 +271,16 @@
         <button class="btn-ghost" id="galaxy-refresh">Refresh</button>
       </div>
       <p class="hint">Drag to orbit, scroll to zoom. <b>Click</b> a star to focus it and dim everything more than one link away; <b>double-click</b> to open it. Red rings are notes nothing links to. Ask TARS to “find the note about…” to search by voice. Colour is by cluster, size by link count, thickness by how much two notes share.</p>
+      <div class="set-row">
+        <div class="set-info"><b>Screen reading</b><span id="screen-status">not sharing</span></div>
+        <button class="btn-ghost" id="screen-share">Share a window</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>Keep sharing between questions</b><span id="screen-keep-status">Off — asks each time</span></div>
+        <button class="btn-ghost" id="screen-keep">Toggle</button>
+      </div>
+      <p class="hint">Say “TARS, look at my screen”. You choose which window each time, and the browser shows its own sharing indicator throughout. A single frame is read and discarded — nothing is saved to this machine or kept on the server. The frame is sent to the same AI service that already handles your chat.</p>
+
       <div class="set-row">
         <div class="set-info"><b>Thunderbird mail</b><span id="mail-status">no folder selected</span></div>
         <button class="btn-ghost" id="mail-pick">Choose folder</button>
