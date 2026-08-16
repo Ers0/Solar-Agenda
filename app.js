@@ -844,7 +844,7 @@ const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 
 const VOICE = {
   supported: !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
-  state: 'off', lang: 'en-US', active: false, bargeStart: 0, greeted: false,
+  state: 'off', lang: 'en-US', langStreak: 0, active: false, bargeStart: 0, greeted: false,
   srcNode: null, peakSeen: 0,
   conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
 };
@@ -908,6 +908,12 @@ async function startMicMeter(stream){
       for(let i = 0; i < buf.length; i++){ const v = (buf[i] - 128) / 128; sum += v * v; }
       VOICE.level = Math.min(1, Math.sqrt(sum / buf.length) * 4.5);
       if(VOICE.level > VOICE.peakSeen) VOICE.peakSeen = VOICE.level;
+      // Only quiet frames describe the room; speech would drag the floor up.
+      if(!speaking && VOICE.state !== VSTATE.SPEAKING && VOICE.level < VAD.speakThresh){
+        VAD.hist.push(VOICE.level);
+        if(VAD.hist.length > 240) VAD.hist.shift();
+        if(VAD.hist.length % 60 === 0) VAD.recalc();
+      }
       drawOrb();
       requestAnimationFrame(tick);
     };
@@ -2052,8 +2058,22 @@ WakeWord.onWake((remainder) => {
 const VAD = {
   speakThresh: 0.055, silenceThresh: 0.032,
   minSpeechMs: 240, silenceMs: 800, maxClipMs: 12000,
-  cycleMs: 5000,               // recorder restart interval while idle
+  cycleMs: 5000,
   floor: 0, calibrated: false,
+  // A single calibration at startup cannot cope with a room that gets louder.
+  // The floor is re-estimated continuously from quiet moments only, and the
+  // trigger sits a configurable multiple above it.
+  hist: [], sustainMs: 180, loudSince: 0,
+  sensitivity: 1,              // 0.6 = forgiving, 1.6 = very sensitive
+  recalc(){
+    if(this.hist.length < 40) return;
+    const q = this.hist.slice().sort((a, b) => a - b);
+    const floor = q[Math.floor(q.length * 0.5)] || 0.01;
+    this.floor = floor;
+    const mult = 4.2 / Math.max(0.5, this.sensitivity);
+    this.speakThresh   = Math.max(0.045, floor * mult);
+    this.silenceThresh = Math.max(0.024, floor * mult * 0.62);
+  },
 };
 let recorder = null, chunks = [], speaking = false, speechStart = 0, lastLoud = 0;
 let clipTimer = null, cycleTimer = null, micStream = null, lastClipInfo = null;
@@ -2127,8 +2147,8 @@ function calibrateVAD(){
     samples.sort((a, b) => a - b);
     const floor = samples[Math.floor(samples.length * 0.6)] || 0.01;
     VAD.floor = floor;
-    VAD.speakThresh   = Math.max(0.035, floor * 2.4);
-    VAD.silenceThresh = Math.max(0.018, floor * 1.5);
+    VAD.hist = samples.slice();
+    VAD.recalc();
     VAD.calibrated = true;
     // If the meter never moved, the microphone is not reaching us at all.
     const peak = Math.max(samples[samples.length - 1] || 0, VOICE.peakSeen || 0);
@@ -2156,7 +2176,11 @@ function calibrateVAD(){
 // written as a natural sentence rather than a labelled list.
 function sttHint(){
   const names = [...new Set(cases.slice(-20).map(x => x.titulo || '').filter(Boolean))].slice(0, 12);
-  const base = 'Hey TARS. Support call about solar inverters. We discuss Deye, Foxess and Growatt inverters, PAC tickets, strings and alarms.';
+  // Whisper leans on the prompt for proper nouns, so it carries the terms in
+  // both languages the user actually mixes.
+  const base = 'Hey TARS. Suporte técnico de energia solar. Falamos de inversores Deye, Foxess, '
+    + 'Growatt, Solis, Hoymiles e Huawei, chamados PAC, garantia, RMA, strings, alarmes, '
+    + 'sobretensão, datalogger e monitoramento. Support call about solar inverters, warranty and tickets.';
   return names.length ? base + ' Clients mentioned include ' + names.join(', ') + '.' : base;
 }
 function isPromptEcho(said){
@@ -2177,7 +2201,11 @@ async function transcribe(blob){
     method: 'POST', headers: authHeaders(),
     body: JSON.stringify({
       audio: btoa(bin), mime: blob.type || 'audio/webm',
-      lang: VOICE.conversing ? VOICE.lang.slice(0, 2) : 'auto',
+      // Forcing the language locked a conversation into whatever the first
+      // utterance detected — so a Portuguese sentence in an English session
+      // came back mangled. Whisper only gets a fixed language once two
+      // consecutive utterances have agreed on it.
+      lang: VOICE.langStreak >= 2 ? VOICE.lang.slice(0, 2) : 'auto',
       prompt: sttHint(),
     }),
   });
@@ -2215,9 +2243,11 @@ async function onClipReady(blob){
     return;
   }
 
-  VOICE.lang = detected && detected.startsWith('pt') ? 'pt-BR'
-             : detected && detected.startsWith('en') ? 'en-US'
-             : detectLang(said);
+  const guess = detected && detected.startsWith('pt') ? 'pt-BR'
+              : detected && detected.startsWith('en') ? 'en-US'
+              : detectLang(said);
+  VOICE.langStreak = (guess === VOICE.lang) ? (VOICE.langStreak || 0) + 1 : 1;
+  VOICE.lang = guess;
 
   if(!VOICE.conversing){
     if(!WakeWord.consider(said)) setVoiceState(VSTATE.IDLE);
@@ -2247,9 +2277,13 @@ function vadTick(){
     // never capture our own turn
   } else if(lvl > VAD.speakThresh){
     lastLoud = now;
-    if(!speaking) beginClip();
-  } else if(speaking && lvl < VAD.silenceThresh && now - lastLoud > VAD.silenceMs){
-    endClip();
+    // A door slam or a cough is a spike; speech stays up. Requiring the level
+    // to hold prevents a noisy room from constantly opening the recorder.
+    if(!VAD.loudSince) VAD.loudSince = now;
+    if(!speaking && now - VAD.loudSince >= VAD.sustainMs) beginClip();
+  } else {
+    if(now - lastLoud > 250) VAD.loudSince = 0;
+    if(speaking && lvl < VAD.silenceThresh && now - lastLoud > VAD.silenceMs) endClip();
   }
   requestAnimationFrame(vadTick);
 }
@@ -3459,7 +3493,7 @@ document.getElementById('kb-purge')?.addEventListener('click', async () => {
 // emerge rather than being decoration on a spiral.
 const Galaxy = {
   nodes: [], edges: [], adj: {}, byId: {},
-  rot: { x: -0.25, y: 0.6 }, zoom: 1, drag: null, raf: null,
+  rot: { x: -0.42, y: 0.6 }, zoom: 1, drag: null, raf: null,
   hover: null, focus: null, ready: false, dirty: true,
   matches: null,            // set by voice search
   timeCut: 1,               // 0..1 position of the timeline scrubber
@@ -3566,44 +3600,74 @@ const Galaxy = {
   layout(iterations){
     const N = this.nodes.length;
     if(!N) return;
-    const SAMPLE = Math.min(28, N - 1);
+    const gold = Math.PI * (3 - Math.sqrt(5));
+
+    // Each cluster gets its own anchor on a sphere. Without this every folder
+    // collapsed into the same blob — measured separation was 0.99, i.e. none.
+    const folders = this.folders || [...new Set(this.nodes.map(n => n.folder))];
+    const anchors = {};
+    folders.forEach((f, i) => {
+      const t = (i + 0.5) / folders.length;
+      const incl = Math.acos(1 - 2 * t), az = gold * i * 2.4;
+      anchors[f] = { x: Math.sin(incl) * Math.cos(az) * 1.25,
+                     y: Math.cos(incl) * 0.95,
+                     z: Math.sin(incl) * Math.sin(az) * 1.25 };
+    });
+
+    // Seed on a Fibonacci sphere around the cluster anchor. The old seed was a
+    // ring in the XZ plane, which is planar and never recovers real depth.
     this.nodes.forEach((n, i) => {
-      const a = (i / N) * Math.PI * 2, r = 0.55 + ((i * 37) % 100) / 250;
-      n.x = Math.cos(a) * r; n.y = (((i * 53) % 100) / 100 - 0.5) * 0.9; n.z = Math.sin(a) * r;
+      const t = (i + 0.5) / N;
+      const incl = Math.acos(1 - 2 * t), az = gold * i;
+      const a = anchors[n.folder] || { x:0, y:0, z:0 };
+      n.x = a.x + Math.sin(incl) * Math.cos(az) * 0.34;
+      n.y = a.y + Math.cos(incl) * 0.34;
+      n.z = a.z + Math.sin(incl) * Math.sin(az) * 0.34;
       n.vx = n.vy = n.vz = 0;
     });
-    const iters = iterations || (N > 300 ? 90 : 160);
+
+    const SAMPLE = Math.min(24, Math.max(1, N - 1));
+    const iters = iterations || (N > 300 ? 90 : 150);
     for(let it = 0; it < iters; it++){
       const cool = 1 - it / iters;
       for(let i = 0; i < N; i++){
         const a = this.nodes[i];
-        for(let s = 0; s < SAMPLE; s++){
+        for(let s2 = 0; s2 < SAMPLE; s2++){
           const b = this.nodes[(i + 1 + Math.floor(Math.random() * (N - 1))) % N];
-          let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-          let d2 = dx*dx + dy*dy + dz*dz + 0.001;
-          const f = 0.0016 / d2;
+          const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+          const d2 = dx*dx + dy*dy + dz*dz + 0.002;
+          // Nodes in different clusters push apart harder.
+          const f = (a.folder === b.folder ? 0.0014 : 0.0038) / d2;
           a.vx += dx * f; a.vy += dy * f; a.vz += dz * f;
         }
       }
-      this.edges.forEach(([ia, ib, , w]) => {
+      this.edges.forEach(([ia, ib, kind, w]) => {
         const a = this.byId[ia], b = this.byId[ib];
         if(!a || !b) return;
         const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-        const k = 0.012 * Math.min(3, w || 1);
+        const k = (kind === 'parent' ? 0.030 : 0.011) * Math.min(3, w || 1);
         a.vx += dx * k; a.vy += dy * k; a.vz += dz * k;
         b.vx -= dx * k; b.vy -= dy * k; b.vz -= dz * k;
       });
       this.nodes.forEach(n => {
-        n.vx -= n.x * 0.004; n.vy -= n.y * 0.004; n.vz -= n.z * 0.004;  // gentle centring
+        const a = anchors[n.folder];
+        if(a){                                   // hold each node near its cluster
+          n.vx += (a.x - n.x) * 0.022;
+          n.vy += (a.y - n.y) * 0.022;
+          n.vz += (a.z - n.z) * 0.022;
+        }
+        n.vx -= n.x * 0.0012; n.vy -= n.y * 0.0012; n.vz -= n.z * 0.0012;
         n.x += n.vx * cool; n.y += n.vy * cool; n.z += n.vz * cool;
-        n.vx *= 0.82; n.vy *= 0.82; n.vz *= 0.82;
+        n.vx *= 0.80; n.vy *= 0.80; n.vz *= 0.80;
       });
     }
-    // normalise into view
+
     let max = 0;
     this.nodes.forEach(n => { max = Math.max(max, Math.hypot(n.x, n.y, n.z)); });
-    const k = max ? 1.15 / max : 1;
-    this.nodes.forEach(n => { n.x *= k; n.y *= k * 0.8; n.z *= k; });
+    const k = max ? 1.25 / max : 1;
+    // Y is only lightly squashed; squashing it hard is what made the whole
+    // thing read as a flat disc.
+    this.nodes.forEach(n => { n.x *= k; n.y *= k * 0.92; n.z *= k; });
     this.dirty = true;
   },
 
@@ -3753,7 +3817,7 @@ const Galaxy = {
       this.rot.x += (this.camTarget.x - this.rot.x) * 0.08;
       if(Math.abs(this.camTarget.y - this.rot.y) < 0.005) this.camTarget = null;
     } else if(!this.drag && !this.focus){
-      this.rot.y += 0.0014;
+      this.rot.y += 0.0022;
     }
 
     ctx.clearRect(0, 0, w, h);
@@ -5582,6 +5646,22 @@ document.getElementById('learn-review')?.addEventListener('click', async () => {
     renderLearnStats();
   }
 });
+function renderMicSens(){
+  const el = document.getElementById('mic-sens'), out = document.getElementById('mic-sens-val');
+  const v = typeof settings.micSensitivity === 'number' ? settings.micSensitivity : 100;
+  VAD.sensitivity = v / 100;
+  if(el && !el._bound){
+    el._bound = true;
+    el.addEventListener('input', () => {
+      settings.micSensitivity = +el.value; saveSettings();
+      VAD.sensitivity = +el.value / 100; VAD.recalc();
+      if(out) out.textContent = +el.value < 85 ? 'low — noisy rooms'
+        : +el.value > 115 ? 'high — quiet rooms' : 'normal';
+    });
+  }
+  if(el) el.value = v;
+  if(out) out.textContent = v < 85 ? 'low — noisy rooms' : v > 115 ? 'high — quiet rooms' : 'normal';
+}
 document.getElementById('autolisten-toggle')?.addEventListener('click', () => {
   settings.tarsAutoListen = settings.tarsAutoListen === false;
   saveSettings();
@@ -5824,7 +5904,7 @@ function renderSettings(){
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
   const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
   const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
-  probeTts(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus();
+  probeTts(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens();
   Reflect_.run();
   Learn.load().then(renderLearnStats);
   bindPercent('humour-slider', 'humour-val', 'humour', 70);

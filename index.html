@@ -187,6 +187,11 @@
         <div class="set-info"><b>Learned experience</b><span id="learn-status">loading…</span></div>
         <button class="btn-ghost" id="learn-review">Review rules</button>
       </div>
+      <div class="set-row" style="display:block">
+        <div class="set-info" style="margin-bottom:8px"><b>Microphone sensitivity</b><span id="mic-sens-val">normal</span></div>
+        <input type="range" id="mic-sens" class="rain-range" min="60" max="160" step="10" value="100">
+        <p class="hint" style="margin:6px 0 0">Lower it in a noisy room so TARS only reacts to you speaking directly.</p>
+      </div>
       <div class="set-row">
         <div class="set-info"><b>Always listening</b><span id="autolisten-status">On — TARS waits for “Hey TARS”</span></div>
         <button class="btn-ghost" id="autolisten-toggle">Toggle</button>
