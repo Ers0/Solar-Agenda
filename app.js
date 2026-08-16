@@ -844,7 +844,7 @@ const FOLLOW_UP_MS = 9000;      // how long the mic stays open after a reply
 
 const VOICE = {
   supported: !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
-  state: 'off', lang: 'en-US', langStreak: 0, active: false, bargeStart: 0, greeted: false,
+  state: 'off', lang: 'en-US', langStreak: 0, active: false, vadTimer: null, sampleTimer: null, bargeStart: 0, greeted: false,
   srcNode: null, peakSeen: 0,
   conversing: false, followTimer: null, restarting: false, analyser: null, level: 0,
 };
@@ -901,23 +901,33 @@ async function startMicMeter(stream){
     VOICE.level = 0;
 
     const buf = new Uint8Array(an.frequencyBinCount);
-    const tick = () => {
-      if(VOICE.analyser !== an) return;          // superseded by a newer meter
+
+    // Sampling must not depend on requestAnimationFrame: rAF is suspended
+    // entirely in a background tab, which silently killed wake-word detection
+    // the moment the window lost focus. A timer keeps running when hidden.
+    const sample = () => {
+      if(VOICE.analyser !== an) return;
       an.getByteTimeDomainData(buf);
       let sum = 0;
       for(let i = 0; i < buf.length; i++){ const v = (buf[i] - 128) / 128; sum += v * v; }
       VOICE.level = Math.min(1, Math.sqrt(sum / buf.length) * 4.5);
       if(VOICE.level > VOICE.peakSeen) VOICE.peakSeen = VOICE.level;
-      // Only quiet frames describe the room; speech would drag the floor up.
       if(!speaking && VOICE.state !== VSTATE.SPEAKING && VOICE.level < VAD.speakThresh){
         VAD.hist.push(VOICE.level);
         if(VAD.hist.length > 240) VAD.hist.shift();
         if(VAD.hist.length % 60 === 0) VAD.recalc();
       }
-      drawOrb();
-      requestAnimationFrame(tick);
     };
-    tick();
+    clearInterval(VOICE.sampleTimer);
+    VOICE.sampleTimer = setInterval(sample, 60);
+
+    // Drawing stays on rAF, since there is nothing to draw when hidden.
+    const paint = () => {
+      if(VOICE.analyser !== an) return;
+      drawOrb();
+      requestAnimationFrame(paint);
+    };
+    paint();
   }catch(e){
     setVoiceState(VSTATE.ERROR, 'microphone unavailable');
   }
@@ -1511,6 +1521,95 @@ const Background = {
   },
 };
 
+
+// Notification usefulness. A kind the user always ignores drifts down a level;
+// one they act on drifts up. Bounded, so it can never silence something
+// urgent entirely or turn a footnote into an interruption.
+const NoteLearn = {
+  get stats(){ return settings.noteStats || (settings.noteStats = {}); },
+  seen(kind){
+    const s = this.stats[kind] || (this.stats[kind] = { shown:0, acted:0 });
+    s.shown++; saveSettings();
+  },
+  acted(kind){
+    const s = this.stats[kind] || (this.stats[kind] = { shown:0, acted:0 });
+    s.acted++; saveSettings();
+  },
+  // -1 quieter, 0 unchanged, +1 louder
+  bias(kind){
+    const s = this.stats[kind];
+    if(!s || s.shown < 5) return 0;              // not enough evidence yet
+    const rate = s.acted / s.shown;
+    if(rate <= 0.1) return -1;
+    if(rate >= 0.5) return 1;
+    return 0;
+  },
+  report(){
+    const rows = Object.entries(this.stats).filter(([, s]) => s.shown >= 3);
+    if(!rows.length) return 'Not enough history yet to judge which alerts are useful.';
+    return rows.map(([k, s]) =>
+      `${k}: shown ${s.shown}, acted on ${s.acted} (${Math.round(s.acted / s.shown * 100)}%)`).join('\n');
+  },
+};
+
+
+// ===== Due-soon watch ================================================
+// The ten-minute scan is far too coarse for a reminder, and it only ever
+// looked backwards — nothing detected an approaching item, so a reminder set
+// for five minutes' time could never fire. This runs every 20 seconds and
+// looks forward.
+const DueWatch = {
+  timer: null,
+  fired: new Set(),          // key per item per day, so it speaks once
+
+  minutesUntil(c){
+    if(!c.horario || c.case_date !== todayStr()) return null;
+    const [h, m] = c.horario.split(':').map(Number);
+    if(isNaN(h)) return null;
+    const now = new Date();
+    return (h * 60 + (m || 0)) - (now.getHours() * 60 + now.getMinutes());
+  },
+
+  check(){
+    if(!session || settings.proactiveLevel === 'off') return;
+    const today = todayStr();
+    todaysCases().filter(c => statusRank(c.status) === 0).forEach(c => {
+      const mins = this.minutesUntil(c);
+      if(mins === null) return;
+      const lead = typeof c.lead_minutes === 'number' ? c.lead_minutes
+                 : (c.tags || []).includes('follow-up') ? 10 : 15;
+      const key = c.id + ':' + today;
+
+      // Fire once as it enters the lead window, and once if it goes past.
+      if(mins <= lead && mins >= -1 && !this.fired.has(key)){
+        this.fired.add(key);
+        const isReminder = (c.tags || []).includes('follow-up');
+        const when = mins <= 0 ? 'now' : `in ${mins} minute${mins === 1 ? '' : 's'}`;
+        Proactive.raise({
+          type: isReminder ? 'reminder' : 'due_soon',
+          ref: c.id,
+          level: c.prioridade === 'urgente' ? LEVEL.URGENT : LEVEL.ACTIVE,
+          text: `${isReminder ? 'Reminder' : 'Coming up'} ${when}: ${c.titulo}`
+              + (c.horario ? ` at ${c.horario}.` : '.'),
+        });
+      }
+      const lateKey = key + ':late';
+      if(mins < -20 && !this.fired.has(lateKey)){
+        this.fired.add(lateKey);
+        Proactive.raise({ type:'overdue_now', ref:c.id, level: LEVEL.GENTLE,
+          text: `${c.titulo} was due at ${c.horario} and is still open.` });
+      }
+    });
+  },
+
+  start(){
+    if(this.timer) return;
+    this.check();
+    this.timer = setInterval(() => this.check(), 20000);
+  },
+  stop(){ clearInterval(this.timer); this.timer = null; },
+};
+
 // ===== Proactive engine ==============================================
 // Detects things worth saying, then decides how loudly to say them. The
 // interruption level is deliberately conservative: most findings wait until
@@ -1615,6 +1714,11 @@ const Proactive = {
     // the finding itself justifies.
     if(pref === 'quiet' && e.level < LEVEL.ACTIVE) e.level = LEVEL.AMBIENT;
     if(pref === 'high' && e.level === LEVEL.AMBIENT) e.level = LEVEL.GENTLE;
+    // Evidence from past behaviour nudges the level within safe bounds.
+    const bias = NoteLearn.bias(e.type);
+    if(bias < 0 && e.level > LEVEL.AMBIENT) e.level -= 1;
+    if(bias > 0 && e.level < LEVEL.ACTIVE) e.level += 1;
+    NoteLearn.seen(e.type);
     if(e.level <= LEVEL.SILENT) return;
 
     if(e.level === LEVEL.AMBIENT){
@@ -1789,6 +1893,31 @@ function renderFocusBar(){
   });
 }
 
+
+// Chrome throttles timers in hidden tabs to roughly once a minute after five
+// minutes — far too slow for voice detection. A tab that is producing audio is
+// exempt, so voice mode holds an effectively inaudible tone open. It is a
+// deliberate trade: the tab shows the small "playing audio" icon while TARS is
+// listening. Stopped as soon as voice mode is switched off.
+let keepAliveNode = null, keepAliveGain = null;
+function startKeepAlive(){
+  const ctx = acAlways();
+  if(!ctx || keepAliveNode) return;
+  try{
+    keepAliveNode = ctx.createOscillator();
+    keepAliveGain = ctx.createGain();
+    keepAliveNode.frequency.value = 30;      // below normal hearing at this level
+    keepAliveGain.gain.value = 0.0008;       // audible to the browser, not to you
+    keepAliveNode.connect(keepAliveGain).connect(ctx.destination);
+    keepAliveNode.start();
+  }catch(e){ keepAliveNode = null; }
+}
+function stopKeepAlive(){
+  try{ keepAliveNode && keepAliveNode.stop(); }catch(e){}
+  try{ keepAliveNode && keepAliveNode.disconnect(); keepAliveGain && keepAliveGain.disconnect(); }catch(e){}
+  keepAliveNode = null; keepAliveGain = null;
+}
+
 // ===== Persistent TARS ===============================================
 // TARS starts with the application and sits in a passive state. The wake word
 // is matched locally on short transcripts; the full pipeline only engages
@@ -1838,6 +1967,7 @@ document.getElementById('tars-dock')?.addEventListener('click', async () => {
   TarsPresence.clearBadge();
   const held = Proactive.pending();
   if(held.length){
+    held.forEach(e => NoteLearn.acted(e.type));
     addAiMessage('assistant', held.map(e => e.text).join('\n'));
     Proactive.clear();
   }
@@ -1984,33 +2114,97 @@ function speakFallback(text, lang){
 }
 
 let ttsConfigured = null;
-async function probeTts(){
+// Distinguishes three states rather than two: configured, not configured, and
+// unknown. A transient network failure used to latch this to "not configured"
+// for the rest of the session, which meant the browser voice permanently.
+let ttsProbedAt = 0;
+async function probeTts(force){
+  if(!force && ttsConfigured !== null && Date.now() - ttsProbedAt < 120000) return ttsConfigured;
   try{
     const r = await fetch(FN_URL + "/agenda-tts", { method:'POST', headers: authHeaders(), body: JSON.stringify({ probe:true }) });
-    const d = await r.json();
-    ttsConfigured = !!d.configured;
-  }catch(e){ ttsConfigured = false; }
-  const el = document.getElementById('tts-status');
-  if(el){
-    el.textContent = ttsConfigured ? 'ElevenLabs active' : 'Not configured — using the browser voice';
-    el.className = ttsConfigured ? 'ok' : '';
+    const out = await readJson(r);
+    if(!out.ok) throw new Error('probe failed');
+    ttsConfigured = !!out.json.configured;
+    ttsServerVoice = out.json.voice || null;
+    ttsServerModel = out.json.model || null;
+    ttsProbedAt = Date.now();
+  }catch(e){
+    // Unknown, not false — the next attempt tries ElevenLabs again.
+    if(ttsConfigured === null) ttsConfigured = null;
   }
+  renderTtsStatus();
   return ttsConfigured;
+}
+let ttsServerVoice = null, ttsServerModel = null, ttsLastEngine = '—', ttsLastError = '';
+
+function renderTtsStatus(){
+  const el = document.getElementById('tts-status');
+  if(!el) return;
+  el.textContent = ttsConfigured === null ? 'checking…'
+    : ttsConfigured ? `ElevenLabs · last spoke: ${ttsLastEngine}${ttsLastError ? ' · ' + ttsLastError : ''}`
+    : 'No key set — using the browser voice';
+  el.className = ttsConfigured ? 'ok' : '';
+}
+
+// Voice IDs and model IDs are easy to put in the wrong box, and the result is
+// a 422 and a fallback voice with no explanation.
+function ttsFieldWarning(){
+  const v = (settings.ttsVoiceId || '').trim();
+  const m = (settings.ttsModelId || '').trim();
+  const problems = [];
+  if(v && /^eleven_/i.test(v)) problems.push('The voice field holds a model ID (it starts with "eleven_"). Swap the two fields.');
+  if(m && !/^eleven_/i.test(m)) problems.push('The model field should start with "eleven_" — e.g. eleven_turbo_v2_5. A voice ID does not belong here.');
+  if(v && !/^[A-Za-z0-9]{15,}$/.test(v)) problems.push('That voice ID does not look like an ElevenLabs ID (usually ~20 letters and digits).');
+  return problems;
 }
 
 async function speak(text, lang){
   if(settings.voiceMuted || !text) return;
   if(ttsConfigured === null) await probeTts();
   setVoiceState(VSTATE.SPEAKING);
+
+  // With no key at all, the browser voice is the intended behaviour.
+  if(ttsConfigured === false){
+    ttsLastEngine = 'browser (no key)';
+    renderTtsStatus();
+    await speakFallback(text, lang);
+    return;
+  }
+
   try{
-    if(ttsConfigured) await AudioOut.play(text, lang);
-    else await speakFallback(text, lang);
+    await AudioOut.play(text, lang);
+    ttsLastEngine = 'ElevenLabs';
+    ttsLastError = '';
+    renderTtsStatus();
+    return;
   }catch(err){
-    if(err.code === 'tts_unconfigured'){ ttsConfigured = false; await speakFallback(text, lang); }
-    else { showHeard(err.message || 'Speech failed.'); await speakFallback(text, lang); }
+    const code = err.code || 'unknown';
+    // One retry: most failures here are a transient 429 or a dropped stream,
+    // and switching voice mid-conversation is worse than a short pause.
+    if(code === 'rate_limit' || code === 'unknown' || code === 'network'){
+      await new Promise(r => setTimeout(r, 900));
+      try{
+        await AudioOut.play(text, lang);
+        ttsLastEngine = 'ElevenLabs (retried)';
+        ttsLastError = '';
+        renderTtsStatus();
+        return;
+      }catch(e2){ /* fall through and report honestly */ }
+    }
+    // Falling back means a different voice, so say why rather than let it look
+    // like the configured voice changed on its own.
+    ttsLastError = code === 'tts_auth' ? 'key rejected'
+                 : code === 'tts_voice' ? 'voice or model ID invalid'
+                 : code === 'rate_limit' ? 'quota or rate limit'
+                 : code === 'tts_unconfigured' ? 'no key' : code;
+    ttsLastEngine = 'browser (fallback)';
+    if(code === 'tts_unconfigured') ttsConfigured = false;
+    renderTtsStatus();
+    showHeard(`ElevenLabs unavailable (${ttsLastError}) — using the browser voice.`);
+    console.error('[tts]', code, err.message);
+    await speakFallback(text, lang);
   }
 }
-
 
 // ===== WakeWordProvider ==============================================
 // Deliberately provider-agnostic. The default listens locally (voice activity
@@ -2143,7 +2337,7 @@ function calibrateVAD(){
   const step = () => {
     if(!VOICE.active) return;
     samples.push(VOICE.level || 0);
-    if(Date.now() - t0 < 1200){ requestAnimationFrame(step); return; }
+    if(Date.now() - t0 < 1200){ setTimeout(step, 60); return; }
     samples.sort((a, b) => a - b);
     const floor = samples[Math.floor(samples.length * 0.6)] || 0.01;
     VAD.floor = floor;
@@ -2169,7 +2363,7 @@ function calibrateVAD(){
     VAD.retried = false;
     setVoiceState(VSTATE.IDLE);
   };
-  requestAnimationFrame(step);
+  setTimeout(step, 60);
 }
 
 // Whisper echoes its prompt when the audio is unintelligible, so the hint is
@@ -2258,7 +2452,7 @@ async function onClipReady(blob){
 
 function vadTick(){
   if(!VOICE.active) return;
-  if(!VAD.calibrated){ requestAnimationFrame(vadTick); return; }
+  if(!VAD.calibrated) return;   // the interval keeps calling; no rAF needed
   const now = Date.now();
   const lvl = VOICE.level;
   if(VOICE.state === VSTATE.SPEAKING){
@@ -2285,7 +2479,6 @@ function vadTick(){
     if(now - lastLoud > 250) VAD.loudSince = 0;
     if(speaking && lvl < VAD.silenceThresh && now - lastLoud > VAD.silenceMs) endClip();
   }
-  requestAnimationFrame(vadTick);
 }
 
 function armFollowUp(){
@@ -2339,7 +2532,8 @@ async function startVoice(opts){
   setVoiceState('thinking');
   WakeWord.start();          // without this the provider rejects every phrase
   calibrateVAD();
-  requestAnimationFrame(vadTick);
+  clearInterval(VOICE.vadTimer);
+  VOICE.vadTimer = setInterval(vadTick, 80);
   if(!VOICE.greeted && !opts?.quiet){
     VOICE.greeted = true;
     const g = TARS.greeting();
@@ -2362,6 +2556,11 @@ function stopVoice(){
   VAD.calibrated = false;
   AudioOut.stop();
   WakeWord.stop();
+  // Timers and the keep-alive tone must be released, or a stopped voice mode
+  // keeps sampling the microphone and holding the tab audible.
+  stopKeepAlive();
+  clearInterval(VOICE.vadTimer); VOICE.vadTimer = null;
+  clearInterval(VOICE.sampleTimer); VOICE.sampleTimer = null;
   try{ speechSynthesis?.cancel(); }catch(e){}
   setVoiceState(VSTATE.OFF);
   document.getElementById('voice-panel')?.classList.remove('open');
@@ -2451,6 +2650,9 @@ const TOOL_HINTS = {
   find_in_galaxy:  /\b(find|locate|where is|which note|show me the note|encontr|localiz|ach[ae])\b/i,
   remember:        /\b(remember|note that|keep in mind|don'?t forget|lembr|anota que|guarda)\b/i,
   forget:          /\b(forget|delete the memory|esquec|apaga)\b/i,
+  search_email:    /\b(email|mail|reply|replied|inbox|said|wrote|responded|respondeu|e-?mail|caixa)\b/i,
+  analyse_email:   /\b(what did .* say|analyse|analyze|response|reply|resposta|o que .* disse)\b/i,
+  create_reminder: /\b(remind|reminder|follow.?up|chase|lembr|cobrar|acompanhar)\b/i,
   save_template:   /\b(template|model[oe]|boilerplate|standard (email|message))\b/i,
   use_template:    /\b(send|email|message|template|envi|mandar|manda)\b/i,
   list_templates:  /\b(templates?|model[oe]s)\b/i,
@@ -2680,6 +2882,7 @@ const TOOLS = [
     async execute(){
       const items = await Background.load(true);
       if(!items.length) return 'Nothing was flagged while you were away.';
+      items.forEach(n => NoteLearn.acted('bg_' + n.kind));
       const lines = items.map(n => Background.describe(n)).filter(Boolean);
       await Background.ack();
       return lines.join('\n') + '\nSummarise in two sentences at most.';
@@ -2749,7 +2952,7 @@ const TOOLS = [
       settings.proactive = args.level !== 'off';
       saveSettings();
       renderProactiveStatus();
-      if(args.level === 'off') Proactive.stop(); else Proactive.start();
+      if(args.level === 'off'){ Proactive.stop(); DueWatch.stop(); } else { Proactive.start(); DueWatch.start(); }
       return `Interruptions set to ${args.level}. Acknowledge in one line.`;
     },
   },
@@ -2959,6 +3162,111 @@ const TOOLS = [
       return `Found ${hits.length} match${hits.length > 1 ? 'es' : ''}, focused on "${top.title}" in ${top.folder} `
         + `(${top.deg || 'no'} links). Others: ${hits.slice(1, 4).map(n => n.title).join('; ') || 'none'}. `
         + `Tell the user the top match and roughly how many others, nothing more.`;
+    },
+  },
+  {
+    name: 'search_email',
+    permission: PERM.READ,
+    description: "Search the local Thunderbird mailbox, e.g. 'what did Deye say', 'any reply from the manufacturer'. Reads mail already on this machine — it does not connect to any mail server.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'Sender, subject words, ticket number or client.' } },
+      required:['query'] },
+    async execute(args){
+      if(!Mail.messages.length){
+        const r = await Mail.scan();
+        if(!r.ok) return 'No Thunderbird folder is set up. Tell the user to choose their Thunderbird profile mail folder in Settings, under Knowledge.';
+      }
+      const hits = Mail.search(args.query, 5);
+      if(!hits.length) return `Nothing in the mailbox matches "${args.query}". Say so — do not invent a reply.`;
+      return hits.map(m => {
+        const cse = Mail.matchCase(m);
+        return `From: ${m.from}\nDate: ${m.date}\nSubject: ${m.subject}`
+             + (cse ? `\nRelates to case: ${cse.titulo}` : '')
+             + `\n${m.body.slice(0, 700)}`;
+      }).join('\n---\n').slice(0, 3000);
+    },
+  },
+  {
+    name: 'analyse_email',
+    permission: PERM.READ,
+    description: "Read the most relevant email and work out what it asks for: approval, rejection, or a request for more documents. Use after finding a manufacturer reply.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'Which email — sender, subject or ticket.' } },
+      required:['query'] },
+    async execute(args){
+      if(!Mail.messages.length) await Mail.scan();
+      const hits = Mail.search(args.query, 1);
+      if(!hits.length) return `No email matches "${args.query}".`;
+      const m = hits[0];
+      const cse = Mail.matchCase(m);
+      return `Analyse this reply and state plainly what it requires.\n\n`
+        + `From: ${m.from}\nSubject: ${m.subject}\nDate: ${m.date}\n`
+        + (cse ? `Linked case: ${cse.titulo}${cse.ticket ? ' (' + cse.ticket + ')' : ''}\n` : 'No matching case found.\n')
+        + `\n${m.body.slice(0, 2200)}\n\n`
+        + `Say: the outcome (approved, rejected, more information needed), exactly what is being asked for, and the next action. `
+        + `If it reports a rejection or a missing document, offer to record that as a lesson with record_outcome — do not store it yourself.`
+        + (() => {
+            const cand = Outcomes.propose(m, cse);
+            if(!cand) return '';
+            return `\n\nDetected outcome: ${cand.verdict}`
+              + (cand.wanted.length ? `, asking for: ${cand.wanted.join(', ')}` : '')
+              + (cand.rule ? `\nSuggested lesson (ASK before storing): "${cand.rule}"` : '');
+          })();
+    },
+  },
+  {
+    name: 'create_reminder',
+    permission: PERM.LOW,
+    description: "Set a reminder or follow-up. Can be anchored to an existing case ('remind me 5 minutes before the Areswat case') or free-standing ('remind me Thursday to chase Deye').",
+    schema: { type:'object', properties:{
+      what:{ type:'string', description:'What to be reminded about.' },
+      date:{ type:'string', description:'YYYY-MM-DD. Defaults to today if a time is given, otherwise tomorrow.' },
+      time:{ type:'string', description:'HH:MM. A bare hour resolves to its next occurrence.' },
+      minutes_before:{ type:'number', description:'Lead time before the anchored case, e.g. 5.' },
+      case_query:{ type:'string', description:'Ticket or client, to anchor the reminder to a case.' } },
+      required:['what'] },
+    async execute(args){
+      let date = args.date, time = args.time ? resolveHour(args.time) : null;
+
+      // Anchored to a case: work the time backwards from it.
+      if(args.case_query || typeof args.minutes_before === 'number'){
+        const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const q = norm(args.case_query || args.what);
+        const hit = cases.find(x => x.ticket && norm(x.ticket).includes(q))
+                 || cases.find(x => norm(x.titulo).includes(q));
+        if(hit && hit.horario){
+          const [hh, mm] = hit.horario.split(':').map(Number);
+          const total = hh * 60 + (mm || 0) - (args.minutes_before || 5);
+          if(total < 0) return 'That would fall before midnight — give an explicit time instead.';
+          time = `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`;
+          date = date || hit.case_date;
+        } else if(args.case_query){
+          return `No case matches "${args.case_query}", so there is nothing to anchor to. Ask for an explicit time.`;
+        }
+      }
+
+      if(!date){
+        const d = new Date();
+        if(!time) d.setDate(d.getDate() + 1);
+        date = d.toISOString().slice(0, 10);
+      }
+      time = time || '09:00';
+
+      try{
+        const made = await createCase({
+          titulo: 'Reminder: ' + args.what,
+          case_date: date, horario: time,
+          prioridade: 'media', bloco: 'primeira-hora', tags: ['follow-up'],
+          notes_log: [{ text: 'Set by TARS.', at: new Date().toISOString() }],
+        });
+        cases.push(made);
+        render();
+        DueWatch.check();          // in case it is already inside the lead window
+        const mins = DueWatch.minutesUntil(made);
+        return `Reminder set for ${date} at ${time}`
+             + (mins !== null && mins > 0 && mins < 120 ? ` — that is ${mins} minutes from now.` : '.')
+             + ' I will speak up then.';
+      }catch(err){ return `Could NOT set the reminder: ${err.message}.`; }
     },
   },
   {
@@ -3261,6 +3569,17 @@ function kbSearch(q, limit = 4){
 
 
 // --- manual knowledge entry -------------------------------------------
+document.getElementById('mail-pick')?.addEventListener('click', async () => {
+  if(await Mail.pickFolder()){ renderMailStatus(); Mail.scan().then(renderMailStatus); }
+});
+document.getElementById('mail-scan')?.addEventListener('click', async () => {
+  const btn = document.getElementById('mail-scan');
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  const r = await Mail.scan();
+  btn.disabled = false; btn.textContent = 'Scan mailbox';
+  alert(r.ok ? `Read ${r.count} messages.` : 'Could not read that folder. Choose the Thunderbird account folder that holds the mbox files.');
+  renderMailStatus();
+});
 document.getElementById('kb-add-btn')?.addEventListener('click', () => {
   const title = document.getElementById('kb-new-title').value.trim();
   const content = document.getElementById('kb-new-body').value.trim();
@@ -3313,6 +3632,234 @@ document.getElementById('tpl-save')?.addEventListener('click', async () => {
   ['tpl-name','tpl-to','tpl-subject','tpl-body'].forEach(id => document.getElementById(id).value = '');
   renderTemplates(); Galaxy.build({ folder:false }); SFX.open();
 });
+
+
+
+// ===== Outcome learning ==============================================
+// An outcome only becomes a candidate lesson; it is never written as a rule
+// on its own. The user confirms, because a wrong rule learned automatically
+// is worse than no rule at all.
+const Outcomes = {
+  pending: [],
+
+  // Reads a manufacturer reply for its verdict without asking the model.
+  classify(text){
+    const t = String(text || '').toLowerCase();
+    // Portuguese inflects, so stems must allow a suffix — a trailing \b after
+    // "aprovad" can never match "aprovada".
+    if(/\b(aprovad\w*|aprova[çc][ãa]o|approved?|autoriza\w*|deferid\w*|procedente)\b/.test(t)) return 'approved';
+    if(/\b(rejeitad\w*|rejei[çc][ãa]o|negad\w*|recusad\w*|rejected?|denied|improcedente|indeferid\w*)\b/.test(t)) return 'rejected';
+    if(/\b(falta\w*|pendente\w*|enviar|anexar|necess[aá]ri\w*|missing|require[ds]?|provide|send us|aguardando)\b/.test(t)) return 'needs_more';
+    return 'unclear';
+  },
+
+  // What was asked for, so the lesson is specific rather than "add documents".
+  wanted(text){
+    const t = String(text || '');
+    const hits = [];
+    [[/nota fiscal|invoice/i, 'invoice'], [/n[uú]mero de s[eé]rie|serial/i, 'serial number'],
+     [/foto|photo|imagem|image/i, 'photos'], [/laudo|report|relat[oó]rio/i, 'technical report'],
+     [/data ?logger|log/i, 'logs'], [/projeto|diagram|esquema/i, 'diagram'],
+     [/garantia|warranty certificate|certificad/i, 'warranty certificate']]
+      .forEach(([re, label]) => { if(re.test(t)) hits.push(label); });
+    return [...new Set(hits)];
+  },
+
+  propose(email, cse){
+    const verdict = this.classify(email.body);
+    if(verdict === 'unclear') return null;
+    const wanted = this.wanted(email.body);
+    const who = (email.from.match(/@([\w.-]+)/) || [])[1] || email.from;
+    const maker = (who.split('.')[0] || who).replace(/^(mail|smtp|no-?reply)$/i, '');
+    const candidate = {
+      verdict, wanted, maker,
+      email: { subject: email.subject, from: email.from, date: email.date },
+      caseId: cse?.id || null,
+      rule: verdict === 'needs_more' && wanted.length
+        ? `${maker} warranty claims also require: ${wanted.join(', ')}.`
+        : verdict === 'rejected' && wanted.length
+        ? `${maker} rejects claims missing: ${wanted.join(', ')}.`
+        : null,
+    };
+    this.pending.push(candidate);
+    return candidate;
+  },
+};
+
+// ===== Thunderbird mail ==============================================
+// Thunderbird stores mail locally in mbox files inside its profile, so it can
+// be read through the same File System Access API already used for the media
+// folder. Nothing is uploaded: parsing happens here, and only what TARS is
+// asked about ever reaches the model.
+// Read-only by design — sending goes out through mailto:, which opens
+// Thunderbird itself when it is the default client.
+const Mail = {
+  dir: null, messages: [], scannedAt: 0,
+
+  async pickFolder(){
+    try{
+      // Point at the account folder inside the profile, e.g.
+      // .thunderbird/xxxx.default/Mail/pop.server.com  (or ImapMail/...)
+      const h = await window.showDirectoryPicker({ id:'tbird', mode:'read' });
+      this.dir = h;
+      await idbSet('mailDir', h);
+      return true;
+    }catch(e){ return false; }
+  },
+  async restore(){
+    try{
+      const h = await idbGet('mailDir');
+      if(!h) return false;
+      const perm = await h.queryPermission({ mode:'read' });
+      if(perm === 'granted'){ this.dir = h; return true; }
+      if(perm === 'prompt'){
+        const p = await h.requestPermission({ mode:'read' });
+        if(p === 'granted'){ this.dir = h; return true; }
+      }
+    }catch(e){}
+    return false;
+  },
+
+  // --- mbox parsing -------------------------------------------------
+  decodeHeader(s){
+    // RFC 2047 encoded words, which Thunderbird uses for accented subjects.
+    return String(s || '').replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_, cs, enc, txt) => {
+      try{
+        // Both encodings yield raw bytes; decode them as UTF-8 properly or
+        // accented subjects come out as mojibake.
+        const bytes = enc.toUpperCase() === 'B'
+          ? Uint8Array.from(atob(txt), ch => ch.charCodeAt(0))
+          : Uint8Array.from(txt.replace(/_/g, ' ').match(/=([0-9A-Fa-f]{2})|([\s\S])/g) || [],
+              t => t[0] === '=' ? parseInt(t.slice(1), 16) : t.charCodeAt(0));
+        return new TextDecoder(/utf-?8/i.test(cs) ? 'utf-8' : 'iso-8859-1').decode(bytes);
+      }catch(e){ return txt; }
+    });
+  },
+  decodeBody(body, enc, charset){
+    let out = body;
+    try{
+      const dec = new TextDecoder(/iso-8859/i.test(charset || '') ? 'iso-8859-1' : 'utf-8');
+      if(/base64/i.test(enc))
+        out = dec.decode(Uint8Array.from(atob(body.replace(/\s+/g, '')), ch => ch.charCodeAt(0)));
+      else if(/quoted-printable/i.test(enc))
+        out = dec.decode(Uint8Array.from(
+          body.replace(/=\r?\n/g, '').match(/=([0-9A-Fa-f]{2})|([\s\S])/g) || [],
+          t => t[0] === '=' ? parseInt(t.slice(1), 16) : t.charCodeAt(0)));
+    }catch(e){}
+    return out;
+  },
+
+  parseMbox(text, folderName){
+    const out = [];
+    // Messages begin at a line starting "From " at the very start of a line.
+    const parts = text.split(/\r?\n(?=From [^\s]+ )/);
+    parts.forEach(raw => {
+      const split = raw.indexOf('\n\n');
+      if(split === -1) return;
+      const head = raw.slice(0, split);
+      let body = raw.slice(split + 2);
+      // unfold folded headers
+      const unfolded = head.replace(/\r?\n[ \t]+/g, ' ');
+      const get = n => {
+        const m = unfolded.match(new RegExp('^' + n + ':\\s*(.*)$', 'im'));
+        return m ? m[1].trim() : '';
+      };
+      const subject = this.decodeHeader(get('Subject'));
+      const from = this.decodeHeader(get('From'));
+      const date = get('Date');
+      if(!subject && !from) return;
+
+      // Take the plain-text part of a multipart message.
+      const ctype = get('Content-Type');
+      const bnd = (ctype.match(/boundary="?([^";]+)"?/i) || [])[1];
+      if(bnd){
+        const seg = body.split('--' + bnd).find(s => /content-type:\s*text\/plain/i.test(s));
+        if(seg){
+          const i = seg.indexOf('\n\n');
+          const segEnc = (seg.match(/content-transfer-encoding:\s*(\S+)/i) || [])[1] || '';
+          body = i > -1 ? this.decodeBody(seg.slice(i + 2), segEnc) : seg;
+        }
+      } else {
+        body = this.decodeBody(body, get('Content-Transfer-Encoding'));
+      }
+      body = body.replace(/<[^>]+>/g, ' ').replace(/\s{3,}/g, '\n').trim();
+
+      out.push({
+        id: (get('Message-ID') || (from + date + subject)).slice(0, 120),
+        subject, from, to: this.decodeHeader(get('To')), date,
+        when: Date.parse(date) || 0,
+        folder: folderName,
+        body: body.slice(0, 4000),
+      });
+    });
+    return out;
+  },
+
+  async scan(limit = 400){
+    if(!this.dir && !(await this.restore())) return { ok:false, reason:'no folder' };
+    const found = [];
+    const walk = async (dir, path, depth) => {
+      if(depth > 3 || found.length > limit) return;
+      for await (const [name, handle] of dir.entries()){
+        if(found.length > limit) break;
+        if(handle.kind === 'directory'){
+          // .sbd directories hold subfolders in a Thunderbird profile
+          await walk(handle, path + name.replace(/\.sbd$/, '') + '/', depth + 1);
+          continue;
+        }
+        // Skip index and metadata files; mbox files have no extension.
+        if(/\.(msf|dat|json|html|txt|log)$/i.test(name)) continue;
+        try{
+          const file = await handle.getFile();
+          if(file.size < 40 || file.size > 60 * 1024 * 1024) continue;
+          // Only the tail matters: recent mail sits at the end of an mbox.
+          const slice = file.size > 3 * 1024 * 1024 ? file.slice(file.size - 3 * 1024 * 1024) : file;
+          const text = await slice.text();
+          if(!/^From |\nFrom /.test(text.slice(0, 4000))) continue;   // not an mbox
+          found.push(...this.parseMbox(text, path + name));
+        }catch(e){}
+      }
+    };
+    try{ await walk(this.dir, '', 0); }catch(e){ return { ok:false, reason:'read failed' }; }
+    this.messages = found.sort((a, b) => b.when - a.when).slice(0, limit);
+    this.scannedAt = Date.now();
+    renderMailStatus();
+    return { ok:true, count: this.messages.length };
+  },
+
+  search(q, limit = 6){
+    const words = relevantWords(q);
+    if(!words.length) return this.messages.slice(0, limit);
+    return this.messages.map(m => {
+      const hay = (m.subject + ' ' + m.from + ' ' + m.body).toLowerCase();
+      let hits = 0;
+      words.forEach(w => { if(hay.includes(w)) hits++; });
+      return { m, cov: hits / words.length };
+    }).filter(x => x.cov >= 0.34)
+      .sort((a, b) => b.cov - a.cov || b.m.when - a.m.when)
+      .slice(0, limit).map(x => x.m);
+  },
+
+  // Which case an email belongs to: ticket number first, then client name.
+  matchCase(m){
+    const hay = (m.subject + ' ' + m.body).toLowerCase();
+    const byTicket = cases.find(c => c.ticket && hay.includes(String(c.ticket).toLowerCase()));
+    if(byTicket) return byTicket;
+    return cases.find(c => {
+      const key = String(c.titulo || '').toLowerCase().split(/[—\-]/)[0].trim();
+      return key.length > 3 && hay.includes(key);
+    }) || null;
+  },
+};
+
+function renderMailStatus(){
+  const el = document.getElementById('mail-status');
+  if(!el) return;
+  el.textContent = Mail.messages.length
+    ? `${Mail.messages.length} messages read${Mail.scannedAt ? ' · ' + new Date(Mail.scannedAt).toLocaleTimeString('en-GB').slice(0,5) : ''}`
+    : (Mail.dir ? 'folder set — not scanned yet' : 'no folder selected');
+  el.className = Mail.messages.length ? 'ok' : '';
+}
 
 // ===== Templates =====================================================
 // Stored in the existing memories table with kind='template', so they inherit
@@ -3565,6 +4112,33 @@ const Galaxy = {
       title: String(m.content).slice(0, 40), tags: (m.keywords || '').split(/\s+/).filter(Boolean).slice(0, 6),
       links: [], words: String(m.content).split(/\s+/).length, excerpt: String(m.content).slice(0, 220),
       folder: 'Memory/', source: 'mem', when: Date.parse(m.created_at || 0) || 0 }));
+    // Learned rules and episodes are memory too, so they belong on the map
+    // rather than in a separate store the user cannot see.
+    (Learn.rules || []).forEach(r => out.push({
+      id: 'rule:' + r.id, key: String(r.statement).slice(0, 30).toLowerCase(),
+      title: String(r.statement).slice(0, 46), tags: (r.keywords || '').split(/\s+/).filter(Boolean).slice(0, 6),
+      links: [], words: String(r.statement).split(/\s+/).length,
+      excerpt: `${r.statement}\n\nConfidence ${r.confidence}% · learned from ${r.source}`
+             + (r.times_confirmed > 1 ? ` · confirmed ${r.times_confirmed}×` : '')
+             + (r.status === 'conflicted' ? '\n\n⚠ This rule conflicts with another.' : ''),
+      folder: 'Learned/', source: 'rule', ruleId: r.id, conflicted: r.status === 'conflicted',
+      when: Date.parse(r.created_at || 0) || 0 }));
+    (Learn.episodes || []).slice(0, 60).forEach(ep => out.push({
+      id: 'ep:' + ep.id, key: String(ep.summary).slice(0, 30).toLowerCase(),
+      title: String(ep.summary).slice(0, 46), tags: (ep.keywords || '').split(/\s+/).filter(Boolean).slice(0, 6),
+      links: [], words: String(ep.summary).split(/\s+/).length,
+      excerpt: ep.summary + (ep.outcome ? `\n\nOutcome: ${ep.outcome}` : ''),
+      folder: 'Experience/', source: 'ep',
+      when: Date.parse(ep.created_at || 0) || 0 }));
+    (Focus.all || []).forEach(f => out.push({
+      id: 'focus:' + f.id, key: String(f.label).toLowerCase(),
+      title: f.label, tags: ['focus', f.status], links: [],
+      words: (f.subtasks || []).length,
+      excerpt: [f.objective, (f.subtasks || []).map(s => `${s.done ? '✓' : '○'} ${s.text}`).join('\n'),
+                f.waiting_on ? 'Waiting on ' + f.waiting_on : ''].filter(Boolean).join('\n\n'),
+      folder: 'Work/', source: 'focus', focusId: f.id,
+      when: Date.parse(f.updated_at || 0) || 0 }));
+
     (Templates.cache || []).forEach(t => out.push({
       id: 'tpl:' + t.id, key: String(t.name || '').toLowerCase(), title: t.name || 'Template',
       tags: ['template', ...(t.tags || [])], links: [],
@@ -3866,8 +4440,9 @@ const Galaxy = {
       if(this.focus && !foc) return;
       const isMatch = this.matches && this.matches.has(n.id);
       const orphan = n.deg === 0;
+      const warn = !!n.conflicted;
       const r = ((n.isHub ? 4.2 : 2.0) + Math.min(7, n.deg) * 0.45) * p.s;
-      const col = isMatch ? amber : n.used ? amber : orphan ? urg : pal[n.hue % pal.length];
+      const col = warn ? urg : isMatch ? amber : n.used ? amber : orphan ? urg : pal[n.hue % pal.length];
       // depth fade doubles as the fog cue
       ctx.globalAlpha = Math.max(0.18, Math.min(1, (p.s - 0.35) * 1.25));
       if(n.used || isMatch || n === this.hover || n === this.focus){
@@ -5648,7 +6223,7 @@ document.getElementById('proactive-select')?.addEventListener('change', (e) => {
   settings.proactiveLevel = e.target.value;
   settings.proactive = e.target.value !== 'off';
   saveSettings(); renderProactiveStatus();
-  if(settings.proactive) Proactive.start(); else Proactive.stop();
+  if(settings.proactive){ Proactive.start(); DueWatch.start(); } else { Proactive.stop(); DueWatch.stop(); }
   SFX.tick();
 });
 document.getElementById('learn-review')?.addEventListener('click', async () => {
@@ -5678,6 +6253,17 @@ function renderMicSens(){
   }
   if(el) el.value = v;
   if(out) out.textContent = v < 85 ? 'low — noisy rooms' : v > 115 ? 'high — quiet rooms' : 'normal';
+}
+document.getElementById('bglisten-toggle')?.addEventListener('click', () => {
+  settings.bgListen = settings.bgListen === false;
+  saveSettings(); renderBgListen();
+  if(settings.bgListen === false) stopKeepAlive(); else if(VOICE.active) startKeepAlive();
+});
+function renderBgListen(){
+  const el = document.getElementById('bglisten-status');
+  if(el) el.textContent = settings.bgListen === false
+    ? 'Off — pauses when the tab is hidden'
+    : 'On — keeps working when the tab is hidden';
 }
 document.getElementById('autolisten-toggle')?.addEventListener('click', () => {
   settings.tarsAutoListen = settings.tarsAutoListen === false;
@@ -5921,9 +6507,10 @@ function renderSettings(){
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
   const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
   const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
-  probeTts(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens();
+  probeTts(); renderTtsStatus(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens(); renderBgListen();
   Reflect_.run();
   Learn.load().then(renderLearnStats);
+  Mail.restore().then(renderMailStatus);
   bindPercent('humour-slider', 'humour-val', 'humour', 70);
   bindPercent('honesty-slider', 'honesty-val', 'honesty', 95);
   requestAnimationFrame(startKbMap);
@@ -6057,11 +6644,27 @@ function bindSetting(id, key){
 }
 bindSetting('tts-voice', 'ttsVoiceId');
 bindSetting('tts-model', 'ttsModelId');
+['tts-voice','tts-model'].forEach(id => {
+  const el = document.getElementById(id);
+  el?.addEventListener('blur', () => {
+    const w = ttsFieldWarning();
+    const box = document.getElementById('tts-warn');
+    if(box){ box.textContent = w.join(' '); box.style.display = w.length ? 'block' : 'none'; }
+  });
+});
 // last resort: flush anything typed but not yet committed
 window.addEventListener('beforeunload', () => { try{ saveSettings(); }catch(e){} });
 document.getElementById('tts-test')?.addEventListener('click', async () => {
-  await probeTts();
-  speak(VOICE.lang.startsWith('pt') ? 'Sistemas prontos.' : 'Systems ready.', VOICE.lang);
+  const warn = ttsFieldWarning();
+  if(warn.length){ alert('Check these first:\n\n• ' + warn.join('\n• ')); return; }
+  await probeTts(true);
+  if(ttsConfigured === false){ alert('No ELEVENLABS_API_KEY is set on the server, so the browser voice is used.'); return; }
+  ttsLastError = '';
+  await speak(VOICE.lang.startsWith('pt') ? 'Sistemas prontos.' : 'Systems ready.', VOICE.lang);
+  alert(`Spoke using: ${ttsLastEngine}`
+    + (ttsLastError ? `\nReason for fallback: ${ttsLastError}` : '')
+    + `\n\nVoice ID: ${settings.ttsVoiceId || '(server default ' + (ttsServerVoice || '?') + ')'}`
+    + `\nModel ID: ${settings.ttsModelId || '(server default ' + (ttsServerModel || '?') + ')'}`);
 });
 document.getElementById('sfx-toggle').addEventListener('click', () => {
   settings.muted = !settings.muted; saveSettings();
@@ -6629,6 +7232,7 @@ function setRain(mm){
 }
 window.addEventListener('resize', () => setRain());
 document.addEventListener('visibilitychange', () => {
+  // Only the decorative animation pauses when hidden; voice keeps running.
   if(document.hidden && rainRAF){ cancelAnimationFrame(rainRAF); rainRAF = null; }
   else if(!document.hidden && !rainRAF && rainProfile(rainMMNow())) rainRAF = requestAnimationFrame(rainStep);
   updateRainAudio();      // silence it in a background tab
@@ -6714,6 +7318,7 @@ async function bootApp(){
   detectHud();
   Learn.load();
   Proactive.start();
+  DueWatch.start();
   // Anything the scheduled scan found while the app was shut.
   Background.load().then(() => setTimeout(() => Background.feed(), 2500));
   Focus.load().then(() => {
