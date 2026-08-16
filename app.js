@@ -12,6 +12,19 @@ let calendarMonth = new Date();
 calendarMonth.setDate(1);
 
 function todayStr(){ return new Date().toLocaleDateString('en-CA'); } // yyyy-mm-dd local
+// toISOString() is UTC, so after 21:00 in Brazil it returns tomorrow — which
+// silently pushed evening reminders onto the next day and off today's wheel.
+function dateStr(d){ return (d || new Date()).toLocaleDateString('en-CA'); }
+function addDays(n){ const d = new Date(); d.setDate(d.getDate() + n); return dateStr(d); }
+// Blocks follow the clock rather than being assumed.
+function blocoForTime(hhmm){
+  const h = parseInt(String(hhmm || '').split(':')[0], 10);
+  if(isNaN(h)) return 'manha';
+  if(h < 9) return 'primeira-hora';
+  if(h < 12) return 'manha';
+  if(h < 18) return 'tarde';
+  return 'fim-do-dia';
+}
 
 function authHeaders(extra){
   return Object.assign({ "Content-Type": "application/json", "apikey": ANON_KEY, "Authorization": "Bearer " + (session ? session.token : "") }, extra || {});
@@ -106,6 +119,12 @@ function blocoLabel(b){ return {'primeira-hora':'First hour', manha:'Morning', t
 function render(){ renderFirstHour(); renderBlocks(); renderArc(); updateHudStrip(); }
 
 function todaysCases(){ const t = todayStr(); return cases.filter(c => (c.case_date || t) === t); }
+// Anything mis-filed under an old default is placed by its clock time instead,
+// so the first-hour panel does not collect the whole day.
+function effectiveBloco(c){
+  if(c.horario) return blocoForTime(c.horario);
+  return c.bloco || 'manha';
+}
 function pendingTodaysCases(){ return todaysCases().filter(c => statusRank(c.status) === 0); }
 
 function makeCaseCard(c){
@@ -222,7 +241,7 @@ function escapeHtml(s){ const d = document.createElement('div'); d.textContent =
 function renderFirstHour(){
   const list = document.getElementById('first-hour-list');
   list.innerHTML = '';
-  const items = pendingTodaysCases().filter(c => c.bloco === 'primeira-hora' || c.prioridade === 'urgente')
+  const items = pendingTodaysCases().filter(c => effectiveBloco(c) === 'primeira-hora' || c.prioridade === 'urgente')
                       .sort((a,b) => (a.horario || '').localeCompare(b.horario || ''));
   if(items.length === 0){ list.innerHTML = '<div class="empty">No urgent cases right now. Use the first hour to plan your day.</div>'; return; }
   items.forEach(c => list.appendChild(makeCaseCard(c)));
@@ -232,7 +251,7 @@ function renderBlocks(){
   container.innerHTML = '';
   const today = pendingTodaysCases();
   ['manha', 'tarde', 'fim-do-dia'].forEach(b => {
-    const items = today.filter(c => c.bloco === b).sort((a,b2) => (a.horario||'').localeCompare(b2.horario||''));
+    const items = today.filter(c => effectiveBloco(c) === b).sort((a,b2) => (a.horario||'').localeCompare(b2.horario||''));
     const group = document.createElement('div');
     group.className = 'block-group';
     group.innerHTML = `<h3>${blocoLabel(b)}</h3>`;
@@ -362,7 +381,12 @@ function renderArc(){
       w.push(`<g class="arc-dot" data-id="${c2.id}"><path d="M ${p1.x} ${p1.y} A ${r} ${r} 0 0 1 ${p2.x} ${p2.y}" fill="none" stroke="${prioColor(c2.prioridade)}" stroke-width="7" stroke-linecap="round" stroke-opacity="0.6" filter="url(#bloom)"/></g>`);
     } else {
       const p = P(h, r);
-      w.push(`<g class="arc-dot" data-id="${c2.id}"><circle cx="${p.x}" cy="${p.y}" r="5.5" fill="${prioColor(c2.prioridade)}" stroke="var(--bg)" stroke-width="2" filter="url(#bloom)"/></g>`);
+      const isRem = (c2.tags || []).includes('follow-up');
+      w.push(`<g class="arc-dot" data-id="${c2.id}">`
+        + `<circle cx="${p.x}" cy="${p.y}" r="${isRem ? 6.5 : 5.5}" fill="${isRem ? 'var(--accent3)' : prioColor(c2.prioridade)}" stroke="var(--bg)" stroke-width="2" filter="url(#bloom)"/>`
+        // A reminder gets a ring, so it reads differently from a scheduled case.
+        + (isRem ? `<circle cx="${p.x}" cy="${p.y}" r="10" fill="none" stroke="var(--accent3)" stroke-width="1.5" stroke-opacity="0.55"/>` : '')
+        + `</g>`);
     }
   });
 
@@ -1159,20 +1183,40 @@ const SFX = {
 // read as the PM one when a PM reading exists.
 function resolveHour(raw, spokenAt){
   const s = String(raw || '').trim();
+  if(!s) return s;
+  const now = spokenAt instanceof Date ? spokenAt : new Date();
+  const clock = d => `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+
+  // Relative phrasing. The model routinely passes "5 minutes from now" rather
+  // than a clock time; that used to be stored verbatim, which produced a case
+  // with an unparseable time that no timer could ever match.
+  const rel = s.toLowerCase()
+    .match(/(?:in|em|daqui a|dentro de)?\s*(\d+)\s*(min|mins|minute|minutes|minuto|minutos|h|hr|hrs|hour|hours|hora|horas)\b/);
+  if(rel && /(from now|now|agora|in |em |daqui|dentro|^\d+\s*(min|h))/i.test(s)){
+    const n = parseInt(rel[1], 10);
+    const isHour = /^h/.test(rel[2]);
+    const d = new Date(now.getTime() + n * (isHour ? 3600000 : 60000));
+    return clock(d);
+  }
+  if(/^(agora|now)$/i.test(s)) return clock(now);
+  if(/meia hora|half an hour/i.test(s)) return clock(new Date(now.getTime() + 30 * 60000));
+
   const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)?$/i);
-  if(!m) return s;
+  if(!m) return '';                 // unparseable: report failure, never store it
   let h = parseInt(m[1], 10);
   const min = m[2] || '00';
   const suffix = (m[3] || '').toLowerCase();
   if(suffix === 'am') return `${String(h % 12).padStart(2,'0')}:${min}`;
   if(suffix === 'pm') return `${String(h % 12 + 12).padStart(2,'0')}:${min}`;
-  if(h > 12) return `${String(h).padStart(2,'0')}:${min}`;   // already 24h
-  const now = spokenAt instanceof Date ? spokenAt : new Date();
+  if(h > 23) return '';
+  if(h > 12) return `${String(h).padStart(2,'0')}:${min}`;
   const nowH = now.getHours() + now.getMinutes() / 60;
-  // Prefer the next occurrence of that hour today.
   if(h < 12 && h + 12 >= nowH && h < nowH) h += 12;
   return `${String(h).padStart(2,'0')}:${min}`;
 }
+
+// Anything stored as a case time must be HH:MM, or the timers cannot see it.
+function isClock(t){ return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(t || '')); }
 
 // ===== Learning ======================================================
 // Episodes are what happened; rules are what was concluded. Kept apart so a
@@ -3217,16 +3261,24 @@ const TOOLS = [
   {
     name: 'create_reminder',
     permission: PERM.LOW,
-    description: "Set a reminder or follow-up. Can be anchored to an existing case ('remind me 5 minutes before the Areswat case') or free-standing ('remind me Thursday to chase Deye').",
+    description: "Set a reminder or follow-up. For 'remind me in 5 minutes' pass minutes_from_now: 5. For a clock time pass time as HH:MM. Never put a phrase like 'in 5 minutes' into the time field.",
     schema: { type:'object', properties:{
       what:{ type:'string', description:'What to be reminded about.' },
       date:{ type:'string', description:'YYYY-MM-DD. Defaults to today if a time is given, otherwise tomorrow.' },
       time:{ type:'string', description:'HH:MM. A bare hour resolves to its next occurrence.' },
       minutes_before:{ type:'number', description:'Lead time before the anchored case, e.g. 5.' },
+      minutes_from_now:{ type:'number', description:'Use this for "remind me in N minutes" rather than putting a phrase in time.' },
       case_query:{ type:'string', description:'Ticket or client, to anchor the reminder to a case.' } },
       required:['what'] },
     async execute(args){
       let date = args.date, time = args.time ? resolveHour(args.time) : null;
+
+      // "in N minutes" is the common case and must land on a real clock time.
+      if(typeof args.minutes_from_now === 'number' && args.minutes_from_now > 0){
+        const t = new Date(Date.now() + args.minutes_from_now * 60000);
+        time = `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
+        date = dateStr(t);
+      }
 
       // Anchored to a case: work the time backwards from it.
       if(args.case_query || typeof args.minutes_before === 'number'){
@@ -3245,18 +3297,21 @@ const TOOLS = [
         }
       }
 
-      if(!date){
-        const d = new Date();
-        if(!time) d.setDate(d.getDate() + 1);
-        date = d.toISOString().slice(0, 10);
-      }
+      if(args.time && !time)
+        return `"${args.time}" is not a time I can use. Ask for a clock time, or pass minutes_from_now. Do NOT claim the reminder was set.`;
+      if(!date) date = time ? todayStr() : addDays(1);
       time = time || '09:00';
+      if(!isClock(time))
+        return 'That time could not be resolved, so nothing was saved. Say so plainly.';
+      // A reminder for later today must not be pushed to tomorrow.
+      if(date === todayStr() && time < new Date().toTimeString().slice(0, 5) && !args.date)
+        date = addDays(1);
 
       try{
         const made = await createCase({
           titulo: 'Reminder: ' + args.what,
           case_date: date, horario: time,
-          prioridade: 'media', bloco: 'primeira-hora', tags: ['follow-up'],
+          prioridade: 'media', bloco: blocoForTime(time), tags: ['follow-up'],
           notes_log: [{ text: 'Set by TARS.', at: new Date().toISOString() }],
         });
         cases.push(made);
@@ -3369,7 +3424,11 @@ const TOOLS = [
       if(statusRank(hit.status) === 1) return `"${hit.titulo}" is closed and cannot be edited.`;
       const patch = {};
       ['prioridade','bloco','ticket','phone','titulo'].forEach(k => { if(args[k]) patch[k] = args[k]; });
-      if(args.horario) patch.horario = resolveHour(args.horario);
+      if(args.horario){
+        const t = resolveHour(args.horario);
+        if(!isClock(t)) return `"${args.horario}" is not a usable time — nothing was changed.`;
+        patch.horario = t;
+      }
       if(args.horario_fim) patch.horario_fim = resolveHour(args.horario_fim);
       if(!Object.keys(patch).length) return 'Nothing to change was given.';
       try{
@@ -3434,7 +3493,7 @@ const TOOLS = [
       horario_fim: resolveHour(args.horario_fim) || '',
       case_date: args.case_date || todayStr(),
       prioridade: args.prioridade || 'media',
-      bloco: args.bloco || 'manha',
+      bloco: args.bloco || blocoForTime(resolveHour(args.horario)),
       tags: Array.isArray(args.tags) ? args.tags : [],
       notes_log: args.note ? [{ text: args.note, at: new Date().toISOString() }] : [],
     };
@@ -6349,58 +6408,134 @@ function fixContrast(fg, bg, target){
 }
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
+// --- palette construction --------------------------------------------
+// Asking a language model for eleven raw hex values produces muddy, incoherent
+// results — it is not what they are good at. Instead the model makes only the
+// aesthetic decision (hues, saturation, darkness) and the ramp is built here
+// in HSL, which guarantees a harmonious and readable set every time.
+function hsl2hex(h, s, l){
+  h = ((h % 360) + 360) % 360; s = Math.max(0, Math.min(100, s)) / 100; l = Math.max(0, Math.min(100, l)) / 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
+  return '#' + [f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function buildPalette(p){
+  const baseH = p.baseHue, baseS = p.baseSat, dark = p.darkness;   // 0-100
+  // Backgrounds and panels share the base hue with a rising lightness ramp,
+  // so the surfaces read as one family rather than unrelated colours.
+  const L = v => Math.max(3, Math.min(96, v));
+  const bgL    = L(4 + (100 - dark) * 0.06);
+  const panelL = L(bgL + 5);
+  return {
+    name: 'Custom',
+    bg:     hsl2hex(baseH, baseS * 0.55, bgL),
+    bg2:    hsl2hex(baseH, baseS * 0.65, L(bgL - 2)),
+    panel:  hsl2hex(baseH, baseS * 0.45, panelL),
+    panel2: hsl2hex(baseH, baseS * 0.40, L(panelL + 5)),
+    line:   hsl2hex(baseH, baseS * 0.35, L(panelL + 14)),
+    text:   hsl2hex(baseH, Math.min(18, baseS * 0.25), 94),
+    muted:  hsl2hex(baseH, Math.min(22, baseS * 0.3), 62),
+    amber:  hsl2hex(p.accentHue,  Math.max(45, p.accentSat), 58),
+    accent2:hsl2hex(p.accent2Hue, Math.max(40, p.accentSat * 0.9), 60),
+    accent3:hsl2hex(p.accent3Hue, Math.max(35, p.accentSat * 0.8), 62),
+    dusk:   hsl2hex(p.accent2Hue, Math.max(30, p.accentSat * 0.6), 40),
+  };
+}
+
+// Keyword fallback, so a described mood still produces something recognisable
+// when the model is unreachable or replies with nonsense.
+const HUE_WORDS = [
+  [/ocean|sea|marine|mar|oceano|water|agua|água/i,        { baseHue:205, accentHue:190, accent2Hue:225, accent3Hue:170, baseSat:38, accentSat:62, darkness:78 }],
+  [/forest|wood|moss|green|floresta|verde|jungle/i,       { baseHue:150, accentHue:95,  accent2Hue:170, accent3Hue:120, baseSat:32, accentSat:55, darkness:76 }],
+  [/sunset|dusk|sunrise|dawn|pôr do sol|amanhecer/i,      { baseHue:265, accentHue:25,  accent2Hue:330, accent3Hue:45,  baseSat:34, accentSat:72, darkness:74 }],
+  [/fire|ember|lava|volcan|fogo|flame/i,                  { baseHue:20,  accentHue:18,  accent2Hue:350, accent3Hue:40,  baseSat:36, accentSat:78, darkness:80 }],
+  [/space|nebula|cosmic|galaxy|espaço|star|midnight/i,    { baseHue:250, accentHue:280, accent2Hue:200, accent3Hue:320, baseSat:40, accentSat:65, darkness:86 }],
+  [/desert|sand|terracotta|clay|areia|warm/i,             { baseHue:28,  accentHue:32,  accent2Hue:15,  accent3Hue:50,  baseSat:26, accentSat:58, darkness:70 }],
+  [/cyber|neon|synthwave|magenta|cyan/i,                  { baseHue:280, accentHue:315, accent2Hue:185, accent3Hue:265, baseSat:45, accentSat:88, darkness:84 }],
+  [/storm|rain|grey|gray|slate|cinza|fog/i,               { baseHue:215, accentHue:200, accent2Hue:235, accent3Hue:185, baseSat:18, accentSat:42, darkness:78 }],
+  [/rose|pink|blossom|sakura|rosa/i,                      { baseHue:335, accentHue:345, accent2Hue:300, accent3Hue:20,  baseSat:30, accentSat:62, darkness:72 }],
+  [/gold|amber|honey|brass|dourado/i,                     { baseHue:38,  accentHue:42,  accent2Hue:25,  accent3Hue:55,  baseSat:30, accentSat:74, darkness:76 }],
+];
+function paletteFromWords(prompt){
+  const hit = HUE_WORDS.find(([re]) => re.test(prompt));
+  return hit ? { ...hit[1] } : null;
+}
+
 async function generateTheme(prompt){
   const status = document.getElementById('ct-status');
   const btn = document.getElementById('ct-generate');
   status.textContent = 'Mixing the palette…';
   btn.disabled = true;
 
+  // The model returns a handful of constrained numbers, not colours.
   const sys = [
-    "You design colour palettes for a dark dashboard interface. Reply with ONE JSON object and nothing else — no prose, no markdown fences.",
-    'Exact keys required: {"bg","bg2","panel","panel2","line","text","muted","amber","accent2","accent3","dusk"}',
-    "Every value must be a 6-digit hex string like \"#1a2b3c\".",
-    "Meaning of each: bg = darkest page background; bg2 = an even darker edge; panel = card surface; panel2 = a lighter card highlight; line = borders; text = main body text (must be very light on dark); muted = secondary text; amber = primary accent; accent2 = secondary accent (a clearly different hue); accent3 = third accent bridging the two; dusk = a muted supporting tone.",
-    "Rules: the interface is DARK, so bg/panel must stay dark and text must stay light. amber, accent2 and accent3 must be three visibly different hues. Make it match the mood described.",
+    "You translate a described mood into colour-wheel values for a dark interface. Reply with ONE JSON object and nothing else — no prose, no markdown fences.",
+    'Exact shape: {"baseHue":0-360,"baseSat":0-60,"accentHue":0-360,"accent2Hue":0-360,"accent3Hue":0-360,"accentSat":40-95,"darkness":60-92}',
+    "baseHue tints every background and panel — pick the dominant hue of the mood.",
+    "accentHue is the primary highlight. accent2Hue and accent3Hue must be clearly different hues; 30-180 degrees away usually works.",
+    "baseSat low (10-25) for muted or foggy moods, higher (35-55) for vivid ones.",
+    "darkness: 60 is a lighter dark theme, 92 is nearly black.",
+    "Hue reference: 0 red, 25 orange, 45 gold, 90 lime, 140 green, 175 teal, 200 sky, 225 blue, 260 indigo, 285 violet, 320 magenta, 345 pink.",
+    "Example — 'stormy sea at dusk': {\"baseHue\":215,\"baseSat\":22,\"accentHue\":42,\"accent2Hue\":200,\"accent3Hue\":250,\"accentSat\":58,\"darkness\":82}",
   ].join('\n');
 
+  let spec = null, source = 'assistant';
   try{
     const raw = await callAi(prompt, sys);
     const m = raw.match(/\{[\s\S]*\}/);
-    if(!m) throw new Error('no palette in the reply');
-    const p = JSON.parse(m[0]);
+    if(m){
+      const j = JSON.parse(m[0]);
+      const num = (v, lo, hi, d) => {
+        const n = Number(v);
+        return isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d;
+      };
+      spec = {
+        baseHue:    num(j.baseHue, 0, 360, 215),
+        baseSat:    num(j.baseSat, 0, 60, 28),
+        accentHue:  num(j.accentHue, 0, 360, 40),
+        accent2Hue: num(j.accent2Hue, 0, 360, 200),
+        accent3Hue: num(j.accent3Hue, 0, 360, 260),
+        accentSat:  num(j.accentSat, 30, 95, 62),
+        darkness:   num(j.darkness, 55, 94, 80),
+      };
+    }
+  }catch(err){ /* handled by the fallback below */ }
 
-    const keys = ['bg','bg2','panel','panel2','line','text','muted','amber','accent2','accent3','dusk'];
-    const base = THEMES.slate;
-    const out = {};
-    let bad = 0;
-    keys.forEach(k => {
-      const v = typeof p[k] === 'string' ? p[k].trim() : '';
-      if(HEX_RE.test(v)) out[k] = v.toLowerCase();
-      else { out[k] = base[k]; bad++; }
-    });
-
-    // hard guarantees, regardless of what came back
-    if(relLum(out.panel) > 0.4) out.panel = base.panel;      // keep it a dark UI
-    if(relLum(out.bg) > 0.35) out.bg = base.bg;
-    out.text  = fixContrast(out.text,  out.panel, 7);
-    out.muted = fixContrast(out.muted, out.panel, 3.6);
-    out.amber = fixContrast(out.amber, out.panel, 3);
-
-    out.name = 'Custom';
-    settings.customTheme = out; saveSettings();
-    THEMES.custom = out;
-    applyTheme('custom');
-    renderCustomTheme();
-    SFX.open();
-    status.textContent = bad
-      ? `Applied — ${bad} value${bad>1?'s were':' was'} unusable and kept from the default.`
-      : `Applied. Text contrast ${contrast(out.text, out.panel).toFixed(1)}:1.`;
-  }catch(err){
-    status.textContent = "Couldn't build that one — try describing it differently.";
-  }finally{
-    btn.disabled = false;
+  if(!spec){
+    spec = paletteFromWords(prompt);
+    source = spec ? 'keywords' : null;
   }
+  if(!spec){
+    status.textContent = "Couldn't read that mood — try naming a colour or a scene.";
+    btn.disabled = false;
+    return;
+  }
+
+  // Keep the three accents visually distinct; a model often returns near-
+  // identical hues, which makes the interface look flat.
+  const sep = (a, b) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b));
+  if(sep(spec.accentHue, spec.accent2Hue) < 25) spec.accent2Hue = (spec.accent2Hue + 60) % 360;
+  if(sep(spec.accentHue, spec.accent3Hue) < 25) spec.accent3Hue = (spec.accent3Hue + 300) % 360;
+  if(sep(spec.accent2Hue, spec.accent3Hue) < 25) spec.accent3Hue = (spec.accent3Hue + 45) % 360;
+
+  const out = buildPalette(spec);
+  // Readability is enforced after construction, not hoped for.
+  out.text  = fixContrast(out.text,  out.panel, 7);
+  out.muted = fixContrast(out.muted, out.panel, 3.6);
+  out.amber = fixContrast(out.amber, out.panel, 3);
+
+  settings.customTheme = out; saveSettings();
+  THEMES.custom = out;
+  applyTheme('custom');
+  renderCustomTheme();
+  SFX.open();
+  status.textContent = `Applied${source === 'keywords' ? ' from keywords' : ''} — base hue ${Math.round(spec.baseHue)}°, `
+    + `text contrast ${contrast(out.text, out.panel).toFixed(1)}:1.`;
+  btn.disabled = false;
 }
+
 document.getElementById('ct-generate')?.addEventListener('click', () => {
   const p = document.getElementById('ct-prompt').value.trim();
   if(!p){ document.getElementById('ct-status').textContent = 'Describe the mood first.'; return; }
