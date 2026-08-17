@@ -2850,7 +2850,7 @@ async function readJson(resp){
   return { ok: resp.ok, status: resp.status, json: json || {}, text };
 }
 
-let lastLatency = null;
+let lastLatency = null, lastModel = null;
 async function callAiAgent(messages, tools, opts){
   const body = tools && tools.length ? { messages, tools } : { messages };
   Object.assign(body, opts || {});
@@ -2875,6 +2875,8 @@ async function callAiAgent(messages, tools, opts){
     throw err;
   }
   lastLatency = data.latency_ms ?? null;
+  lastModel = data.model || null;
+  if(data.recovered) console.info('[assistant] recovered:', data.recovered);
   return data.message || { content: data.reply || '' };
 }
 
@@ -3817,6 +3819,19 @@ function renderScreenKeep(){
     ? 'On — stays shared until you stop it'
     : 'Off — needs a fresh click each time';
 }
+document.getElementById('mail-files')?.addEventListener('click', () =>
+  document.getElementById('mail-file-input')?.click());
+document.getElementById('mail-file-input')?.addEventListener('change', async (e) => {
+  const files = [...(e.target.files || [])];
+  if(!files.length) return;
+  const r = await Mail.addFiles(files);
+  e.target.value = '';
+  alert(r.added
+    ? `Loaded ${r.added} message${r.added > 1 ? 's' : ''}.`
+      + (r.skipped ? ` ${r.skipped} file(s) were not readable mail.` : '')
+      + '\n\nThese stay for this session only — re-add them after a reload.'
+    : 'None of those files contained readable mail. Export from Thunderbird with File → Save As, which produces .eml files.');
+});
 document.getElementById('mail-pick')?.addEventListener('click', async () => {
   if(await Mail.pickFolder()){ renderMailStatus(); Mail.scan().then(renderMailStatus); }
 });
@@ -4148,6 +4163,36 @@ const Mail = {
     return out;
   },
 
+  // A .eml file is one RFC822 message with no mbox "From " separator, so it
+  // is parsed by wrapping it in the shape parseMbox already understands.
+  parseEml(text, name){
+    const out = this.parseMbox('From noone@local ' + Date() + '\n' + text, name);
+    return out.length ? out : this.parseMbox(text, name);
+  },
+
+  // Files chosen through a normal file input, which needs no directory
+  // permission at all — the way round a profile folder that cannot be reached.
+  async addFiles(fileList){
+    let added = 0, skipped = 0;
+    for(const file of fileList){
+      try{
+        if(file.size > 40 * 1024 * 1024){ skipped++; continue; }
+        const text = await file.text();
+        const isMbox = /^From [^\s]+ /.test(text.slice(0, 200));
+        const msgs = isMbox ? this.parseMbox(text, file.name) : this.parseEml(text, file.name);
+        if(!msgs.length){ skipped++; continue; }
+        // Message-ID keeps a re-import from duplicating everything.
+        const seen = new Set(this.messages.map(m => m.id));
+        msgs.forEach(m => { if(!seen.has(m.id)){ this.messages.push(m); added++; } });
+      }catch(e){ skipped++; }
+    }
+    this.messages.sort((a, b) => b.when - a.when);
+    this.messages = this.messages.slice(0, 800);
+    this.scannedAt = Date.now();
+    renderMailStatus();
+    return { added, skipped };
+  },
+
   parseMbox(text, folderName){
     const out = [];
     // Messages begin at a line starting "From " at the very start of a line.
@@ -4263,11 +4308,28 @@ const Mail = {
   },
 };
 
+
+// Thunderbird supports dragging messages out as files, so dropping them
+// anywhere on the window imports them — no picker, no permissions.
+['dragover','drop'].forEach(ev => window.addEventListener(ev, e => {
+  if(!e.dataTransfer?.types?.includes('Files')) return;
+  e.preventDefault();
+  if(ev === 'dragover'){ document.body.classList.add('mail-dropping'); return; }
+  document.body.classList.remove('mail-dropping');
+  const files = [...(e.dataTransfer.files || [])]
+    .filter(f => /\.(eml|mbox)$/i.test(f.name) || f.type === 'message/rfc822');
+  if(!files.length) return;
+  Mail.addFiles(files).then(r => {
+    if(r.added) addProactiveMessage(`Loaded ${r.added} message${r.added > 1 ? 's' : ''} from the files you dropped.`);
+  });
+}));
+window.addEventListener('dragleave', () => document.body.classList.remove('mail-dropping'));
+
 function renderMailStatus(){
   const el = document.getElementById('mail-status');
   if(!el) return;
   el.textContent = Mail.messages.length
-    ? `${Mail.messages.length} messages read${Mail.scannedAt ? ' · ' + new Date(Mail.scannedAt).toLocaleTimeString('en-GB').slice(0,5) : ''}`
+    ? `${Mail.messages.length} messages loaded${Mail.scannedAt ? ' · ' + new Date(Mail.scannedAt).toLocaleTimeString('en-GB').slice(0,5) : ''}`
     : (Mail.dir ? 'folder set — not scanned yet' : 'no folder selected');
   el.className = Mail.messages.length ? 'ok' : '';
 }
@@ -5536,7 +5598,15 @@ async function runAssistantTurn(text, spoken){
     msg = await callAiAgent(convo, null, { max_tokens: spoken ? 220 : 900 });
   }
 
-  let display = (msg.content || '').trim();
+  // Belt and braces: the function strips these too, but a leaked <think>
+  // block or raw tool XML must never reach the user.
+  let display = String(msg.content || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/i, '')
+    .replace(/<tool_call>[\s\S]*?(<\/tool_call>|$)/gi, '')
+    .replace(/<\/?function[^>]*>/gi, '')
+    .replace(/<\/?parameter[^>]*>/gi, '')
+    .trim();
   if(!display){
     // The model returned nothing. If a tool ran, its result is far more useful
     // than a bare "Done." — especially when the tool actually failed.
@@ -5587,7 +5657,7 @@ async function runAssistantTurn(text, spoken){
     sources,
     actions,
     metadata: { confidence: conf, latency_ms: Math.round(performance.now() - t0),
-                model_ms: lastLatency, spoken_mode: !!spoken },
+                model_ms: lastLatency, spoken_mode: !!spoken, model: lastModel },
   };
 
   aiHistory.push({ role: 'assistant', content: display });
@@ -5617,7 +5687,7 @@ function renderTurn(res){
     bar.innerHTML = `<span class="conf-lab">confidence</span>
       <span class="conf-track"><span class="conf-fill ${tone}" style="width:${conf}%"></span></span>
       <span class="conf-num ${tone}">${conf}%</span>
-      <span class="conf-lat">${res.metadata.latency_ms}ms</span>`;
+      <span class="conf-lat">${res.metadata.latency_ms}ms${res.metadata.model ? ' · ' + escapeHtml(String(res.metadata.model).split('/').pop()) : ''}</span>`;
     bubble.appendChild(bar);
   }
   aiMessages.scrollTop = aiMessages.scrollHeight;
@@ -7569,6 +7639,7 @@ async function openNoteRec(n){
 // server-side from a master secret that lives only in the function environment
 // plus a per-user salt in the database. Neither half is in this bundle, so a
 // database dump alone cannot decrypt anything. No passphrase to remember.
+let vaultFailed = false;
 async function fetchVaultKey(){
   try{
     const r = await fetch(FN_URL + "/agenda-vault", { method: "POST", headers: authHeaders() });
@@ -7578,8 +7649,14 @@ async function fetchVaultKey(){
     cryptoKey = await crypto.subtle.importKey('raw', b64Buf(key),
                   { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']);
     settings.encOn = true; saveSettings();
+    vaultFailed = false;
     return true;
-  }catch(e){ return false; }
+  }catch(e){
+    // Without the key every encrypted title renders as "locked", which looks
+    // like corrupted data rather than a key that failed to load.
+    vaultFailed = true;
+    return false;
+  }
 }
 function lockVault(){ cryptoKey = null; loadCases(); loadNotes(); renderEncStatus(); }
 
@@ -7833,6 +7910,13 @@ async function bootApp(){
   }
   syncPhase();
   detectHud();
+  // A failed vault load is visible everywhere as locked titles, so say so.
+  setTimeout(() => {
+    if(vaultFailed || cases.some(x => String(x.titulo || '').includes('🔒'))){
+      addProactiveMessage('I could not load the encryption key, so case titles show as locked. '
+        + 'Open Settings and press Re-check under Encryption, or sign out and back in.');
+    }
+  }, 4000);
   Learn.load();
   Proactive.start();
   DueWatch.start();

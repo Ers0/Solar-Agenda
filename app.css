@@ -816,6 +816,14 @@
     font-size:.78rem; font-weight:700; }
   .share-btn:hover{ background: var(--amber); color: var(--on-accent); }
 
+
+  body.mail-dropping::after{
+    content:'Drop mail files to load them'; position:fixed; inset:0; z-index:400;
+    display:grid; place-items:center; font-size:.95rem; font-weight:700; color:var(--amber);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border:2px dashed var(--amber); pointer-events:none;
+  }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;
