@@ -801,6 +801,12 @@
     border:1px solid var(--urgente); opacity:.6; animation: dockPulse 1.8s ease-out infinite;
   }
 
+
+  .ai-msg.proactive{ border-left:3px solid var(--amber);
+    background: linear-gradient(100deg, color-mix(in srgb, var(--amber) 9%, var(--panel-2)), var(--panel) 70%); }
+  .pro-tag{ display:block; font-family:"JetBrains Mono",monospace; font-size:.55rem;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--amber); margin-bottom:5px; }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

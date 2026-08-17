@@ -1997,7 +1997,7 @@ const TarsPresence = {
     const badge = document.getElementById('tars-badge');
     if(badge){ badge.hidden = false; badge.textContent = '!'; }
     this.setState('alert');
-    addAiMessage('assistant', text);
+    addProactiveMessage(text);
     if(level === 'speak' || level === 'urgent') speak(text, VOICE.lang);
     if(level === 'urgent') document.getElementById('voice-panel')?.classList.add('open');
   },
@@ -2017,7 +2017,7 @@ document.getElementById('tars-dock')?.addEventListener('click', async () => {
     // few that matter and summarise the rest.
     const top = held.slice(0, 3);
     const rest = held.length - top.length;
-    addAiMessage('assistant', top.map(e => e.text).join('\n')
+    addProactiveMessage(top.map(e => e.text).join('\n')
       + (rest > 0 ? `\n…and ${rest} more. Ask for a briefing to hear them.` : ''));
     Proactive.clear();
   }
@@ -2746,6 +2746,17 @@ function addAiMessage(role, text){
   aiMessages.scrollTop = aiMessages.scrollHeight;
   return div;
 }
+// TARS starting the conversation on its own. Marked so it cannot be mistaken
+// for a reply to whatever the user last said.
+function addProactiveMessage(text){
+  const div = document.createElement('div');
+  div.className = 'ai-msg assistant proactive';
+  div.innerHTML = `<span class="pro-tag">TARS noticed</span>${escapeHtml(text)}`;
+  aiMessages.appendChild(div);
+  aiMessages.scrollTop = aiMessages.scrollHeight;
+  return div;
+}
+
 // One-shot call (used by Rephrase and the time-estimate suggestion).
 async function callAi(message, system){
   const resp = await fetch(FN_URL + "/agenda-ai", { method: "POST", headers: authHeaders(), body: JSON.stringify({ message, system }) });
@@ -5121,6 +5132,7 @@ const TARS = {
       case 'tts_auth':      return "The speech service rejected the key.";
       case 'tts_voice':     return "That voice ID is not valid.";
       case 'bad_request':   return "That request was malformed on my end. Rephrase it.";
+      case 'model_blocked': return "That model is not available on this account. I have switched to another one — try again.";
       default:              return "My reasoning service failed.";
     }
   },
@@ -7722,7 +7734,7 @@ async function bootApp(){
       // Resumption comes from persisted state, never from invented memory.
       const f = pend[0];
       const left = (f.subtasks || []).filter(s => !s.done).length;
-      addAiMessage('assistant', `Unfinished: ${f.label}`
+      addProactiveMessage(`Unfinished: ${f.label}`
         + (f.waiting_on ? ` — waiting on ${f.waiting_on}` : '')
         + (left ? `, ${left} step${left > 1 ? 's' : ''} remaining.` : '.'));
     }
