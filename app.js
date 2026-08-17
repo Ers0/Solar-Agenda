@@ -1638,6 +1638,9 @@ const DueWatch = {
         });
       }
       const lateKey = key + ':late';
+      // Proactive.scan has its own overdue rule; without this the same case
+      // was announced twice in slightly different words.
+      Proactive.seen.add(`overdue:${c.id}:${new Date().toDateString()}`);
       if(mins < -20 && !this.fired.has(lateKey)){
         this.fired.add(lateKey);
         Proactive.raise({ type:'overdue_now', ref:c.id, level: LEVEL.GENTLE,
@@ -3318,7 +3321,14 @@ const TOOLS = [
                + 'You must NOT describe the screen from app data — you have not seen it.';
         }
         if(res.error === 'rate_limit') return 'The vision service is rate limited right now. Say so and suggest trying again shortly.';
-        return `Could not read the screen (${res.error}). Say so plainly — never invent what was on it.`;
+        if(res.error === 'no_model')
+          return `No vision model is usable on this Groq account. Details: ${res.detail || 'none'}. `
+               + 'If it says "needs terms accepted", tell the user to accept the model terms at console.groq.com. '
+               + 'Never invent what was on the screen.';
+        if(res.error === 'auth_upstream')
+          return 'The Groq key was rejected for vision. Say so — never invent what was on the screen.';
+        return `Could not read the screen (${res.error}${res.detail ? ': ' + res.detail : ''}). `
+             + 'Say so plainly — never invent what was on it.';
       }
       return `Read from the shared window:\n${res.reply}\n\n`
         + 'Answer the user from this. If a value looks cut off or unreadable, say so rather than filling it in.';
@@ -3773,6 +3783,21 @@ function kbSearch(q, limit = 4){
 
 
 // --- manual knowledge entry -------------------------------------------
+document.getElementById('vision-test')?.addEventListener('click', async () => {
+  try{
+    const r = await fetch(FN_URL + "/agenda-vision", {
+      method:'POST', headers: authHeaders(), body: JSON.stringify({ probe:true }),
+    });
+    const out = await readJson(r);
+    if(!out.ok){ alert('Vision check failed: ' + (out.json.error || r.status)); return; }
+    const d = out.json;
+    alert(d.candidates?.length
+      ? `Vision models available:\n\n${d.candidates.join('\n')}`
+        + (d.extra?.length ? `\n\nAlso possible:\n${d.extra.join('\n')}` : '')
+      : `No vision model on this account (${d.total} models visible).\n\n`
+        + 'Accept the Llama 4 model terms at console.groq.com, then try again.');
+  }catch(e){ alert('Could not reach the vision service.'); }
+});
 document.getElementById('screen-share')?.addEventListener('click', async () => {
   if(Screen_.stream && Screen_.stream.active){ Screen_.close(); return; }
   const ok = await Screen_.open();
@@ -3800,7 +3825,24 @@ document.getElementById('mail-scan')?.addEventListener('click', async () => {
   btn.disabled = true; btn.textContent = 'Scanning…';
   const r = await Mail.scan();
   btn.disabled = false; btn.textContent = 'Scan mailbox';
-  alert(r.ok ? `Read ${r.count} messages.` : 'Could not read that folder. Choose the Thunderbird account folder that holds the mbox files.');
+  if(!r.ok){
+    alert('Could not read that folder.\n\n' + (r.reason === 'no folder'
+      ? 'No folder is selected yet — press "Choose folder" first.'
+      : 'The browser refused to read it. On Windows, Chrome blocks AppData; see the note under this section.'));
+  } else if(!r.count){
+    const s = r.seen || {};
+    alert(`No mail found.\n\nLooked through ${s.dirs || 0} folders and ${s.files || 0} files.\n`
+      + `${s.mbox || 0} looked like mailbox files, ${s.skipped || 0} were skipped, ${s.empty || 0} were empty.\n\n`
+      + (s.files === 0
+        ? 'The folder appears empty to the browser. That usually means Chrome blocked it — pick a copy outside AppData.'
+        : s.mbox === 0
+        ? 'Files were found but none are mbox mailboxes. Pick the account folder inside Mail\\ or ImapMail\\ — the one holding a file named INBOX with no extension.'
+        : 'Mailbox files were found but held no messages. For IMAP accounts, enable "Keep messages in this folder on this computer" in Thunderbird so bodies are stored locally.'));
+  } else {
+    const s = r.seen || {};
+    alert(`Read ${r.count} messages from ${s.mbox} mailbox file(s).`
+      + (s.names?.length ? `\n\n${s.names.join('\n')}` : ''));
+  }
   renderMailStatus();
 });
 document.getElementById('kb-add-btn')?.addEventListener('click', () => {
@@ -3934,6 +3976,11 @@ const Screen_ = {
       this.video = document.createElement('video');
       this.video.srcObject = this.stream;
       this.video.muted = true;
+      this.video.playsInline = true;
+      // A detached video element does not reliably decode frames in Chrome,
+      // so it lives in the DOM, invisible and 1px.
+      this.video.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+      document.body.appendChild(this.video);
       await this.video.play();
       renderScreenStatus();
       return true;
@@ -3942,7 +3989,11 @@ const Screen_ = {
 
   close(){
     try{ this.stream && this.stream.getTracks().forEach(t => t.stop()); }catch(e){}
-    if(this.video){ this.video.srcObject = null; this.video = null; }
+    if(this.video){
+      this.video.srcObject = null;
+      try{ this.video.remove(); }catch(e){}
+      this.video = null;
+    }
     this.stream = null;
     renderScreenStatus();
   },
@@ -3993,7 +4044,8 @@ const Screen_ = {
         body: JSON.stringify({ image: img, question }),
       });
       const out = await readJson(r);
-      if(!out.ok) return { ok:false, error: out.json.code || 'vision failed', detail: out.json.detail };
+      if(!out.ok) return { ok:false, error: out.json.code || 'vision failed',
+                            detail: out.json.detail || (out.json.tried || []).join(' | ') };
       this.lastReadAt = Date.now();
       // Only a one-shot share is torn down, and only after a successful read.
       if(!this.keepOpen) this.close();
@@ -4142,36 +4194,48 @@ const Mail = {
     return out;
   },
 
+  // Reports what it actually saw, so "nothing found" can be diagnosed rather
+  // than guessed at.
   async scan(limit = 400){
     if(!this.dir && !(await this.restore())) return { ok:false, reason:'no folder' };
     const found = [];
+    const seen = { dirs: 0, files: 0, skipped: 0, mbox: 0, empty: 0, names: [] };
+
     const walk = async (dir, path, depth) => {
-      if(depth > 3 || found.length > limit) return;
+      // Profiles nest deeply (Profiles/xxx.default/ImapMail/server/), so the
+      // limit has to allow for the whole Thunderbird directory being picked.
+      if(depth > 6 || found.length > limit) return;
       for await (const [name, handle] of dir.entries()){
         if(found.length > limit) break;
         if(handle.kind === 'directory'){
-          // .sbd directories hold subfolders in a Thunderbird profile
+          seen.dirs++;
           await walk(handle, path + name.replace(/\.sbd$/, '') + '/', depth + 1);
           continue;
         }
-        // Skip index and metadata files; mbox files have no extension.
-        if(/\.(msf|dat|json|html|txt|log)$/i.test(name)) continue;
+        seen.files++;
+        if(/\.(msf|dat|json|html|txt|log|sqlite|ini|properties|bak)$/i.test(name)){ seen.skipped++; continue; }
         try{
           const file = await handle.getFile();
-          if(file.size < 40 || file.size > 60 * 1024 * 1024) continue;
-          // Only the tail matters: recent mail sits at the end of an mbox.
+          if(file.size < 40){ seen.empty++; continue; }
+          if(file.size > 60 * 1024 * 1024){ seen.skipped++; continue; }
           const slice = file.size > 3 * 1024 * 1024 ? file.slice(file.size - 3 * 1024 * 1024) : file;
           const text = await slice.text();
-          if(!/^From |\nFrom /.test(text.slice(0, 4000))) continue;   // not an mbox
+          if(!/^From |\nFrom /.test(text.slice(0, 4000))){ seen.skipped++; continue; }
+          seen.mbox++;
+          if(seen.names.length < 6) seen.names.push(path + name);
           found.push(...this.parseMbox(text, path + name));
-        }catch(e){}
+        }catch(e){ seen.skipped++; }
       }
     };
-    try{ await walk(this.dir, '', 0); }catch(e){ return { ok:false, reason:'read failed' }; }
+
+    try{ await walk(this.dir, '', 0); }
+    catch(e){ return { ok:false, reason:'read failed', detail: String(e).slice(0, 120) }; }
+
     this.messages = found.sort((a, b) => b.when - a.when).slice(0, limit);
     this.scannedAt = Date.now();
+    this.lastScan = seen;
     renderMailStatus();
-    return { ok:true, count: this.messages.length };
+    return { ok:true, count: this.messages.length, seen };
   },
 
   search(q, limit = 6){

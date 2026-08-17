@@ -274,6 +274,7 @@
       <div class="set-row">
         <div class="set-info"><b>Screen reading</b><span id="screen-status">not sharing</span></div>
         <button class="btn-ghost" id="screen-share">Share a window</button>
+        <button class="btn-ghost" id="vision-test">Check vision</button>
       </div>
       <div class="set-row">
         <div class="set-info"><b>Keep sharing between questions</b><span id="screen-keep-status">Off — asks each time</span></div>
@@ -288,6 +289,9 @@
       <div class="set-actions" style="margin:-4px 0 14px;">
         <button class="btn-ghost" id="mail-scan" style="flex:1">Scan mailbox</button>
       </div>
+      <p class="hint"><b>Windows:</b> <code>%APPDATA%\\Thunderbird\\Profiles\\&lt;profile&gt;\\ImapMail\\&lt;server&gt;</code> — but Chrome blocks AppData, so copy that folder somewhere like <code>Documents\\TBMail</code> and pick the copy.<br>
+      <b>Linux:</b> <code>~/.thunderbird/&lt;profile&gt;/ImapMail/&lt;server&gt;</code> · <b>macOS:</b> <code>~/Library/Thunderbird/Profiles/&lt;profile&gt;/ImapMail/&lt;server&gt;</code><br>
+      For IMAP accounts, first enable <b>Account Settings → Synchronisation &amp; Storage → Keep messages on this computer</b>, or the files hold headers only.</p>
       <p class="hint">Point this at your Thunderbird account folder — usually <b>.thunderbird/&lt;profile&gt;/Mail/&lt;account&gt;</b> or <b>ImapMail/&lt;account&gt;</b>. Mail is read on this machine only; nothing is uploaded, and only what you ask about reaches the assistant. Chrome or Edge on desktop.</p>
 
       <div class="kb-add">
