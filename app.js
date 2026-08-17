@@ -2007,6 +2007,16 @@ const TarsPresence = {
     if(VOICE.active) this.setState(VOICE.conversing ? 'listening' : 'standby');
   },
 };
+// The dock shares the bottom-right corner with both panels' controls, so it
+// steps aside whenever either is open. :has() covers most browsers; this keeps
+// the rest correct.
+function syncDockVisibility(){
+  const open = document.getElementById('ai-panel')?.classList.contains('open')
+            || document.getElementById('voice-panel')?.classList.contains('open');
+  const dock = document.getElementById('tars-dock');
+  if(dock){ dock.style.opacity = open ? '0' : ''; dock.style.pointerEvents = open ? 'none' : ''; }
+}
+setInterval(syncDockVisibility, 400);
 document.getElementById('tars-dock')?.addEventListener('click', async () => {
   const panel = document.getElementById('voice-panel');
   TarsPresence.clearBadge();
@@ -3301,9 +3311,12 @@ const TOOLS = [
       const q = args.question || 'What is shown here? Report any fault codes, serial numbers or error text exactly.';
       const res = await Screen_.ask(q);
       if(!res.ok){
-        if(res.error === 'no screen shared' || res.error === 'no frame')
-          return 'NO IMAGE WAS CAPTURED. Say plainly that you cannot see the screen and ask them to share a window. '
+        if(res.error === 'no screen shared' || res.error === 'no frame'){
+          showSharePrompt();
+          return 'NO IMAGE WAS CAPTURED — no window is being shared, and the browser only allows sharing to start from a click. '
+               + 'Tell the user to press the Share screen button that has just appeared, then ask again. '
                + 'You must NOT describe the screen from app data — you have not seen it.';
+        }
         if(res.error === 'rate_limit') return 'The vision service is rate limited right now. Say so and suggest trying again shortly.';
         return `Could not read the screen (${res.error}). Say so plainly — never invent what was on it.`;
       }
@@ -3771,11 +3784,13 @@ document.getElementById('screen-keep')?.addEventListener('click', () => {
   renderScreenKeep(); renderScreenStatus();
 });
 function renderScreenKeep(){
-  Screen_.keepOpen = !!settings.screenKeep;
+  // Defaults to on: a one-shot share would need a fresh click every time,
+  // which makes voice-triggered reading impossible.
+  Screen_.keepOpen = settings.screenKeep !== false;
   const el = document.getElementById('screen-keep-status');
   if(el) el.textContent = Screen_.keepOpen
     ? 'On — stays shared until you stop it'
-    : 'Off — asks each time';
+    : 'Off — needs a fresh click each time';
 }
 document.getElementById('mail-pick')?.addEventListener('click', async () => {
   if(await Mail.pickFolder()){ renderMailStatus(); Mail.scan().then(renderMailStatus); }
@@ -3904,7 +3919,7 @@ const Outcomes = {
 //     except when you explicitly keep it open for repeat questions
 //   - the browser's own sharing indicator is always visible while it is live
 const Screen_ = {
-  stream: null, video: null, keepOpen: false, lastReadAt: 0,
+  stream: null, video: null, keepOpen: true, lastReadAt: 0,
 
   async open(){
     if(this.stream && this.stream.active) return true;
@@ -3934,9 +3949,10 @@ const Screen_ = {
 
   // Returns a data URL held only in memory. Never stored anywhere.
   async grab(){
-    if(!this.stream || !this.stream.active){
-      if(!(await this.open())) return null;
-    }
+    // getDisplayMedia needs transient user activation, which a tool call made
+    // after a network round trip does not have. Opening the picker here failed
+    // silently, so the share must already be live — started by a real click.
+    if(!this.stream || !this.stream.active) return null;
     // getDisplayMedia resolves as soon as the user picks, but the first frame
     // arrives later. A single fixed wait was too short, so the capture came
     // back empty and the stream was then torn down — which looked like the
@@ -3985,6 +4001,28 @@ const Screen_ = {
     }catch(e){ return { ok:false, error:'network' }; }
   },
 };
+
+
+// The browser will only start a share from a genuine click, so TARS asks for
+// one rather than failing quietly.
+function showSharePrompt(){
+  if(document.getElementById('share-prompt')) return;
+  const div = document.createElement('div');
+  div.className = 'ai-msg assistant proactive';
+  div.id = 'share-prompt';
+  div.innerHTML = `<span class="pro-tag">Permission needed</span>`
+    + `I can't open the screen picker on my own — browsers only allow that from a click.`
+    + `<button class="share-btn" id="share-now">Share a window</button>`;
+  aiMessages.appendChild(div);
+  aiMessages.scrollTop = aiMessages.scrollHeight;
+  div.querySelector('#share-now').addEventListener('click', async () => {
+    const ok = await Screen_.open();
+    div.remove();
+    if(!ok){ addProactiveMessage('Screen sharing was refused or is unsupported here.'); return; }
+    Screen_.keepOpen = true; settings.screenKeep = true; saveSettings();
+    addProactiveMessage('Sharing now. Ask me again and I will read it.');
+  });
+}
 
 function renderScreenStatus(){
   const el = document.getElementById('screen-status');
@@ -5434,7 +5472,15 @@ async function runAssistantTurn(text, spoken){
     msg = await callAiAgent(convo, null, { max_tokens: spoken ? 220 : 900 });
   }
 
-  let display = (msg.content || '').trim() || 'Done.';
+  let display = (msg.content || '').trim();
+  if(!display){
+    // The model returned nothing. If a tool ran, its result is far more useful
+    // than a bare "Done." — especially when the tool actually failed.
+    const last = actions[actions.length - 1];
+    display = last
+      ? (last.ok ? `Done — ${last.detail || last.tool}.` : `That failed: ${last.detail || last.tool}.`)
+      : 'Done.';
+  }
   let conf = null;
   display = display.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i,
     (_, n) => { conf = Math.max(0, Math.min(100, +n)); return ''; }).trim();

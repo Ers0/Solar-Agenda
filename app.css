@@ -751,7 +751,10 @@
   @keyframes dockPulse{ 0%{ transform:scale(1); opacity:.8 } 100%{ transform:scale(1.5); opacity:0 } }
   .dock-badge{ position:absolute; top:-2px; right:-2px; min-width:16px; height:16px; border-radius:999px;
     background: var(--urgente); color:#fff; font-size:.6rem; display:grid; place-items:center; font-weight:700; }
-  .voice-panel.open ~ .tars-dock, body:has(.voice-panel.open) .tars-dock{ opacity:0; pointer-events:none; }
+  /* The dock shares the bottom-right corner with both panels' controls, so it
+     steps aside whenever either is open. */
+  body:has(.voice-panel.open) .tars-dock,
+  body:has(.ai-panel.open) .tars-dock{ opacity:0; pointer-events:none; }
   @media (max-width:860px){ .tars-dock{ right:12px; bottom:78px; width:42px; height:42px; } }
 
 
@@ -806,6 +809,12 @@
     background: linear-gradient(100deg, color-mix(in srgb, var(--amber) 9%, var(--panel-2)), var(--panel) 70%); }
   .pro-tag{ display:block; font-family:"JetBrains Mono",monospace; font-size:.55rem;
     letter-spacing:.14em; text-transform:uppercase; color:var(--amber); margin-bottom:5px; }
+
+
+  .share-btn{ display:block; margin-top:10px; width:100%; padding:9px 12px; border-radius:9px;
+    border:1px solid var(--amber); background: var(--amber-soft); color: var(--amber);
+    font-size:.78rem; font-weight:700; }
+  .share-btn:hover{ background: var(--amber); color: var(--on-accent); }
 
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
