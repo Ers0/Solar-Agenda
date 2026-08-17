@@ -1711,7 +1711,8 @@ const Proactive = {
       const k = String(c.titulo || '').toLowerCase().split(/[—-]/)[0].trim().slice(0, 24);
       if(k.length > 3) (byClient[k] = byClient[k] || []).push(c);
     });
-    Object.entries(byClient).forEach(([k, list]) => {
+    // One representative pattern is enough; the rest are noise.
+    Object.entries(byClient).sort((a, b) => b[1].length - a[1].length).slice(0, 1).forEach(([k, list]) => {
       const recent = list.filter(c => (Date.now() - Date.parse(c.case_date || 0)) < 30 * 86400000);
       if(recent.length >= 3) out.push({
         type:'repeat_client', ref:k, level:LEVEL.AMBIENT,
@@ -2012,7 +2013,12 @@ document.getElementById('tars-dock')?.addEventListener('click', async () => {
   const held = Proactive.pending();
   if(held.length){
     held.forEach(e => NoteLearn.acted(e.type));
-    addAiMessage('assistant', held.map(e => e.text).join('\n'));
+    // Dumping a dozen findings at once is worse than saying nothing; show the
+    // few that matter and summarise the rest.
+    const top = held.slice(0, 3);
+    const rest = held.length - top.length;
+    addAiMessage('assistant', top.map(e => e.text).join('\n')
+      + (rest > 0 ? `\n…and ${rest} more. Ask for a briefing to hear them.` : ''));
     Proactive.clear();
   }
   if(!VOICE.active) await startVoice();
@@ -3284,8 +3290,9 @@ const TOOLS = [
       const q = args.question || 'What is shown here? Report any fault codes, serial numbers or error text exactly.';
       const res = await Screen_.ask(q);
       if(!res.ok){
-        if(res.error === 'no screen shared')
-          return 'The user did not share a window, so nothing was read. Ask them to press Share screen and pick the window — do not guess what was on it.';
+        if(res.error === 'no screen shared' || res.error === 'no frame')
+          return 'NO IMAGE WAS CAPTURED. Say plainly that you cannot see the screen and ask them to share a window. '
+               + 'You must NOT describe the screen from app data — you have not seen it.';
         if(res.error === 'rate_limit') return 'The vision service is rate limited right now. Say so and suggest trying again shortly.';
         return `Could not read the screen (${res.error}). Say so plainly — never invent what was on it.`;
       }
@@ -3886,7 +3893,7 @@ const Outcomes = {
 //     except when you explicitly keep it open for repeat questions
 //   - the browser's own sharing indicator is always visible while it is live
 const Screen_ = {
-  stream: null, video: null, keepOpen: false,
+  stream: null, video: null, keepOpen: false, lastReadAt: 0,
 
   async open(){
     if(this.stream && this.stream.active) return true;
@@ -3919,11 +3926,22 @@ const Screen_ = {
     if(!this.stream || !this.stream.active){
       if(!(await this.open())) return null;
     }
-    // Give the first frame a moment to arrive after the picker closes.
-    if(!this.video.videoWidth) await new Promise(r => setTimeout(r, 350));
+    // getDisplayMedia resolves as soon as the user picks, but the first frame
+    // arrives later. A single fixed wait was too short, so the capture came
+    // back empty and the stream was then torn down — which looked like the
+    // share stopping by itself.
+    const ready = await new Promise(res => {
+      if(this.video.videoWidth) return res(true);
+      let waited = 0;
+      const poll = setInterval(() => {
+        if(this.video && this.video.videoWidth){ clearInterval(poll); res(true); }
+        else if((waited += 100) > 4000){ clearInterval(poll); res(false); }
+      }, 100);
+    });
+    if(!ready) return null;
+
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if(!vw) return null;
-    // Downscale: legible text at a fraction of the upload size.
     const maxW = 1280;
     const scale = Math.min(1, maxW / vw);
     const cv = document.createElement('canvas');
@@ -3937,7 +3955,11 @@ const Screen_ = {
 
   async ask(question){
     const img = await this.grab();
-    if(!img) return { ok:false, error:'no screen shared' };
+    if(!img){
+      // Keep the share open: closing it here is what made a failed first
+      // capture look like the user's sharing had stopped.
+      return { ok:false, error:'no frame' };
+    }
     try{
       const r = await fetch(FN_URL + "/agenda-vision", {
         method:'POST', headers: authHeaders(),
@@ -3945,13 +3967,11 @@ const Screen_ = {
       });
       const out = await readJson(r);
       if(!out.ok) return { ok:false, error: out.json.code || 'vision failed', detail: out.json.detail };
+      this.lastReadAt = Date.now();
+      // Only a one-shot share is torn down, and only after a successful read.
+      if(!this.keepOpen) this.close();
       return { ok:true, reply: out.json.reply, model: out.json.model };
     }catch(e){ return { ok:false, error:'network' }; }
-    finally{
-      // The frame goes out of scope here; if the share was one-shot, the
-      // stream is closed too so the indicator does not linger.
-      if(!this.keepOpen) this.close();
-    }
   },
 };
 
@@ -5232,6 +5252,7 @@ function buildAiSystemPrompt(spoken, R){
     "=== WHAT THE USER IS LOOKING AT ===",
     TarsContext.brief(),
     "Resolve 'this', 'these', 'it' and 'the case' against the active focus first, then the focused case. If neither applies and the reference is unclear, ask which one.",
+    "SCREEN: the snapshot below describes DATA IN THIS APP, not what is visible on the user's monitor. If they ask what is on their screen, what you can see, or to read something, you MUST call look_at_screen. Never answer such a question from the snapshot, and never claim to see anything you have not read through that tool.",
     "When the user says they are working on something, start a focus with sensible steps rather than only replying.",
     "",
     "=== REAL DATA SNAPSHOT (the ONLY source of truth) ===",
