@@ -2842,6 +2842,19 @@ const TOKEN_CEILING = 5200;   // well under Groq's per-minute allowance
 // consumed", which then masks whatever actually went wrong. Every response is
 // reduced to a plain object immediately, so the mistake is impossible rather
 // than merely avoided.
+
+// An error can arrive as a string, as {message}, or as a database error
+// object. `new Error(object)` stringifies to "[object Object]", which tells the
+// user nothing — so every error is reduced to readable text here.
+function errText(x, fallback){
+  if(!x) return fallback || 'Something went wrong.';
+  if(typeof x === 'string') return x;
+  if(typeof x.message === 'string' && x.message) return x.message;
+  if(typeof x.error === 'string') return x.error;
+  if(x.error && typeof x.error.message === 'string') return x.error.message;
+  try{ return JSON.stringify(x).slice(0, 240); }catch(e){ return fallback || 'Something went wrong.'; }
+}
+
 async function readJson(resp){
   let text = '';
   try{ text = await resp.text(); }catch(e){}
@@ -4169,6 +4182,12 @@ const Ink = {
       return;
     }
     // A stylus barrel button erases, which is the tablet convention.
+    if(this.tool === 'select'){
+      const p = this.toDoc(e);
+      this.selecting = true;
+      this.selection = { x0:p.x, y0:p.y, x1:p.x, y1:p.y };
+      return;
+    }
     const erasing = this.tool === 'eraser' || e.button === 5 || (e.buttons & 32) ||
                     e.pointerType === 'pen' && e.button === 2;
     if(erasing){ this.drawing = 'erase'; this.eraseAt(this.toDoc(e)); return; }
@@ -4190,6 +4209,12 @@ const Ink = {
     if(this.panning && this.panFrom){
       this.doc.view.panX = this.panFrom.panX + (e.offsetX - this.panFrom.x);
       this.doc.view.panY = this.panFrom.panY + (e.offsetY - this.panFrom.y);
+      this.redraw();
+      return;
+    }
+    if(this.selecting && this.selection){
+      const p = this.toDoc(e);
+      this.selection.x1 = p.x; this.selection.y1 = p.y;
       this.redraw();
       return;
     }
@@ -4219,6 +4244,18 @@ const Ink = {
 
   up(e){
     if(this.panning){ this.panning = false; this.panFrom = null; return; }
+    if(this.selecting){
+      this.selecting = false;
+      const s = this.selection;
+      // Normalise, and treat a tap as clearing the selection.
+      if(s){
+        this.selection = { x0:Math.min(s.x0,s.x1), y0:Math.min(s.y0,s.y1),
+                           x1:Math.max(s.x0,s.x1), y1:Math.max(s.y0,s.y1) };
+        if(this.selection.x1 - this.selection.x0 < 4) this.selection = null;
+      }
+      this.redraw(); this.updateHandBar();
+      return;
+    }
     if(!this.drawing) return;
     if(this.drawing === 'erase'){ this.drawing = false; this.markDirty(); return; }
     this.drawing = false;
@@ -4302,6 +4339,7 @@ const Ink = {
     this.doc.objects.forEach(o => this.drawObject(o));
     if(this.pending) this.drawObject(this.pending.shape, true);
     if(this.cur) this.drawStroke(this.cur, 1);
+    if(this.selection) this.drawSelection();
   },
 
   // Clean geometry from a recognised shape. Drawn in the same ink colour so
@@ -4351,6 +4389,19 @@ const Ink = {
         break;
     }
     ctx.stroke();
+    ctx.restore();
+  },
+
+  drawSelection(){
+    const ctx = this.ctx, v = this.doc.view, s = this.selection;
+    ctx.save();
+    ctx.scale(this.dpr, this.dpr);
+    ctx.translate(v.panX, v.panY);
+    ctx.scale(v.zoom, v.zoom);
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--amber').trim() || '#f2a71b';
+    ctx.lineWidth = 1 / v.zoom;
+    ctx.setLineDash([5 / v.zoom, 4 / v.zoom]);
+    ctx.strokeRect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
     ctx.restore();
   },
 
@@ -4472,6 +4523,190 @@ const Ink = {
     if(el){ el.style.display = 'none'; el.innerHTML = ''; }
   },
 
+
+  // --- Handwriting (Phase 3) -----------------------------------------
+  // Nothing is converted automatically. The user selects ink, asks for
+  // recognition, reviews and corrects the result, and only then commits.
+  // The raw strokes are never altered by any of it.
+  selection: null,        // {x0,y0,x1,y1} in document space
+  selecting: false,
+  recognising: false,
+  review: null,           // { text, strokeIds, box, model }
+
+  selectedStrokes(){
+    const s = this.selection;
+    if(!s) return [];
+    const inBox = p => p[0] >= s.x0 && p[0] <= s.x1 && p[1] >= s.y0 && p[1] <= s.y1;
+    // A stroke counts as selected if most of it lies inside, so a rectangle
+    // does not have to be drawn perfectly around the writing.
+    return this.doc.strokes.filter(k => {
+      if(k.hidden) return false;
+      const inside = k.points.filter(inBox).length;
+      return inside > k.points.length * 0.6;
+    });
+  },
+
+  selectAllInk(){
+    const live = this.doc.strokes.filter(s => !s.hidden);
+    if(!live.length){ this.selection = null; this.redraw(); return 0; }
+    const b = ShapeRec.bbox(live.flatMap(s => s.points));
+    const pad = 8;
+    this.selection = { x0:b.x0-pad, y0:b.y0-pad, x1:b.x1+pad, y1:b.y1+pad };
+    this.redraw(); this.updateHandBar();
+    return live.length;
+  },
+
+  clearSelection(){ this.selection = null; this.redraw(); this.updateHandBar(); },
+
+  // Render the chosen strokes as black on white at a generous scale. Vision
+  // models read that far better than pale ink on the app's dark theme, and the
+  // vectors mean it can be rasterised at whatever resolution helps.
+  renderForRecognition(strokes){
+    if(!strokes.length) return null;
+    const b = ShapeRec.bbox(strokes.flatMap(s => s.points));
+    const pad = 24;
+    const targetW = 1400;
+    const scale = Math.max(1, Math.min(4, targetW / Math.max(1, b.w + pad*2)));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round((b.w + pad*2) * scale);
+    cv.height = Math.round((b.h + pad*2) * scale);
+    const g = cv.getContext('2d');
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, cv.width, cv.height);
+    g.strokeStyle = '#111111';
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    strokes.forEach(s => {
+      for(let i = 1; i < s.points.length; i++){
+        const a = s.points[i-1], p = s.points[i];
+        g.lineWidth = Math.max(2, s.width * scale * 0.9);
+        g.beginPath();
+        g.moveTo((a[0]-b.x0+pad)*scale, (a[1]-b.y0+pad)*scale);
+        g.lineTo((p[0]-b.x0+pad)*scale, (p[1]-b.y0+pad)*scale);
+        g.stroke();
+      }
+    });
+    const url = cv.toDataURL('image/png');    // lossless: ink has hard edges
+    cv.width = cv.height = 0;
+    return { url, box: b };
+  },
+
+  async recogniseHandwriting(){
+    const strokes = this.selection ? this.selectedStrokes() : this.doc.strokes.filter(s => !s.hidden);
+    if(!strokes.length){ alert('Select some handwriting first, or press "All ink".'); return; }
+    const shot = this.renderForRecognition(strokes);
+    if(!shot){ alert('Nothing to read.'); return; }
+
+    this.recognising = true;
+    this.updateHandBar();
+    try{
+      const r = await fetch(FN_URL + "/agenda-vision", {
+        method:'POST', headers: authHeaders(),
+        body: JSON.stringify({ image: shot.url, mode:'handwriting' }),
+      });
+      const out = await readJson(r);
+      if(!out.ok){
+        const why = out.json.code === 'no_model'
+          ? 'No vision model is available on the Groq account. ' + (out.json.detail || '')
+          : (out.json.error || 'Recognition failed.');
+        alert(why);
+        return;
+      }
+      const text = String(out.json.reply || '').trim();
+      if(!text){ alert('Nothing legible was returned. Try selecting a smaller area.'); return; }
+      this.review = { text, strokeIds: strokes.map(s => s.id), box: shot.box, model: out.json.model };
+      this.showReview();
+    }catch(e){
+      alert('Could not reach the recognition service.');
+    }finally{
+      this.recognising = false;
+      this.updateHandBar();
+    }
+  },
+
+  showReview(){
+    const el = document.getElementById('ink-review');
+    if(!el || !this.review) return;
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div class="rev-head">
+        <b>Check the transcription</b>
+        <span class="rev-model">${escapeHtml(String(this.review.model || '').split('/').pop())}</span>
+      </div>
+      <textarea id="rev-text" class="rev-text" spellcheck="false"></textarea>
+      <label class="rev-keep"><input type="checkbox" id="rev-keep-ink" checked> Keep the handwriting visible as well</label>
+      <div class="rev-actions">
+        <button class="btn-ghost" id="rev-cancel">Cancel</button>
+        <button class="btn-ghost" id="rev-retry">Try again</button>
+        <button class="btn-primary" id="rev-commit">Insert as text</button>
+      </div>`;
+    const ta = el.querySelector('#rev-text');
+    ta.value = this.review.text;
+    ta.focus();
+    el.querySelector('#rev-cancel').addEventListener('click', () => this.hideReview());
+    el.querySelector('#rev-retry').addEventListener('click', () => { this.hideReview(); this.recogniseHandwriting(); });
+    el.querySelector('#rev-commit').addEventListener('click', () => {
+      // What is committed is what the user sees, corrections included.
+      this.commitText(ta.value, el.querySelector('#rev-keep-ink').checked);
+    });
+  },
+  hideReview(){
+    this.review = null;
+    const el = document.getElementById('ink-review');
+    if(el){ el.style.display = 'none'; el.innerHTML = ''; }
+  },
+
+  commitText(text, keepInk){
+    if(!this.review) return;
+    const clean = String(text || '').trim();
+    if(!clean){ this.hideReview(); return; }
+    this.pushUndo();
+    const b = this.review.box;
+    // Spatial metadata now, so Phase 5 search can point at where it was written.
+    const obj = {
+      id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+      type: 'text', content: clean,
+      x: +b.x0.toFixed(1), y: +b.y0.toFixed(1),
+      width: +b.w.toFixed(1), height: +b.h.toFixed(1),
+      fromStrokes: this.review.strokeIds.slice(),
+      source: 'handwriting', model: this.review.model, t: Date.now(),
+    };
+    this.doc.objects.push(obj);
+    if(!keepInk){
+      // Hidden, never deleted: re-recognition and later models still need it.
+      this.review.strokeIds.forEach(id => {
+        const s = this.doc.strokes.find(x => x.id === id);
+        if(s){ s.hidden = true; s.recognisedAs = obj.id; }
+      });
+    }
+    // The text also lands in the note body, where it is editable like any text.
+    const ed = document.getElementById('notebook-canvas');
+    if(ed){
+      const block = document.createElement('div');
+      clean.split(/\n/).forEach(line => {
+        const p = document.createElement('p');
+        p.textContent = line;
+        block.appendChild(p);
+      });
+      ed.appendChild(block);
+    }
+    this.hideReview();
+    this.clearSelection();
+    this.redraw(); this.markDirty(); this.status();
+  },
+
+  updateHandBar(){
+    const bar = document.getElementById('ink-hand');
+    if(!bar) return;
+    const n = this.selection ? this.selectedStrokes().length : this.doc.strokes.filter(s => !s.hidden).length;
+    const btn = document.getElementById('hand-read');
+    if(btn){
+      btn.disabled = this.recognising || !n;
+      btn.textContent = this.recognising ? 'Reading…' : `Recognise handwriting (${n})`;
+    }
+    const clr = document.getElementById('hand-clear');
+    if(clr) clr.style.display = this.selection ? 'inline-block' : 'none';
+  },
+
   // --- persistence --------------------------------------------------
   markDirty(){
     this.dirty = true;
@@ -4515,7 +4750,7 @@ const Ink = {
     if(wrap) wrap.style.display = on ? 'block' : 'none';
     const btn = document.getElementById('nb-ink-toggle');
     if(btn) btn.classList.toggle('active', on);
-    if(on){ this.mount(); this.resize(); }
+    if(on){ this.mount(); this.resize(); this.updateHandBar(); }
   },
 };
 
@@ -4552,6 +4787,12 @@ document.getElementById('ink-smart')?.addEventListener('click', e => {
   if(!Ink.smartInk) Ink.rejectShape();
   SFX.tick();
 });
+document.getElementById('hand-all')?.addEventListener('click', () => {
+  const n = Ink.selectAllInk();
+  if(!n) alert('There is no handwriting on this note yet.');
+});
+document.getElementById('hand-clear')?.addEventListener('click', () => Ink.clearSelection());
+document.getElementById('hand-read')?.addEventListener('click', () => Ink.recogniseHandwriting());
 document.getElementById('ink-revert')?.addEventListener('click', () => {
   if(!Ink.revertLast()) alert('No recognised shape to revert.');
 });
@@ -6599,7 +6840,7 @@ async function loadNotebooks(){
 async function createNotebookApi(payload){
   const resp = await fetch(FN_URL + "/agenda-notebooks", { method: "POST", headers: authHeaders(), body: JSON.stringify(payload) });
   const out = await readJson(resp);
-  if(!out.ok) throw new Error(out.json.error || 'Error creating notebook.');
+  if(!out.ok) throw new Error(errText(out.json, 'Error creating notebook.'));
   return out.json;
 }
 async function deleteNotebookApi(id){
@@ -6618,13 +6859,13 @@ async function loadNotes(){
 async function createNoteApi(payload){
   const resp = await fetch(FN_URL + "/agenda-notes", { method: "POST", headers: authHeaders(), body: JSON.stringify(await sealNote(payload)) });
   const out = await readJson(resp);
-  if(!out.ok) throw new Error(out.json.error || 'Error creating note.');
+  if(!out.ok) throw new Error(errText(out.json, 'Error creating note.'));
   return openNoteRec(out.json);
 }
 async function updateNoteApi(id, payload){
   const resp = await fetch(FN_URL + "/agenda-notes", { method: "PUT", headers: authHeaders(), body: JSON.stringify({ id, ...(await sealNote(payload)) }) });
   const out = await readJson(resp);
-  if(!out.ok) throw new Error(out.json.error || 'Error saving note.');
+  if(!out.ok) throw new Error(errText(out.json, 'Error saving note.'));
   return openNoteRec(out.json);
 }
 async function deleteNoteApi(id){
@@ -6724,7 +6965,7 @@ function openColorPicker(kind, id, anchor){
 async function updateNotebookApi(id, payload){
   const r = await fetch(FN_URL + "/agenda-notebooks", { method:"PUT", headers: authHeaders(), body: JSON.stringify({ id, ...payload }) });
   const out = await readJson(r);
-  if(!out.ok) throw new Error(out.json.error || 'Error saving notebook.');
+  if(!out.ok) throw new Error(errText(out.json, 'Error saving notebook.'));
   return out.json;
 }
 
@@ -6940,7 +7181,7 @@ document.getElementById('new-notebook-confirm').addEventListener('click', async 
     newNotebookModalBackdrop.classList.remove('open');
     activeFolderId = nb.id;
     renderNotebooksGrid();
-  }catch(err){ alert(err.message); }
+  }catch(err){ alert(errText(err, 'Could not create the notebook.')); }
   finally{ btn.disabled = false; }
 });
 
@@ -7445,7 +7686,7 @@ async function connectDrive(){
       },
     });
     driveTokenClient.requestAccessToken({ prompt: driveToken ? '' : 'consent' });
-  }catch(e){ alert(e.message); }
+  }catch(e){ alert(errText(e)); }
 }
 async function driveUpload(name, blob){
   if(!driveToken) return null;

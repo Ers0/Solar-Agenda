@@ -463,6 +463,7 @@
     <div class="notebook-editor-header">
       <input type="text" id="nb-title-input" placeholder="Untitled">
       <input type="date" id="nb-date-input" title="Link to a calendar date">
+      <button class="btn-ghost" id="nb-ink-toggle" title="Handwriting layer">✎ Ink</button>
       <button class="btn-danger" id="nb-delete-btn" style="display:none">Delete</button>
     </div>
     <span class="notebook-status" id="notebook-status">Saved</span>
@@ -509,6 +510,7 @@
         <button class="ink-tool active" data-ink-tool="pen" title="Pen">✒</button>
         <button class="ink-tool" data-ink-tool="highlighter" title="Highlighter">▬</button>
         <button class="ink-tool" data-ink-tool="eraser" title="Eraser">⌫</button>
+        <button class="ink-tool" data-ink-tool="select" title="Select handwriting">▢</button>
         <button class="ink-tool" data-ink-tool="pan" title="Pan (or hold Alt)">✥</button>
         <span class="ink-sep"></span>
         <label class="ink-lab">Size<input type="range" id="ink-width" min="1" max="14" step="0.5" value="2.4"></label>
@@ -524,6 +526,12 @@
       </div>
       <canvas id="ink-canvas"></canvas>
       <div class="ink-prompt" id="ink-prompt" style="display:none"></div>
+      <div class="ink-hand" id="ink-hand">
+        <button class="btn-ghost" id="hand-all">All ink</button>
+        <button class="btn-ghost" id="hand-clear" style="display:none">Clear selection</button>
+        <button class="btn-primary" id="hand-read">Recognise handwriting</button>
+      </div>
+      <div class="ink-review" id="ink-review" style="display:none"></div>
     </div>
     <div class="slash-menu" id="slash-menu"></div>
     <div class="img-bar" id="img-bar">

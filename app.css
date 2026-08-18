@@ -855,6 +855,24 @@
   .ink-no:hover{ color:var(--text); }
   #ink-smart.active{ color:var(--on-accent); background:var(--amber); border-color:var(--amber); }
 
+
+  .ink-hand{ display:flex; align-items:center; gap:7px; padding:8px 10px;
+    border-top:1px solid var(--line); background:var(--panel-2); }
+  .ink-hand .btn-primary{ margin-left:auto; padding:6px 13px; font-size:.72rem; }
+  .ink-hand .btn-ghost{ padding:6px 11px; font-size:.7rem; }
+  .ink-hand button:disabled{ opacity:.45; }
+  .ink-review{ padding:11px; border-top:1px solid var(--line); background:var(--panel); }
+  .rev-head{ display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:.78rem; }
+  .rev-model{ margin-left:auto; font-family:"JetBrains Mono",monospace;
+    font-size:.58rem; color:var(--muted); }
+  .rev-text{ width:100%; min-height:120px; resize:vertical; padding:10px;
+    border-radius:9px; border:1px solid var(--line); background:var(--bg);
+    color:var(--text); font-size:.82rem; line-height:1.55; font-family:inherit; }
+  .rev-keep{ display:flex; align-items:center; gap:7px; margin:9px 0;
+    font-size:.7rem; color:var(--muted); }
+  .rev-actions{ display:flex; gap:7px; justify-content:flex-end; }
+  .rev-actions button{ padding:7px 13px; font-size:.72rem; }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;
