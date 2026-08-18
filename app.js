@@ -4006,7 +4006,23 @@ document.getElementById('mail-file-input')?.addEventListener('change', async (e)
     : 'None of those files contained readable mail. Export from Thunderbird with File → Save As, which produces .eml files.');
 });
 document.getElementById('mail-pick')?.addEventListener('click', async () => {
-  if(await Mail.pickFolder()){ renderMailStatus(); Mail.scan().then(renderMailStatus); }
+  if(!window.showDirectoryPicker){
+    alert('This browser cannot open folders. Use Chrome or Edge on desktop, or load .eml files with "Add mail files".');
+    return;
+  }
+  if(await Mail.pickFolder()){
+    renderMailStatus();
+    const r = await Mail.scan();
+    alert(r.ok && r.count ? `Folder set. Read ${r.count} messages.`
+      : 'Folder set, but no mail was found in it. Open it and check for a file named INBOX with no extension.');
+    renderMailStatus();
+  } else {
+    alert(Mail.lastReason || 'No folder was chosen.');
+  }
+});
+document.getElementById('mail-forget')?.addEventListener('click', async () => {
+  await Mail.forget();
+  alert('Forgotten. Press "Choose folder" to pick a different one.');
 });
 document.getElementById('mail-scan')?.addEventListener('click', async () => {
   const btn = document.getElementById('mail-scan');
@@ -5730,7 +5746,7 @@ function renderScreenStatus(){
 // Read-only by design — sending goes out through mailto:, which opens
 // Thunderbird itself when it is the default client.
 const Mail = {
-  dir: null, messages: [], scannedAt: 0,
+  dir: null, messages: [], scannedAt: 0, lastReason: '',
 
   async pickFolder(){
     try{
@@ -5739,9 +5755,30 @@ const Mail = {
       const h = await window.showDirectoryPicker({ id:'tbird', mode:'read' });
       this.dir = h;
       await idbSet('mailDir', h);
+      this.lastReason = '';
       return true;
-    }catch(e){ return false; }
+    }catch(e){
+      // Silently returning false is why "I cannot change the folder" looked
+      // like a broken button rather than a browser refusal.
+      const name = e && e.name ? e.name : String(e);
+      this.lastReason =
+        name === 'AbortError' ? 'You closed the folder picker without choosing.'
+      : name === 'NotAllowedError' ? 'The browser refused access to that folder. On Windows it blocks AppData - copy the mail folder somewhere like Documents and pick the copy.'
+      : name === 'SecurityError' ? 'That folder is protected by the browser. Choose a copy outside AppData.'
+      : !window.showDirectoryPicker ? 'This browser cannot open folders. Use Chrome or Edge on desktop.'
+      : 'Could not open that folder (' + name + ').';
+      console.error('[mail] pickFolder', name, e);
+      return false;
+    }
   },
+
+  // Drop the stored folder so a different one can be chosen.
+  async forget(){
+    this.dir = null; this.messages = []; this.scannedAt = 0;
+    try{ await idbSet('mailDir', null); }catch(e){}
+    renderMailStatus();
+  },
+
   async restore(){
     try{
       const h = await idbGet('mailDir');
@@ -8182,7 +8219,48 @@ document.getElementById('notebook-canvas').addEventListener('pointerdown', (e) =
 // thumbnail, so the database stays small no matter how many images you paste.
 const SET_KEY = 'agenda-solar-settings';
 let settings = JSON.parse(localStorage.getItem(SET_KEY) || '{}');
-function saveSettings(){ localStorage.setItem(SET_KEY, JSON.stringify(settings)); }
+function saveSettings(){
+  localStorage.setItem(SET_KEY, JSON.stringify(settings));
+  if(typeof scheduleSettingsSync === 'function') scheduleSettingsSync();
+}
+
+// Settings are mirrored to the account so they survive a new browser, a
+// cleared cache or another machine. localStorage stays the fast local copy;
+// the server copy is the one that follows the login.
+let settingsSyncTimer = null, settingsLoaded = false;
+
+async function pushSettings(){
+  if(!session) return;
+  try{
+    await fetch(FN_URL + "/agenda-settings", {
+      method:'POST', headers: authHeaders(), body: JSON.stringify({ settings }),
+    });
+  }catch(e){ /* local copy still holds; this is best effort */ }
+}
+function scheduleSettingsSync(){
+  clearTimeout(settingsSyncTimer);
+  settingsSyncTimer = setTimeout(pushSettings, 1500);
+}
+
+async function pullSettings(){
+  if(!session || settingsLoaded) return;
+  try{
+    const r = await fetch(FN_URL + "/agenda-settings", { headers: authHeaders() });
+    const out = await readJson(r);
+    if(out.ok && out.json.settings){
+      // Anything already set locally wins, so a fresh change is not undone by
+      // a slower fetch; everything else comes from the account.
+      const remote = out.json.settings;
+      Object.keys(remote).forEach(k => {
+        if(settings[k] === undefined || settings[k] === '' || settings[k] === null) settings[k] = remote[k];
+      });
+      localStorage.setItem(SET_KEY, JSON.stringify(settings));
+      settingsLoaded = true;
+      renderSettings();
+    }
+  }catch(e){ /* offline: the local copy is used */ }
+}
+
 
 // --- IndexedDB, because a directory handle can't be JSON-stringified ---
 function idb(){
@@ -8764,6 +8842,13 @@ function renderSettings(){
   document.getElementById('set-drive-folder').value = settings.driveFolderId || '';
   const tv = document.getElementById('tts-voice'); if(tv) tv.value = settings.ttsVoiceId || '';
   const tm = document.getElementById('tts-model'); if(tm) tm.value = settings.ttsModelId || '';
+  // Fields are rebuilt when the panel renders, so stored values are put back.
+  ['tts-voice:ttsVoiceId','tts-model:ttsModelId','drive-client:driveClientId',
+   'drive-folder:driveFolderId'].forEach(pair => {
+    const [id, key] = pair.split(':');
+    const el = document.getElementById(id);
+    if(el && settings[key] != null) el.value = settings[key];
+  });
   probeTts(); renderTtsStatus(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens(); renderBgListen(); renderPauseTol();
   Reflect_.run();
   Learn.load().then(renderLearnStats);
@@ -8894,14 +8979,21 @@ bindPercent('honesty-slider', 'honesty-val', 'honesty', 95);
 function bindSetting(id, key){
   const el = document.getElementById(id);
   if(!el) return;
+  // Restore first. Without this the field renders empty, and the blur handler
+  // below then writes that empty value over a perfectly good setting — so
+  // merely opening Settings destroyed the voice and model IDs.
+  if(settings[key] != null && el.value !== settings[key]) el.value = settings[key];
   const save = () => {
-    settings[key] = el.value.trim();
+    const v = el.value.trim();
+    // Blur on an untouched, empty field must not erase a stored value.
+    if(v === '' && settings[key] && !el._touched) return;
+    settings[key] = v;
     saveSettings();
     el.classList.add('saved');
     clearTimeout(el._t);
     el._t = setTimeout(() => el.classList.remove('saved'), 900);
   };
-  el.addEventListener('input', save);
+  el.addEventListener('input', () => { el._touched = true; save(); });
   el.addEventListener('blur', save);
 }
 bindSetting('tts-voice', 'ttsVoiceId');
@@ -9592,6 +9684,7 @@ async function bootApp(){
         + 'Open Settings and press Re-check under Encryption, or sign out and back in.');
     }
   }, 4000);
+  pullSettings();
   Learn.load();
   Proactive.start();
   DueWatch.start();
