@@ -2800,6 +2800,11 @@ const TOOL_HINTS = {
   update_case:     /\b(change|move|reschedule|update|set .* to|mudar?|alterar|remarcar)\b/i,
   add_knowledge:   /\b(save|store|note down|knowledge|remember .*(error|code|fault)|salvar|guardar|anotar|erro)\b/i,
   create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
+  read_page:       /\b(this page|summari[sz]e|what.*here|whats on (this|the) page|resum|esta p[aá]gina)\b/i,
+  cleanup_page:    /\b(clean ?up|tidy|organi[sz]e|checklist|turn (these|this) into|organiz|limpar)\b/i,
+  read_diagram:    /\b(diagram|flow|chart|connect|arrows?|fluxo|diagrama)\b/i,
+  search_notes:    /\b(where did I|find (where|the note)|which note|wrote about|anota[çc][ãa]o|onde escrevi|procur)\b/i,
+  open_note:       /\b(open (it|that|the note)|show me the note|abre? a nota)\b/i,
   create_notebook: /\b(notebook|folder|caderno|pasta)\b/i,
   create_note:     /\b(note|write down|jot|nota|anota)\b/i,
   check_background: /\b(miss|missed|overnight|while I was|catch me up|happen|perdi|enquanto)\b/i,
@@ -3672,6 +3677,115 @@ const TOOLS = [
     },
   },
   {
+    name: 'read_page',
+    permission: PERM.READ,
+    description: "Read the open notebook page: typed text, recognised handwriting, shapes and how they connect. Use for 'summarise this page', 'what does this diagram say', 'what have I got here'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      const ctx = NotePage.context();
+      if(!ctx) return 'No note is open. Ask the user to open one first — do not describe a page you cannot see.';
+      return ctx + '\n\nAnswer from this only. If strokes are unrecognised, say they need recognising first.';
+    },
+  },
+  {
+    name: 'cleanup_page',
+    permission: PERM.LOW,
+    description: "Tidy the open page into a clean structured version — a checklist, actions, or organised notes. Creates a SEPARATE note and never alters the original.",
+    schema: { type:'object', properties:{
+      style:{ type:'string', enum:['checklist','actions','summary','tidy'],
+              description:'checklist = tick boxes; actions = what to do next; summary = prose; tidy = same content, organised.' } } },
+    async execute(args){
+      const ctx = NotePage.context();
+      if(!ctx) return 'No note is open, so there is nothing to tidy.';
+      const style = args.style || 'tidy';
+      const sys = [
+        'You reorganise a support technician\'s rough notes. Output clean HTML only: <h3>, <p>, <ul>, <li>. No markdown, no commentary.',
+        'Rules: keep every fact. Do not invent details, dates, serial numbers or conclusions.',
+        'Expand obvious shorthand but never change a serial number, model or fault code.',
+        'Keep the original language of each line — do not translate.',
+        style === 'checklist' ? 'Produce a checklist of concrete items, one action each.'
+        : style === 'actions' ? 'Produce a short list of next actions, most urgent first.'
+        : style === 'summary' ? 'Produce two or three short paragraphs.'
+        : 'Keep the same content, grouped under clear headings.',
+      ].join('\n');
+      let html;
+      try{
+        html = await callAi(ctx, sys);
+      }catch(err){ return `The tidy-up failed: ${errText(err)}. Nothing was changed.`; }
+      if(!html || !html.trim()) return 'Nothing usable came back. The original page is untouched.';
+
+      // A derived note, never a rewrite: the original page keeps its ink.
+      const srcTitle = document.getElementById('nb-title-input')?.value || 'Untitled';
+      try{
+        const made = await createNoteApi({
+          notebook_id: activeFolderId,
+          title: `${srcTitle} — cleaned`,
+          content: `<p><em>Tidied from "${escapeHtml(srcTitle)}". The original, with its handwriting, is unchanged.</em></p>`
+                   + String(html).replace(/```html?|```/g, '').trim(),
+          tags: ['cleaned'],
+        });
+        notes.unshift(made);
+        renderNotebooksGrid();
+        return `Created "${made.title}" as a separate note. The original page is untouched — say so.`;
+      }catch(err){ return `Could NOT save the tidied note: ${errText(err)}.`; }
+    },
+  },
+  {
+    name: 'read_diagram',
+    permission: PERM.READ,
+    description: "Describe how the shapes and arrows on the open page connect, e.g. 'what does this flow say'. Works from the drawn objects, not an image.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      if(!activeNoteId) return 'No note is open.';
+      const g = NotePage.graph();
+      if(!g.nodes.length) return 'There are no recognised shapes on this page. Smart Ink must recognise them first — do not guess.';
+      const desc = NotePage.describeGraph();
+      return (desc || `${g.nodes.length} shapes, none connected by arrows.`)
+        + '\n\nDescribe the flow in plain words. Do not add steps that are not connected.';
+    },
+  },
+  {
+    name: 'search_notes',
+    permission: PERM.READ,
+    description: "Search every notebook — typed text, tags and recognised handwriting — for something the user wrote. Use for 'find where I wrote about Deye firmware', 'which note mentions that serial'.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'What to look for.' } },
+      required:['query'] },
+    async execute(args){
+      const hits = NoteSearch.search(args.query, 5);
+      if(!hits.length) return `Nothing in the notebooks matches "${args.query}". Say so — do not guess at what might be written.`;
+      const lines = hits.map(h => {
+        const it = h.it;
+        return `- ${it.notebookTitle ? it.notebookTitle + ' / ' : ''}${it.noteTitle}`
+          + ` [${it.kind}${it.where ? `, at ${Math.round(it.where.x)},${Math.round(it.where.y)} on the page` : ''}]`
+          + `: ${NoteSearch.snippet(it.content, args.query, 120)}`;
+      });
+      // Remember the top hit so "open it" works as a follow-up.
+      lastNoteHit = hits[0].it;
+      return lines.join('\n')
+        + '\nName the notebook and note. If the match came from handwriting, say so. Offer to open it.';
+    },
+  },
+  {
+    name: 'open_note',
+    permission: PERM.READ,
+    description: "Open a note found by search, scrolling to the handwriting if the match came from ink. Use after search_notes when the user says 'open it' or names one.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'Note title or what it is about. Omit to open the last search result.' } },
+      required:[] },
+    async execute(args){
+      let hit = null;
+      if(args.query){
+        const hits = NoteSearch.search(args.query, 1);
+        hit = hits.length ? hits[0].it : null;
+      } else if(lastNoteHit) hit = lastNoteHit;
+      if(!hit) return 'No matching note. Do not claim one was opened.';
+      const ok = await NoteSearch.goTo(hit);
+      return ok ? `Opened "${hit.noteTitle}"${hit.where ? ' at the handwriting.' : '.'}`
+                : 'That note could not be opened.';
+    },
+  },
+  {
     name: 'create_notebook',
     permission: PERM.LOW,
     description: "Create a new notebook (a folder holding notes). Only when the user asks for one.",
@@ -4524,6 +4638,77 @@ const Ink = {
   },
 
 
+
+  // --- Recognition context (Phase 4) ---------------------------------
+  // Supplies vocabulary that is likely to appear, so the model spells
+  // "Hoymiles" and "sobretensão" correctly rather than inventing plausible
+  // alternatives. Deliberately a SPELLING aid, never an expectation: the
+  // server prompt forbids inserting a term that is not on the page, and this
+  // side keeps the list short so it cannot dominate what is actually written.
+  contextOn: true,
+
+  // Words worth passing: proper nouns, codes, and domain terms. Ordinary
+  // words are dropped because they only dilute the list.
+  distinctive(text, out){
+    String(text || '')
+      .split(/[^\p{L}\p{N}._-]+/u)
+      .forEach(w => {
+        if(w.length < 3 || w.length > 28) return;
+        const hasDigit = /\d/.test(w);
+        const capitalised = /^[A-ZÁÉÍÓÚÂÊÔÃÕÇ]/.test(w);
+        const code = /^[A-Za-z]{1,3}[-_]?\d{2,}$/.test(w);
+        if(hasDigit || capitalised || code) out.add(w);
+      });
+  },
+
+  buildContext(){
+    if(!this.contextOn) return '';
+    const terms = new Set();
+    const lines = [];
+
+    // 1. Whatever is already written on this page — by far the best signal,
+    //    because handwriting is usually consistent within a note.
+    const ed = document.getElementById('notebook-canvas');
+    const pageText = ed ? (ed.innerText || '').trim() : '';
+    if(pageText) this.distinctive(pageText.slice(0, 1500), terms);
+
+    // 2. Text already recognised from ink on this same page.
+    this.doc.objects.filter(o => o.type === 'text')
+      .forEach(o => this.distinctive(o.content, terms));
+
+    // 3. Where the note lives.
+    const nb = notebooks.find(x => x.id === activeFolderId);
+    const noteTitle = document.getElementById('nb-title-input')?.value || '';
+    if(nb?.title) { lines.push(`Notebook: ${nb.title}`); this.distinctive(nb.title, terms); }
+    if(noteTitle) this.distinctive(noteTitle, terms);
+
+    // 4. What the technician is actually working on right now.
+    const focus = (typeof Focus !== 'undefined' && Focus.current) ? Focus.current : null;
+    if(focus?.label){ lines.push(`Working on: ${focus.label}`); this.distinctive(focus.label, terms); }
+    const cse = TarsContext.selectedCaseId
+      ? cases.find(x => x.id === TarsContext.selectedCaseId) : null;
+    if(cse){
+      if(cse.ticket) terms.add(cse.ticket);
+      this.distinctive(cse.titulo, terms);
+    }
+
+    // 5. Manufacturer and domain vocabulary, taken from the knowledge base
+    //    rather than hard-coded, so it follows whatever the team actually
+    //    documents.
+    const kbTerms = new Set();
+    (KB || []).forEach(e => {
+      (e.tags || []).forEach(t => { if(String(t).length > 2) kbTerms.add(String(t)); });
+      this.distinctive(e.title, kbTerms);
+    });
+    const kbList = [...kbTerms].slice(0, 60);
+
+    const own = [...terms].slice(0, 45);
+    if(own.length) lines.push('Terms already on this page or case: ' + own.join(', '));
+    if(kbList.length) lines.push('Known equipment and fault codes: ' + kbList.join(', '));
+
+    return lines.join('\n').slice(0, 880);
+  },
+
   // --- Handwriting (Phase 3) -----------------------------------------
   // Nothing is converted automatically. The user selects ink, asks for
   // recognition, reviews and corrects the result, and only then commits.
@@ -4601,7 +4786,7 @@ const Ink = {
     try{
       const r = await fetch(FN_URL + "/agenda-vision", {
         method:'POST', headers: authHeaders(),
-        body: JSON.stringify({ image: shot.url, mode:'handwriting' }),
+        body: JSON.stringify({ image: shot.url, mode:'handwriting', context: this.buildContext() }),
       });
       const out = await readJson(r);
       if(!out.ok){
@@ -4613,7 +4798,8 @@ const Ink = {
       }
       const text = String(out.json.reply || '').trim();
       if(!text){ alert('Nothing legible was returned. Try selecting a smaller area.'); return; }
-      this.review = { text, strokeIds: strokes.map(s => s.id), box: shot.box, model: out.json.model };
+      this.review = { text, strokeIds: strokes.map(s => s.id), box: shot.box,
+                      model: out.json.model, context: this.buildContext() };
       this.showReview();
     }catch(e){
       alert('Could not reach the recognition service.');
@@ -4632,8 +4818,10 @@ const Ink = {
         <b>Check the transcription</b>
         <span class="rev-model">${escapeHtml(String(this.review.model || '').split('/').pop())}</span>
       </div>
+      <div class="rev-unsure" id="rev-unsure" style="display:none"></div>
       <textarea id="rev-text" class="rev-text" spellcheck="false"></textarea>
       <label class="rev-keep"><input type="checkbox" id="rev-keep-ink" checked> Keep the handwriting visible as well</label>
+      ${this.review.context ? `<details class="rev-ctx"><summary>Vocabulary given to the reader</summary><pre>${escapeHtml(this.review.context)}</pre></details>` : ''}
       <div class="rev-actions">
         <button class="btn-ghost" id="rev-cancel">Cancel</button>
         <button class="btn-ghost" id="rev-retry">Try again</button>
@@ -4641,6 +4829,14 @@ const Ink = {
       </div>`;
     const ta = el.querySelector('#rev-text');
     ta.value = this.review.text;
+    // The prompt asks for [?] on illegible words; surfacing the count tells
+    // the user where to look rather than making them re-read everything.
+    const unsure = (this.review.text.match(/\[\?\]/g) || []).length;
+    const warn = el.querySelector('#rev-unsure');
+    if(warn && unsure){
+      warn.style.display = 'block';
+      warn.textContent = `${unsure} word${unsure > 1 ? 's' : ''} could not be read — marked [?]. Fix them before inserting.`;
+    }
     ta.focus();
     el.querySelector('#rev-cancel').addEventListener('click', () => this.hideReview());
     el.querySelector('#rev-retry').addEventListener('click', () => { this.hideReview(); this.recogniseHandwriting(); });
@@ -4792,6 +4988,13 @@ document.getElementById('hand-all')?.addEventListener('click', () => {
   if(!n) alert('There is no handwriting on this note yet.');
 });
 document.getElementById('hand-clear')?.addEventListener('click', () => Ink.clearSelection());
+document.getElementById('hand-ctx')?.addEventListener('click', e => {
+  Ink.contextOn = !Ink.contextOn;
+  settings.inkContext = Ink.contextOn; saveSettings();
+  e.currentTarget.textContent = 'Context: ' + (Ink.contextOn ? 'on' : 'off');
+  e.currentTarget.classList.toggle('active', Ink.contextOn);
+  SFX.tick();
+});
 document.getElementById('hand-read')?.addEventListener('click', () => Ink.recogniseHandwriting());
 document.getElementById('ink-revert')?.addEventListener('click', () => {
   if(!Ink.revertLast()) alert('No recognised shape to revert.');
@@ -4813,6 +5016,10 @@ function applyInkSettings(){
   if(typeof settings.inkSmoothing === 'number') Ink.smoothing = settings.inkSmoothing / 100;
   Ink.pressureOn = settings.inkPressure !== false;
   Ink.smartInk = !!settings.smartInk;
+  Ink.contextOn = settings.inkContext !== false;
+  const cb = document.getElementById('hand-ctx');
+  if(cb){ cb.textContent = 'Context: ' + (Ink.contextOn ? 'on' : 'off');
+          cb.classList.toggle('active', Ink.contextOn); }
   const sb = document.getElementById('ink-smart');
   if(sb) sb.classList.toggle('active', Ink.smartInk);
   const w = document.getElementById('ink-width'), s = document.getElementById('ink-smooth');
@@ -5039,6 +5246,258 @@ const ShapeRec = {
     cands.sort((a, b) => b.confidence - a.confidence);
     const best = cands[0];
     return best.confidence >= 0.35 ? best : null;
+  },
+};
+
+
+// ===== Notebook search (Phase 5) =====================================
+// Searches typed text, recognised handwriting and shape/text objects across
+// every note, and returns WHERE a hit sits so the page can scroll to it.
+// Built on the spatial metadata Phase 3 records, which is why text objects
+// carry x/y/width/height rather than just content.
+const NoteSearch = {
+  // A flat index of searchable items, rebuilt on demand. Small enough that
+  // caching would cost more in staleness than it saves in time.
+  index(){
+    const out = [];
+    (notes || []).forEach(n => {
+      const nb = (notebooks || []).find(x => x.id === n.notebook_id);
+      const base = { noteId: n.id, notebookId: n.notebook_id,
+                     noteTitle: n.title || 'Untitled',
+                     notebookTitle: nb ? nb.title : '' };
+
+      // Typed body text, stripped of markup.
+      const body = String(n.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if(body) out.push({ ...base, kind:'text', content: body, where: null });
+
+      // Recognised handwriting, with its position on the page.
+      if(n.ink){
+        try{
+          const d = JSON.parse(n.ink);
+          (d.objects || []).forEach(o => {
+            if(o.type === 'text' && o.content){
+              out.push({ ...base, kind:'handwriting', content: o.content,
+                         where: { x:o.x, y:o.y, width:o.width, height:o.height },
+                         objectId: o.id });
+            }
+            if(o.type === 'shape'){
+              out.push({ ...base, kind:'shape', content: o.kind,
+                         where: o.geom ? { x:o.geom.x ?? o.geom.cx ?? o.geom.x1 ?? 0,
+                                           y:o.geom.y ?? o.geom.cy ?? o.geom.y1 ?? 0 } : null,
+                         objectId: o.id });
+            }
+          });
+          const strokeCount = (d.strokes || []).filter(s => !s.hidden).length;
+          if(strokeCount) out.push({ ...base, kind:'ink', content:'handwritten ink',
+                                     where: null, strokes: strokeCount });
+        }catch(e){ /* an unreadable ink blob must not break search */ }
+      }
+
+      if(n.title) out.push({ ...base, kind:'title', content: n.title, where: null });
+      (n.tags || []).forEach(t => out.push({ ...base, kind:'tag', content: t, where: null }));
+    });
+    return out;
+  },
+
+  search(query, limit = 8){
+    const words = relevantWords(query);
+    if(!words.length) return [];
+    const items = this.index();
+    const scored = items.map(it => {
+      const hay = String(it.content).toLowerCase();
+      let hits = 0, exact = 0;
+      words.forEach(w => {
+        const re = new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        if(re.test(hay)){ hits++; if(hay.includes(w)) exact++; }
+      });
+      if(!hits) return null;
+      // Handwriting outranks typed text: if someone wrote it by hand and had it
+      // recognised, it was worth the effort, and it is harder to find by eye.
+      const weight = it.kind === 'handwriting' ? 1.35
+                   : it.kind === 'title' ? 1.25
+                   : it.kind === 'tag' ? 1.15 : 1;
+      return { it, score: (hits / words.length) * weight + exact * 0.05, coverage: hits / words.length };
+    }).filter(Boolean).filter(x => x.coverage >= 0.34);
+
+    // One result per note: the strongest hit represents it.
+    const byNote = {};
+    scored.sort((a, b) => b.score - a.score).forEach(x => {
+      if(!byNote[x.it.noteId]) byNote[x.it.noteId] = x;
+    });
+    return Object.values(byNote).sort((a, b) => b.score - a.score).slice(0, limit);
+  },
+
+  // A short quotation around the match, so a result is recognisable.
+  snippet(content, query, len = 140){
+    const words = relevantWords(query);
+    const low = String(content).toLowerCase();
+    let at = -1;
+    for(const w of words){ const i = low.indexOf(w); if(i > -1){ at = i; break; } }
+    if(at < 0) return String(content).slice(0, len);
+    const from = Math.max(0, at - 40);
+    return (from ? '…' : '') + String(content).slice(from, from + len) + (content.length > from + len ? '…' : '');
+  },
+
+  // Open the note and, when the hit came from ink, bring that spot into view.
+  async goTo(hit){
+    const n = (notes || []).find(x => x.id === hit.noteId);
+    if(!n) return false;
+    switchView('notebooks');
+    activeFolderId = n.notebook_id;
+    renderNotebooksGrid();
+    await openNote(n.id);
+    if(hit.where && typeof hit.where.x === 'number'){
+      Ink.show(true);
+      // Centre the canvas on the recognised region rather than merely opening
+      // the note and leaving the user to hunt for it.
+      setTimeout(() => {
+        const cv = document.getElementById('ink-canvas');
+        if(!cv) return;
+        const r = cv.getBoundingClientRect();
+        const v = Ink.doc.view;
+        v.zoom = 1;
+        v.panX = r.width / 2 - (hit.where.x + (hit.where.width || 0) / 2);
+        v.panY = r.height / 2 - (hit.where.y + (hit.where.height || 0) / 2);
+        Ink.selection = hit.where.width
+          ? { x0:hit.where.x - 6, y0:hit.where.y - 6,
+              x1:hit.where.x + hit.where.width + 6, y1:hit.where.y + hit.where.height + 6 }
+          : null;
+        Ink.redraw(); Ink.status(); Ink.updateHandBar();
+      }, 220);
+    }
+    return true;
+  },
+};
+
+
+// ===== Notebook structure (Phases 6 & 8) =============================
+// The notebook is exposed to TARS as objects, positions and connections —
+// never as a flat image. That is what lets it answer "what does this diagram
+// say" without a vision call, and what a later diagram model would build on.
+const NotePage = {
+  // --- Phase 8: connections -------------------------------------------
+  // An arrow joins two things when each end sits near one. Proximity is
+  // scaled to the arrow's own length, so a short arrow between small boxes
+  // works as well as a long one across a page.
+  nodeAt(pt, nodes, tol){
+    let best = null, bestD = Infinity;
+    nodes.forEach(n => {
+      const b = n.bounds;
+      // Distance to the node's rectangle, zero when inside it.
+      const dx = Math.max(b.x0 - pt[0], 0, pt[0] - b.x1);
+      const dy = Math.max(b.y0 - pt[1], 0, pt[1] - b.y1);
+      const d = Math.hypot(dx, dy);
+      if(d < bestD){ bestD = d; best = n; }
+    });
+    return bestD <= tol ? best : null;
+  },
+
+  boundsOf(o){
+    const g = o.geom || {};
+    if(o.type === 'text') return { x0:o.x, y0:o.y, x1:o.x + o.width, y1:o.y + o.height };
+    switch(o.kind){
+      case 'circle':   return { x0:g.cx-g.r, y0:g.cy-g.r, x1:g.cx+g.r, y1:g.cy+g.r };
+      case 'ellipse':  return { x0:g.cx-g.rx, y0:g.cy-g.ry, x1:g.cx+g.rx, y1:g.cy+g.ry };
+      case 'square':
+      case 'rectangle':return { x0:g.x, y0:g.y, x1:g.x+g.w, y1:g.y+g.h };
+      case 'triangle': {
+        const xs = (g.points||[]).map(p=>p[0]), ys = (g.points||[]).map(p=>p[1]);
+        return { x0:Math.min(...xs), y0:Math.min(...ys), x1:Math.max(...xs), y1:Math.max(...ys) };
+      }
+      default: return { x0:Math.min(g.x1,g.x2), y0:Math.min(g.y1,g.y2),
+                        x1:Math.max(g.x1,g.x2), y1:Math.max(g.y1,g.y2) };
+    }
+  },
+
+  // Text sitting inside or just under a shape is that shape's label.
+  labelFor(node, texts){
+    const b = node.bounds;
+    let best = null, bestD = Infinity;
+    texts.forEach(t => {
+      const tc = [t.x + t.width/2, t.y + t.height/2];
+      const inside = tc[0] >= b.x0 && tc[0] <= b.x1 && tc[1] >= b.y0 && tc[1] <= b.y1;
+      const d = inside ? 0 : Math.hypot(tc[0] - (b.x0+b.x1)/2, tc[1] - (b.y0+b.y1)/2);
+      const reach = Math.max(40, (b.x1-b.x0) * 0.8);
+      if(d < bestD && d <= reach){ bestD = d; best = t; }
+    });
+    return best ? best.content : null;
+  },
+
+  // Objects, positions and connections — the model the brief asked for.
+  graph(){
+    const objs = (Ink.doc.objects || []);
+    const texts = objs.filter(o => o.type === 'text');
+    const shapes = objs.filter(o => o.type === 'shape' && o.kind !== 'arrow' && o.kind !== 'line');
+    const arrows = objs.filter(o => o.type === 'shape' && (o.kind === 'arrow' || o.kind === 'line'));
+
+    const nodes = shapes.map(s => ({
+      id: s.id, kind: s.kind, bounds: this.boundsOf(s), label: null,
+    }));
+    // Free-standing text is a node in its own right; many diagrams are just
+    // words joined by arrows, with no boxes at all.
+    texts.forEach(t => {
+      const b = this.boundsOf(t);
+      const insideShape = nodes.some(n =>
+        b.x0 >= n.bounds.x0 - 4 && b.x1 <= n.bounds.x1 + 4 &&
+        b.y0 >= n.bounds.y0 - 4 && b.y1 <= n.bounds.y1 + 4);
+      if(!insideShape) nodes.push({ id:t.id, kind:'text', bounds:b, label:t.content });
+    });
+    nodes.forEach(n => { if(!n.label) n.label = this.labelFor(n, texts); });
+
+    const edges = [];
+    arrows.forEach(a => {
+      const g = a.geom || {};
+      const len = Math.hypot((g.x2||0)-(g.x1||0), (g.y2||0)-(g.y1||0));
+      const tol = Math.max(28, len * 0.28);
+      const from = this.nodeAt([g.x1, g.y1], nodes, tol);
+      const to   = this.nodeAt([g.x2, g.y2], nodes, tol);
+      if(from && to && from.id !== to.id){
+        edges.push({ id:a.id, from:from.id, to:to.id, directed: a.kind === 'arrow' });
+      }
+    });
+    return { nodes, edges };
+  },
+
+  // Readable rendering of the graph, for the prompt and for TARS answers.
+  describeGraph(){
+    const { nodes, edges } = this.graph();
+    if(!nodes.length) return '';
+    const name = id => {
+      const n = nodes.find(x => x.id === id);
+      return n ? (n.label || n.kind) : '?';
+    };
+    const lines = [];
+    if(edges.length){
+      lines.push('Diagram connections:');
+      edges.forEach(e => lines.push(`  ${name(e.from)} ${e.directed ? '->' : '--'} ${name(e.to)}`));
+    }
+    const loose = nodes.filter(n => !edges.some(e => e.from === n.id || e.to === n.id));
+    if(loose.length) lines.push('Unconnected: ' + loose.map(n => n.label || n.kind).join(', '));
+    return lines.join('\n');
+  },
+
+  // --- Phase 6: what TARS is given ------------------------------------
+  // Structured, compact, and only when a note is actually open.
+  context(){
+    if(!activeNoteId) return '';
+    const ed = document.getElementById('notebook-canvas');
+    const body = ed ? (ed.innerText || '').trim() : '';
+    const nb = (notebooks || []).find(x => x.id === activeFolderId);
+    const title = document.getElementById('nb-title-input')?.value || 'Untitled';
+    const hand = (Ink.doc.objects || []).filter(o => o.type === 'text');
+    const shapes = (Ink.doc.objects || []).filter(o => o.type === 'shape');
+    const rawInk = (Ink.doc.strokes || []).filter(s => !s.hidden).length;
+
+    const parts = [`Open note: "${title}"${nb ? ` in notebook "${nb.title}"` : ''}.`];
+    if(body) parts.push('Typed text:\n' + body.slice(0, 1200));
+    if(hand.length) parts.push('Recognised handwriting:\n'
+      + hand.map(o => `  [at ${Math.round(o.x)},${Math.round(o.y)}] ${o.content}`).join('\n').slice(0, 1200));
+    if(shapes.length) parts.push(`Shapes drawn: ${shapes.map(s => s.kind).join(', ')}.`);
+    if(rawInk) parts.push(`${rawInk} handwritten strokes are not yet recognised — `
+      + 'you cannot read them until the user runs handwriting recognition. Do not guess what they say.');
+    const g = this.describeGraph();
+    if(g) parts.push(g);
+    return parts.join('\n\n').slice(0, 2200);
   },
 };
 
@@ -6234,6 +6693,7 @@ const Memory = {
   },
 };
 let lastMemHits = [];
+let lastNoteHit = null;
 let lastLearnBrief = 'No learned rules yet.';
 
 
@@ -6501,6 +6961,10 @@ function buildAiSystemPrompt(spoken, R){
     "=== CURRENT WORK ===",
     Focus.brief(),
     "",
+    ...(typeof NotePage !== 'undefined' && NotePage.context()
+        ? ["=== OPEN NOTEBOOK PAGE ===", NotePage.context(),
+           "This is the structured content of the page, not a picture of it. Unrecognised strokes are listed only as a count — never invent what they say.", ""]
+        : []),
     "=== WHAT THE USER IS LOOKING AT ===",
     TarsContext.brief(),
     "Resolve 'this', 'these', 'it' and 'the case' against the active focus first, then the focused case. If neither applies and the reference is unclear, ask which one.",

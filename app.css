@@ -873,6 +873,17 @@
   .rev-actions{ display:flex; gap:7px; justify-content:flex-end; }
   .rev-actions button{ padding:7px 13px; font-size:.72rem; }
 
+
+  .rev-unsure{ margin-bottom:8px; padding:7px 10px; border-radius:8px;
+    border:1px solid var(--amber); background: var(--amber-soft);
+    color: var(--amber); font-size:.7rem; }
+  .rev-ctx{ margin:8px 0; font-size:.66rem; color:var(--muted); }
+  .rev-ctx summary{ cursor:pointer; }
+  .rev-ctx pre{ margin:6px 0 0; padding:8px; border-radius:8px; background:var(--bg);
+    border:1px solid var(--line); white-space:pre-wrap; font-size:.62rem;
+    max-height:110px; overflow:auto; }
+  #hand-ctx.active{ color:var(--amber); border-color:var(--amber); }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;
