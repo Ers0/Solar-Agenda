@@ -3974,7 +3974,7 @@ function renderKbShare(){
 document.getElementById('screen-share')?.addEventListener('click', async () => {
   if(Screen_.stream && Screen_.stream.active){ Screen_.close(); return; }
   const ok = await Screen_.open();
-  if(!ok) alert('Screen sharing was refused or is unsupported. Chrome or Edge on desktop is required.');
+  if(!ok) alert(Screen_.lastReason || 'Screen sharing was refused or is unsupported. Chrome or Edge on desktop is required.');
 });
 document.getElementById('screen-keep')?.addEventListener('click', () => {
   Screen_.keepOpen = !Screen_.keepOpen;
@@ -5583,7 +5583,7 @@ const NotePage = {
 //     except when you explicitly keep it open for repeat questions
 //   - the browser's own sharing indicator is always visible while it is live
 const Screen_ = {
-  stream: null, video: null, keepOpen: true, lastReadAt: 0,
+  stream: null, video: null, keepOpen: true, lastReadAt: 0, lastError: null, lastReason: '',
 
   async open(){
     if(this.stream && this.stream.active) return true;
@@ -5606,7 +5606,21 @@ const Screen_ = {
       await this.video.play();
       renderScreenStatus();
       return true;
-    }catch(e){ this.stream = null; return false; }
+    }catch(e){
+      this.stream = null;
+      // Swallowing this left the user staring at nothing. Chrome refuses for
+      // several quite different reasons, and each needs a different response.
+      this.lastError = e && e.name ? e.name : String(e);
+      this.lastReason =
+        this.lastError === 'NotAllowedError' ? 'You dismissed the picker, or the browser blocked sharing for this site. Check the screen-share icon in the address bar.'
+      : this.lastError === 'NotFoundError' ? 'No screen or window was available to share.'
+      : this.lastError === 'NotSupportedError' ? 'This browser does not support screen sharing. Use Chrome or Edge on desktop.'
+      : this.lastError === 'InvalidStateError' ? 'The page needs focus first - click the page, then try again.'
+      : this.lastError === 'AbortError' ? 'Sharing was cancelled.'
+      : 'Screen sharing failed (' + this.lastError + ').';
+      console.error('[screen]', this.lastError, e);
+      return false;
+    }
   },
 
   close(){
@@ -5617,6 +5631,7 @@ const Screen_ = {
       this.video = null;
     }
     this.stream = null;
+    document.getElementById('ai-share')?.classList.remove('on');
     renderScreenStatus();
   },
 
@@ -5692,7 +5707,7 @@ function showSharePrompt(){
   div.querySelector('#share-now').addEventListener('click', async () => {
     const ok = await Screen_.open();
     div.remove();
-    if(!ok){ addProactiveMessage('Screen sharing was refused or is unsupported here.'); return; }
+    if(!ok){ addProactiveMessage(Screen_.lastReason || 'Screen sharing was refused or is unsupported here.'); return; }
     Screen_.keepOpen = true; settings.screenKeep = true; saveSettings();
     addProactiveMessage('Sharing now. Ask me again and I will read it.');
   });
@@ -7096,6 +7111,24 @@ async function runToolCall(call){
 }
 
 document.getElementById('ai-send').addEventListener('click', sendAiMessage);
+
+// The browser only opens the screen picker from a genuine click, so the
+// control has to be permanently available rather than summoned by the
+// assistant at the moment it needs one.
+document.getElementById('ai-share')?.addEventListener('click', async () => {
+  const btn = document.getElementById('ai-share');
+  if(Screen_.stream && Screen_.stream.active){
+    Screen_.close();
+    addProactiveMessage('Stopped sharing.');
+    return;
+  }
+  const ok = await Screen_.open();
+  if(!ok){ addProactiveMessage(Screen_.lastReason || 'Screen sharing did not start.'); return; }
+  Screen_.keepOpen = true; settings.screenKeep = true; saveSettings();
+  btn?.classList.add('on');
+  addProactiveMessage('Sharing. Ask me what is on your screen and I will read it.');
+});
+
 document.getElementById('ai-input').addEventListener('keydown', (e) => { if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendAiMessage(); } });
 
 // One pipeline for both text and voice. `spoken` only changes the persona
