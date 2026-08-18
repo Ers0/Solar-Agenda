@@ -824,6 +824,37 @@
     border:2px dashed var(--amber); pointer-events:none;
   }
 
+
+  /* Ink layer sits under the text editor, sharing the note's visual language. */
+  #ink-wrap{ margin-top:10px; border:1px solid var(--line); border-radius:12px;
+    background: var(--bg); overflow:hidden; }
+  .ink-bar{ display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding:7px 9px; border-bottom:1px solid var(--line); background:var(--panel-2); }
+  .ink-tool, .ink-act{ width:30px; height:28px; border-radius:7px; border:1px solid var(--line);
+    background:var(--panel); color:var(--muted); font-size:.85rem; line-height:1; }
+  .ink-tool:hover, .ink-act:hover{ color:var(--amber); border-color:var(--amber); }
+  .ink-tool.active{ color:var(--on-accent); background:var(--amber); border-color:var(--amber); }
+  .ink-sep{ width:1px; height:20px; background:var(--line); margin:0 3px; }
+  .ink-lab{ display:flex; align-items:center; gap:5px; font-size:.62rem;
+    color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+  .ink-lab input[type=range]{ width:74px; }
+  .ink-info{ margin-left:auto; font-family:"JetBrains Mono",monospace;
+    font-size:.6rem; color:var(--muted); }
+  #ink-canvas{ display:block; width:100%; height:min(52vh, 460px);
+    cursor:crosshair; touch-action:none; }
+  #nb-ink-toggle.active{ color:var(--on-accent); background:var(--amber); border-color:var(--amber); }
+  @media (max-width:860px){ #ink-canvas{ height:44vh; } .ink-lab input[type=range]{ width:56px; } }
+
+
+  .ink-prompt{ display:flex; align-items:center; gap:8px; padding:7px 10px;
+    border-top:1px solid var(--line); background:var(--panel-2); font-size:.72rem; }
+  .ink-prompt b{ color:var(--amber); }
+  .ink-yes, .ink-no{ padding:4px 10px; border-radius:7px; font-size:.68rem; border:1px solid var(--line); }
+  .ink-yes{ background:var(--amber); color:var(--on-accent); border-color:var(--amber); font-weight:700; }
+  .ink-no{ background:var(--panel); color:var(--muted); }
+  .ink-no:hover{ color:var(--text); }
+  #ink-smart.active{ color:var(--on-accent); background:var(--amber); border-color:var(--amber); }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

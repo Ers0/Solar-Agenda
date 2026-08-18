@@ -3580,24 +3580,22 @@ const TOOLS = [
     async execute(args){
       const entry = { title: args.title, content: args.content,
                       tags: (args.tags || []).map(t => String(t).toLowerCase()), source: 'Voice' };
-      KB = [entry, ...KB];
-      try{
-        localStorage.setItem('agenda-solar-kb', JSON.stringify(KB));
-      }catch(err){
-        KB = KB.slice(1);
-        return `Could NOT save: ${err.message}. Tell the user it was not stored.`;
+      // Shared, so every profile gets it. Say so — the user should know this
+      // is not private to them.
+      const saved = await SharedKB.add(entry);
+      if(!saved){
+        return 'Could NOT save to the shared knowledge base. Tell the user it was not stored.';
       }
       renderKbStatus();
       const box = document.getElementById('kb-json');
       if(box) box.value = JSON.stringify(KB, null, 2);
-      // Filed as a note too, so it exists as a real record and not only in
-      // browser storage.
+      // Filed as a note too, in this profile's own notebooks.
       let filed = false;
       try{ filed = !!(await fileKnowledgeEntry(entry)); }catch(e){}
       renderNotebooksGrid();
       Galaxy.build({ folder:false });
-      return `Saved "${args.title}" to the knowledge base`
-           + (filed ? ' and filed it as a note.' : ' (local only — the note could not be filed).');
+      return `Saved "${args.title}" to the shared knowledge base — every profile can see it`
+           + (filed ? ', and filed a copy in your own notebooks.' : '.');
     },
   },
   {
@@ -3716,6 +3714,9 @@ const AI_TOOLS = TOOLS.map(t => ({
 // to the assistant, which must then state how confident it is.
 let KB = [];
 async function loadKB(){
+  // Shared store first; the bundled file is only a starting point for a brand
+  // new deployment.
+  if(session && await SharedKB.load()) return;
   const local = localStorage.getItem('agenda-solar-kb');
   if(local){ try{ KB = JSON.parse(local); }catch(e){ KB = []; } }
   if(KB.length){ renderKbStatus(); return; }
@@ -3800,6 +3801,48 @@ document.getElementById('vision-test')?.addEventListener('click', async () => {
         + 'Accept the Llama 4 model terms at console.groq.com, then try again.');
   }catch(e){ alert('Could not reach the vision service.'); }
 });
+document.getElementById('profile-new')?.addEventListener('click', async () => {
+  const name = prompt('New profile name (letters, numbers, dot, dash or underscore):');
+  if(!name) return;
+  const pw = prompt(`Password for "${name}" (at least 6 characters):`);
+  if(!pw) return;
+  try{
+    const r = await fetch(FN_URL + "/agenda-login", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ action:'register', name, password: pw }),
+    });
+    const out = await readJson(r);
+    alert(out.ok
+      ? `Profile "${out.json.user.name}" created.\n\nIt starts empty: its own cases, notebooks and notes, `
+        + 'with the shared knowledge base already available.'
+      : 'Could not create it: ' + (out.json.error || r.status));
+  }catch(e){ alert('Could not reach the sign-in service.'); }
+});
+
+document.getElementById('kb-seed')?.addEventListener('click', async () => {
+  if(!KB.length){ alert('There is nothing loaded to publish.'); return; }
+  if(!confirm(`Publish ${KB.length} entries to the shared knowledge base?\n\n`
+    + 'Every profile will be able to read them. Do not publish anything containing client names.')) return;
+  const res = await SharedKB.seed(KB);
+  if(res.code === 'already_seeded'){
+    if(!confirm(`The shared base already has ${res.count} entries.\n\nAdd these on top anyway?`)) return;
+    const again = await SharedKB.seed(KB, true);
+    alert(again.ok ? `Added ${again.added} entries.` : 'Failed: ' + (again.error || 'unknown'));
+  } else {
+    alert(res.ok ? `Published ${res.added} entries.` : 'Failed: ' + (res.error || 'unknown'));
+  }
+  await SharedKB.load();
+  renderKbShare();
+});
+
+function renderKbShare(){
+  const el = document.getElementById('kb-share-status');
+  if(!el) return;
+  el.textContent = SharedKB.loaded
+    ? `${KB.length} entries, shared with all profiles`
+    : `${KB.length} entries, local only — press Publish`;
+  el.className = SharedKB.loaded ? 'ok' : '';
+}
 document.getElementById('screen-share')?.addEventListener('click', async () => {
   if(Screen_.stream && Screen_.stream.active){ Screen_.close(); return; }
   const ok = await Screen_.open();
@@ -3808,7 +3851,9 @@ document.getElementById('screen-share')?.addEventListener('click', async () => {
 document.getElementById('screen-keep')?.addEventListener('click', () => {
   Screen_.keepOpen = !Screen_.keepOpen;
   settings.screenKeep = Screen_.keepOpen; saveSettings();
-  renderScreenKeep(); renderScreenStatus();
+  renderScreenKeep(); renderScreenStatus(); renderKbShare();
+  const ps = document.getElementById('profile-status');
+  if(ps) ps.textContent = `signed in as ${session?.name || '—'}`;
 });
 function renderScreenKeep(){
   // Defaults to on: a one-shot share would need a fresh click every time,
@@ -3966,6 +4011,795 @@ const Outcomes = {
   },
 };
 
+
+
+// Knowledge is shared across every profile: a fault code learned once should
+// help whoever picks up the next case. Cases, notebooks, notes and memories
+// stay per-profile and encrypted — only this table is common.
+const SharedKB = {
+  loaded: false,
+
+  async load(){
+    try{
+      const r = await fetch(FN_URL + "/agenda-kb", { headers: authHeaders() });
+      const out = await readJson(r);
+      if(!out.ok) return false;
+      const rows = out.json.entries || [];
+      if(rows.length){
+        KB = rows.map(e => ({ id: e.id, title: e.title, content: e.content,
+                              tags: e.tags || [], source: e.source || null, url: e.url || null }));
+        this.loaded = true;
+        renderKbStatus();
+        return true;
+      }
+      return false;   // empty: the caller seeds it
+    }catch(e){ return false; }
+  },
+
+  async add(entry){
+    const r = await fetch(FN_URL + "/agenda-kb", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ title: entry.title, content: entry.content,
+                             tags: entry.tags || [], source: entry.source, url: entry.url }),
+    });
+    const out = await readJson(r);
+    if(!out.ok) return null;
+    KB = [{ ...entry, id: out.json.entry.id }, ...KB];
+    renderKbStatus();
+    return out.json.entry;
+  },
+
+  // One-time migration of a local base into the shared one.
+  async seed(entries, force){
+    const r = await fetch(FN_URL + "/agenda-kb", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({ entries, force: !!force }),
+    });
+    const out = await readJson(r);
+    return out.ok ? out.json : { error: out.json.error, code: out.json.code, count: out.json.count };
+  },
+
+  async removeSource(source){
+    const r = await fetch(FN_URL + "/agenda-kb", {
+      method:'DELETE', headers: authHeaders(), body: JSON.stringify({ source }),
+    });
+    return (await readJson(r)).ok;
+  },
+};
+
+
+// ===== Ink canvas (Phase 1) ==========================================
+// A vector ink layer for the note editor. Deliberate constraints:
+//   - strokes are structured data, never a bitmap: they survive zoom, and
+//     later phases can recognise them without losing the original
+//   - nothing in the pointer path touches the network; rendering is local
+//   - pressure is used where the device reports it, ignored where it does not
+//
+// Document shape (v1), stored encrypted in notes.ink:
+//   { v:1, strokes:[{ id, tool, color, width, points:[[x,y,p],…], t }],
+//     objects:[],            // reserved: shapes (Phase 2), text (Phase 3)
+//     view:{ zoom, panX, panY } }
+// `objects` exists now so later phases add to the model rather than change it.
+const Ink = {
+  doc: { v:1, strokes: [], objects: [], view: { zoom:1, panX:0, panY:0 } },
+  cv: null, ctx: null, dpr: 1,
+  active: false,                 // is the ink layer showing
+  tool: 'pen',                   // pen | highlighter | eraser
+  colour: null,                  // null = follow the theme text colour
+  width: 2.4,
+  smoothing: 0.35,               // 0 = raw, 0.8 = heavily stabilised
+  pressureOn: true,
+  undoStack: [], redoStack: [],
+  drawing: false, cur: null, last: null,
+  panning: false, panFrom: null,
+  dirty: false,
+
+  // --- setup --------------------------------------------------------
+  mount(){
+    this.cv = document.getElementById('ink-canvas');
+    if(!this.cv) return;
+    this.ctx = this.cv.getContext('2d');
+    this.resize();
+    if(this._bound) return;
+    this._bound = true;
+
+    // Pointer Events cover pen, mouse and touch in one path, and carry
+    // pressure and pointerType where the hardware provides them.
+    this.cv.addEventListener('pointerdown', e => this.down(e));
+    this.cv.addEventListener('pointermove', e => this.move(e));
+    ['pointerup','pointercancel','pointerleave'].forEach(ev =>
+      this.cv.addEventListener(ev, e => this.up(e)));
+    // Stop the browser scrolling or selecting while a pen is down.
+    this.cv.style.touchAction = 'none';
+    this.cv.addEventListener('contextmenu', e => e.preventDefault());
+
+    this.cv.addEventListener('wheel', e => {
+      if(!this.active) return;
+      e.preventDefault();
+      const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      this.zoomAt(e.offsetX, e.offsetY, f);
+    }, { passive:false });
+
+    window.addEventListener('resize', () => { if(this.active) this.resize(); });
+  },
+
+  resize(){
+    if(!this.cv) return;
+    const r = this.cv.getBoundingClientRect();
+    this.dpr = Math.min(2.5, window.devicePixelRatio || 1);
+    this.cv.width = Math.max(1, Math.round(r.width * this.dpr));
+    this.cv.height = Math.max(1, Math.round(r.height * this.dpr));
+    this.redraw();
+  },
+
+  // --- coordinate space ---------------------------------------------
+  // Points are stored in document space, so zoom and pan never alter the data.
+  toDoc(e){
+    const v = this.doc.view;
+    return { x: (e.offsetX - v.panX) / v.zoom, y: (e.offsetY - v.panY) / v.zoom };
+  },
+
+  zoomAt(px, py, factor){
+    const v = this.doc.view;
+    const next = Math.max(0.25, Math.min(6, v.zoom * factor));
+    // Keep the point under the cursor fixed while zooming.
+    v.panX = px - (px - v.panX) * (next / v.zoom);
+    v.panY = py - (py - v.panY) * (next / v.zoom);
+    v.zoom = next;
+    this.redraw(); this.status();
+  },
+  resetView(){ this.doc.view = { zoom:1, panX:0, panY:0 }; this.redraw(); this.status(); },
+
+  // --- input --------------------------------------------------------
+  pressureOf(e){
+    if(!this.pressureOn) return 0.5;
+    // A mouse reports 0.5 or 0; only trust pressure from a real pen.
+    if(e.pointerType === 'pen' && e.pressure > 0) return e.pressure;
+    return 0.5;
+  },
+
+  down(e){
+    if(!this.active) return;
+    this.cv.setPointerCapture?.(e.pointerId);
+
+    // Middle button, space, or two fingers pans instead of drawing.
+    if(e.button === 1 || e.altKey || this.tool === 'pan'){
+      this.panning = true;
+      this.panFrom = { x:e.offsetX, y:e.offsetY, panX:this.doc.view.panX, panY:this.doc.view.panY };
+      return;
+    }
+    // A stylus barrel button erases, which is the tablet convention.
+    const erasing = this.tool === 'eraser' || e.button === 5 || (e.buttons & 32) ||
+                    e.pointerType === 'pen' && e.button === 2;
+    if(erasing){ this.drawing = 'erase'; this.eraseAt(this.toDoc(e)); return; }
+
+    const p = this.toDoc(e);
+    this.pushUndo();
+    this.cur = {
+      id: 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+      tool: this.tool, colour: this.colour, width: this.width,
+      points: [[+p.x.toFixed(2), +p.y.toFixed(2), +this.pressureOf(e).toFixed(3)]],
+      t: Date.now(),
+    };
+    this.last = p;
+    this.drawing = true;
+  },
+
+  move(e){
+    if(!this.active) return;
+    if(this.panning && this.panFrom){
+      this.doc.view.panX = this.panFrom.panX + (e.offsetX - this.panFrom.x);
+      this.doc.view.panY = this.panFrom.panY + (e.offsetY - this.panFrom.y);
+      this.redraw();
+      return;
+    }
+    if(!this.drawing) return;
+    if(this.drawing === 'erase'){ this.eraseAt(this.toDoc(e)); return; }
+
+    // Coalesced events give every sample the tablet reported, not just the
+    // ones that survived to a frame — this is what makes fast strokes smooth.
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for(const ev of events){
+      const raw = this.toDoc(ev);
+      // Exponential smoothing: the higher the setting, the more the new point
+      // is pulled toward the previous one. Applied to input, not to rendering,
+      // so it costs nothing per frame.
+      const a = 1 - this.smoothing;
+      const p = this.last
+        ? { x: this.last.x + (raw.x - this.last.x) * a, y: this.last.y + (raw.y - this.last.y) * a }
+        : raw;
+      // Drop points too close to matter; keeps the document small.
+      if(this.last && Math.hypot(p.x - this.last.x, p.y - this.last.y) < 0.4) continue;
+      this.cur.points.push([+p.x.toFixed(2), +p.y.toFixed(2), +this.pressureOf(ev).toFixed(3)]);
+      this.last = p;
+    }
+    // Draw only the newest segment rather than the whole document.
+    this.drawStroke(this.cur, this.cur.points.length - 3);
+  },
+
+  up(e){
+    if(this.panning){ this.panning = false; this.panFrom = null; return; }
+    if(!this.drawing) return;
+    if(this.drawing === 'erase'){ this.drawing = false; this.markDirty(); return; }
+    this.drawing = false;
+    if(this.cur && this.cur.points.length > 1){
+      this.doc.strokes.push(this.cur);
+      this.markDirty();
+      // Recognition happens only once the stroke is finished, and after a
+      // pause, so it never interferes with a multi-stroke drawing in progress.
+      if(this.smartInk && this.tool !== 'highlighter') this.scheduleRecognise(this.cur);
+    } else {
+      this.undoStack.pop();          // a stray tap should not cost an undo
+    }
+    this.cur = null; this.last = null;
+    this.redraw(); this.status();
+  },
+
+  // --- erasing ------------------------------------------------------
+  // Whole-stroke erase: simpler to reason about than splitting, and it keeps
+  // the document a clean list of strokes for later recognition.
+  eraseAt(p){
+    const r = Math.max(6, this.width * 3);
+    const before = this.doc.strokes.length;
+    const kept = this.doc.strokes.filter(s =>
+      s.hidden || !s.points.some(pt => Math.hypot(pt[0] - p.x, pt[1] - p.y) < r));
+    // Erasing over a shape removes the shape and frees its original ink.
+    const objBefore = this.doc.objects.length;
+    this.doc.objects = this.doc.objects.filter(o => {
+      const src = this.doc.strokes.find(x => x.id === o.fromStroke);
+      const near = src && src.points.some(pt => Math.hypot(pt[0]-p.x, pt[1]-p.y) < r);
+      if(near && src) src.hidden = true;      // stays hidden; the shape goes
+      return !near;
+    });
+    if(kept.length !== before || this.doc.objects.length !== objBefore){
+      if(this.undoStack[this.undoStack.length - 1] !== 'erasing'){ /* already pushed */ }
+      this.doc.strokes = kept;
+      this.redraw(); this.status();
+    }
+  },
+
+  // --- rendering ----------------------------------------------------
+  themeColour(){
+    return getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#e8eef4';
+  },
+
+  drawStroke(s, fromIndex){
+    const ctx = this.ctx, v = this.doc.view;
+    if(!ctx || !s || s.points.length < 2) return;
+    ctx.save();
+    ctx.scale(this.dpr, this.dpr);
+    ctx.translate(v.panX, v.panY);
+    ctx.scale(v.zoom, v.zoom);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = s.colour || this.themeColour();
+    if(s.tool === 'highlighter'){
+      ctx.globalAlpha = 0.28;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    const start = Math.max(1, fromIndex | 0);
+    for(let i = start; i < s.points.length; i++){
+      const a = s.points[i - 1], b = s.points[i];
+      // Width follows pressure, so a pen produces a natural taper.
+      const press = this.pressureOn ? (a[2] + b[2]) / 2 : 0.5;
+      ctx.lineWidth = s.width * (s.tool === 'highlighter' ? 4 : 1) * (0.45 + press * 1.1);
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      // Quadratic through the midpoint removes the polyline look.
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      ctx.quadraticCurveTo(a[0], a[1], mx, my);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+
+  redraw(){
+    if(!this.ctx || !this.cv) return;
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.clearRect(0, 0, this.cv.width, this.cv.height);
+    // A stroke replaced by a shape is hidden, never deleted.
+    this.doc.strokes.forEach(s => { if(!s.hidden) this.drawStroke(s, 1); });
+    this.doc.objects.forEach(o => this.drawObject(o));
+    if(this.pending) this.drawObject(this.pending.shape, true);
+    if(this.cur) this.drawStroke(this.cur, 1);
+  },
+
+  // Clean geometry from a recognised shape. Drawn in the same ink colour so
+  // the page still reads as one hand.
+  drawObject(o, preview){
+    const ctx = this.ctx, v = this.doc.view;
+    if(!ctx || !o) return;
+    ctx.save();
+    ctx.scale(this.dpr, this.dpr);
+    ctx.translate(v.panX, v.panY);
+    ctx.scale(v.zoom, v.zoom);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = preview ? (getComputedStyle(document.documentElement)
+                                  .getPropertyValue('--amber').trim() || '#f2a71b')
+                              : (o.colour || this.themeColour());
+    ctx.lineWidth = (o.width || this.width) * 1.05;
+    if(preview){ ctx.setLineDash([6, 4]); ctx.globalAlpha = 0.9; }
+    const g = o.geom || {};
+    ctx.beginPath();
+    switch(o.kind){
+      case 'line':
+        ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); break;
+      case 'arrow': {
+        ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2);
+        const a = Math.atan2(g.y2-g.y1, g.x2-g.x1);
+        const hl = Math.max(10, Math.hypot(g.x2-g.x1, g.y2-g.y1) * 0.13);
+        ctx.moveTo(g.x2, g.y2);
+        ctx.lineTo(g.x2 - Math.cos(a-0.42)*hl, g.y2 - Math.sin(a-0.42)*hl);
+        ctx.moveTo(g.x2, g.y2);
+        ctx.lineTo(g.x2 - Math.cos(a+0.42)*hl, g.y2 - Math.sin(a+0.42)*hl);
+        break;
+      }
+      case 'circle':
+        ctx.arc(g.cx, g.cy, Math.abs(g.r), 0, Math.PI*2); break;
+      case 'ellipse':
+        ctx.ellipse(g.cx, g.cy, Math.abs(g.rx), Math.abs(g.ry), 0, 0, Math.PI*2); break;
+      case 'square':
+      case 'rectangle':
+        ctx.rect(g.x, g.y, g.w, g.h); break;
+      case 'triangle':
+        if(g.points?.length === 3){
+          ctx.moveTo(g.points[0][0], g.points[0][1]);
+          ctx.lineTo(g.points[1][0], g.points[1][1]);
+          ctx.lineTo(g.points[2][0], g.points[2][1]);
+          ctx.closePath();
+        }
+        break;
+    }
+    ctx.stroke();
+    ctx.restore();
+  },
+
+  // --- history ------------------------------------------------------
+  pushUndo(){
+    this.undoStack.push(JSON.stringify(this.doc.strokes));
+    if(this.undoStack.length > 60) this.undoStack.shift();
+    this.redoStack.length = 0;
+  },
+  undo(){
+    if(!this.undoStack.length) return;
+    this.redoStack.push(JSON.stringify(this.doc.strokes));
+    this.doc.strokes = JSON.parse(this.undoStack.pop());
+    this.redraw(); this.markDirty(); this.status();
+  },
+  redo(){
+    if(!this.redoStack.length) return;
+    this.undoStack.push(JSON.stringify(this.doc.strokes));
+    this.doc.strokes = JSON.parse(this.redoStack.pop());
+    this.redraw(); this.markDirty(); this.status();
+  },
+  clear(){
+    if(!this.doc.strokes.length) return;
+    if(!confirm('Erase all ink on this note? The typed text is not affected.')) return;
+    this.pushUndo();
+    this.doc.strokes = [];
+    this.redraw(); this.markDirty(); this.status();
+  },
+
+
+  // --- Smart Ink ------------------------------------------------------
+  smartInk: false,
+  pending: null,          // a medium-confidence shape awaiting a decision
+  recTimer: null,
+
+  scheduleRecognise(stroke){
+    clearTimeout(this.recTimer);
+    const id = stroke.id;
+    this.recTimer = setTimeout(() => this.recogniseStroke(id), 420);
+  },
+
+  recogniseStroke(strokeId){
+    const s = this.doc.strokes.find(x => x.id === strokeId);
+    if(!s || s.hidden || s.recognisedAs) return;
+    const res = ShapeRec.recognise(s.points);
+    if(!res) return;
+
+    const shape = {
+      id: 'o' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+      type: 'shape', kind: res.kind, geom: res.geom,
+      colour: s.colour, width: s.width,
+      fromStroke: s.id, confidence: +res.confidence.toFixed(3), t: Date.now(),
+    };
+
+    if(res.confidence >= ShapeRec.HIGH){
+      this.commitShape(shape);                 // clear enough to just do it
+    } else if(res.confidence >= ShapeRec.MED){
+      this.pending = { shape, strokeId: s.id };  // offer it, do not impose it
+      this.showShapePrompt(res.kind, res.confidence);
+      this.redraw();
+    }
+    // Below medium: the original stroke stands, silently.
+  },
+
+  commitShape(shape){
+    this.pushUndo();
+    const s = this.doc.strokes.find(x => x.id === shape.fromStroke);
+    if(s){ s.hidden = true; s.recognisedAs = shape.id; }   // kept, not deleted
+    this.doc.objects.push(shape);
+    this.pending = null;
+    this.hideShapePrompt();
+    this.redraw(); this.markDirty(); this.status();
+  },
+
+  rejectShape(){
+    this.pending = null;
+    this.hideShapePrompt();
+    this.redraw();
+  },
+
+  // Turn a recognised shape back into the ink it came from.
+  revertShape(objectId){
+    const i = this.doc.objects.findIndex(o => o.id === objectId);
+    if(i < 0) return;
+    this.pushUndo();
+    const o = this.doc.objects[i];
+    const s = this.doc.strokes.find(x => x.id === o.fromStroke);
+    if(s){ delete s.hidden; delete s.recognisedAs; }
+    this.doc.objects.splice(i, 1);
+    this.redraw(); this.markDirty(); this.status();
+  },
+
+  // Undo the most recent recognition, which is what a user reaches for.
+  revertLast(){
+    const last = this.doc.objects[this.doc.objects.length - 1];
+    if(!last){ return false; }
+    this.revertShape(last.id);
+    return true;
+  },
+
+  showShapePrompt(kind, confidence){
+    const el = document.getElementById('ink-prompt');
+    if(!el) return;
+    el.innerHTML = `<span>Make this a ${escapeHtml(kind)}? <b>${Math.round(confidence*100)}%</b></span>`
+      + `<button class="ink-yes" id="ink-accept">Yes</button>`
+      + `<button class="ink-no" id="ink-decline">Keep ink</button>`;
+    el.style.display = 'flex';
+    el.querySelector('#ink-accept').addEventListener('click', () => {
+      if(this.pending) this.commitShape(this.pending.shape);
+    });
+    el.querySelector('#ink-decline').addEventListener('click', () => this.rejectShape());
+    clearTimeout(this._promptTimer);
+    // If it is ignored, the original ink simply stays.
+    this._promptTimer = setTimeout(() => this.rejectShape(), 6000);
+  },
+  hideShapePrompt(){
+    clearTimeout(this._promptTimer);
+    const el = document.getElementById('ink-prompt');
+    if(el){ el.style.display = 'none'; el.innerHTML = ''; }
+  },
+
+  // --- persistence --------------------------------------------------
+  markDirty(){
+    this.dirty = true;
+    const s = document.getElementById('notebook-status');
+    if(s) s.textContent = 'Unsaved';
+    scheduleNoteSave?.();
+  },
+  serialise(){
+    return this.doc.strokes.length || this.doc.objects.length
+      ? JSON.stringify({ ...this.doc, view: undefined })   // view is per-session
+      : null;
+  },
+  load(raw){
+    this.undoStack.length = 0; this.redoStack.length = 0;
+    this.doc = { v:1, strokes: [], objects: [], view: { zoom:1, panX:0, panY:0 } };
+    if(raw){
+      try{
+        const d = JSON.parse(raw);
+        if(d && Array.isArray(d.strokes)){
+          this.doc.strokes = d.strokes;
+          this.doc.objects = Array.isArray(d.objects) ? d.objects : [];
+        }
+      }catch(e){ /* an unreadable ink blob must not break the note */ }
+    }
+    this.dirty = false;
+    this.resize();
+    this.status();
+  },
+
+  status(){
+    const el = document.getElementById('ink-info');
+    const ink = this.doc.strokes.filter(s => !s.hidden).length;
+    if(el) el.textContent = `${ink} strokes`
+      + (this.doc.objects.length ? ` · ${this.doc.objects.length} shapes` : '')
+      + ` · ${Math.round(this.doc.view.zoom * 100)}%`;
+  },
+
+  show(on){
+    this.active = on;
+    const wrap = document.getElementById('ink-wrap');
+    if(wrap) wrap.style.display = on ? 'block' : 'none';
+    const btn = document.getElementById('nb-ink-toggle');
+    if(btn) btn.classList.toggle('active', on);
+    if(on){ this.mount(); this.resize(); }
+  },
+};
+
+
+// --- ink wiring -------------------------------------------------------
+document.querySelectorAll('[data-ink-tool]').forEach(b => {
+  b.addEventListener('click', () => {
+    Ink.tool = b.dataset.inkTool;
+    document.querySelectorAll('[data-ink-tool]').forEach(x => x.classList.toggle('active', x === b));
+    SFX.tick();
+  });
+});
+document.getElementById('nb-ink-toggle')?.addEventListener('click', () => {
+  Ink.show(!Ink.active);
+  SFX.open();
+});
+document.getElementById('ink-width')?.addEventListener('input', e => {
+  Ink.width = +e.target.value;
+  settings.inkWidth = Ink.width; saveSettings();
+});
+document.getElementById('ink-smooth')?.addEventListener('input', e => {
+  // Real-time, like the microphone sensitivity control: no apply step.
+  Ink.smoothing = +e.target.value / 100;
+  settings.inkSmoothing = +e.target.value; saveSettings();
+});
+document.getElementById('ink-undo')?.addEventListener('click', () => Ink.undo());
+document.getElementById('ink-redo')?.addEventListener('click', () => Ink.redo());
+document.getElementById('ink-fit')?.addEventListener('click', () => Ink.resetView());
+document.getElementById('ink-clear')?.addEventListener('click', () => Ink.clear());
+document.getElementById('ink-smart')?.addEventListener('click', e => {
+  Ink.smartInk = !Ink.smartInk;
+  settings.smartInk = Ink.smartInk; saveSettings();
+  e.currentTarget.classList.toggle('active', Ink.smartInk);
+  if(!Ink.smartInk) Ink.rejectShape();
+  SFX.tick();
+});
+document.getElementById('ink-revert')?.addEventListener('click', () => {
+  if(!Ink.revertLast()) alert('No recognised shape to revert.');
+});
+
+// Keyboard history, but only while the ink layer has focus — the rich-text
+// editor has its own undo and the two must not fight.
+document.addEventListener('keydown', e => {
+  if(!Ink.active) return;
+  if(document.activeElement && document.activeElement.id === 'notebook-canvas') return;
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){
+    e.preventDefault();
+    e.shiftKey ? Ink.redo() : Ink.undo();
+  }
+});
+
+function applyInkSettings(){
+  if(typeof settings.inkWidth === 'number') Ink.width = settings.inkWidth;
+  if(typeof settings.inkSmoothing === 'number') Ink.smoothing = settings.inkSmoothing / 100;
+  Ink.pressureOn = settings.inkPressure !== false;
+  Ink.smartInk = !!settings.smartInk;
+  const sb = document.getElementById('ink-smart');
+  if(sb) sb.classList.toggle('active', Ink.smartInk);
+  const w = document.getElementById('ink-width'), s = document.getElementById('ink-smooth');
+  if(w) w.value = Ink.width;
+  if(s) s.value = Math.round(Ink.smoothing * 100);
+}
+
+
+// ===== Shape recognition (Phase 2) ===================================
+// Purely geometric and local: no model call, so it cannot add pen latency.
+// Runs once a stroke is finished, never during drawing.
+//
+// The original stroke is ALWAYS kept. A recognised shape becomes a new object
+// referencing it; the stroke is flagged hidden rather than deleted, so undo,
+// re-recognition and later AI passes all still have the raw ink.
+const ShapeRec = {
+  // Confidence bands, per the brief: high replaces, medium offers, low leaves.
+  HIGH: 0.82, MED: 0.62,
+
+  // --- geometry helpers ---------------------------------------------
+  pathLength(pts){
+    let d = 0;
+    for(let i = 1; i < pts.length; i++) d += Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
+    return d;
+  },
+  bbox(pts){
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    pts.forEach(p => { x0=Math.min(x0,p[0]); y0=Math.min(y0,p[1]); x1=Math.max(x1,p[0]); y1=Math.max(y1,p[1]); });
+    return { x0, y0, x1, y1, w:x1-x0, h:y1-y0, cx:(x0+x1)/2, cy:(y0+y1)/2, diag:Math.hypot(x1-x0,y1-y0) };
+  },
+  // Even arc-length spacing, so corner detection is not fooled by fast or slow
+  // drawing producing uneven sample density.
+  resample(pts, n){
+    const total = this.pathLength(pts);
+    if(total <= 0 || pts.length < 2) return pts.slice();
+    const step = total / (n - 1);
+    const out = [pts[0]];
+    let acc = 0, prev = pts[0];
+    for(let i = 1; i < pts.length; i++){
+      let d = Math.hypot(pts[i][0]-prev[0], pts[i][1]-prev[1]);
+      while(acc + d >= step && out.length < n - 1){
+        const t = (step - acc) / d;
+        const nx = prev[0] + (pts[i][0]-prev[0]) * t;
+        const ny = prev[1] + (pts[i][1]-prev[1]) * t;
+        out.push([nx, ny]);
+        prev = [nx, ny];
+        d = Math.hypot(pts[i][0]-prev[0], pts[i][1]-prev[1]);
+        acc = 0;
+      }
+      acc += d; prev = pts[i];
+    }
+    while(out.length < n) out.push(pts[pts.length-1]);
+    return out;
+  },
+  // Turning angle at each sample, used to find corners.
+  // `cyclic` matters: a closed shape drawn starting at a vertex has that
+  // corner split across the two ends of the stroke, so a linear scan misses
+  // it and a triangle looks like it only has two corners.
+  corners(rs, thresholdDeg, cyclic){
+    const th = (thresholdDeg || 50) * Math.PI / 180;
+    const idx = [];
+    const span = 3;
+    const n = rs.length;
+    const at = i => rs[((i % n) + n) % n];
+    const from = cyclic ? 0 : span;
+    const to = cyclic ? n : n - span;
+    for(let i = from; i < to; i++){
+      const a = [at(i)[0]-at(i-span)[0], at(i)[1]-at(i-span)[1]];
+      const b = [at(i+span)[0]-at(i)[0], at(i+span)[1]-at(i)[1]];
+      const la = Math.hypot(...a), lb = Math.hypot(...b);
+      if(la < 1e-6 || lb < 1e-6) continue;
+      const ang = Math.acos(Math.max(-1, Math.min(1, (a[0]*b[0]+a[1]*b[1])/(la*lb))));
+      if(ang > th){
+        // Keep only the sharpest point in a run of adjacent corners.
+        if(idx.length && i - idx[idx.length-1] < n/10) continue;
+        idx.push(i);
+      }
+    }
+    // In cyclic mode the first and last can be the same corner seen twice.
+    if(cyclic && idx.length > 1 && (n - idx[idx.length-1] + idx[0]) < n/10) idx.pop();
+    return idx;
+  },
+  polyArea(pts){
+    let a = 0;
+    for(let i = 0; i < pts.length; i++){
+      const p = pts[i], q = pts[(i+1) % pts.length];
+      a += p[0]*q[1] - q[0]*p[1];
+    }
+    return Math.abs(a) / 2;
+  },
+
+  // --- fit errors, all normalised to the shape's own size -------------
+  lineError(rs, box){
+    const a = rs[0], b = rs[rs.length-1];
+    const L = Math.hypot(b[0]-a[0], b[1]-a[1]);
+    if(L < 1e-6) return 1;
+    let sum = 0;
+    rs.forEach(p => {
+      sum += Math.abs((b[1]-a[1])*p[0] - (b[0]-a[0])*p[1] + b[0]*a[1] - b[1]*a[0]) / L;
+    });
+    return (sum / rs.length) / Math.max(1, box.diag) * 4;
+  },
+  ellipseError(rs, box){
+    const rx = Math.max(1, box.w/2), ry = Math.max(1, box.h/2);
+    let sum = 0;
+    rs.forEach(p => {
+      const dx = (p[0]-box.cx)/rx, dy = (p[1]-box.cy)/ry;
+      sum += Math.abs(Math.hypot(dx, dy) - 1);
+    });
+    return sum / rs.length * 2.2;
+  },
+  rectError(rs, box){
+    let sum = 0;
+    rs.forEach(p => {
+      const dx = Math.min(Math.abs(p[0]-box.x0), Math.abs(p[0]-box.x1));
+      const dy = Math.min(Math.abs(p[1]-box.y0), Math.abs(p[1]-box.y1));
+      sum += Math.min(dx, dy);
+    });
+    return (sum / rs.length) / Math.max(1, box.diag) * 6;
+  },
+  polyError(rs, verts, box){
+    const segDist = (p, a, b) => {
+      const vx = b[0]-a[0], vy = b[1]-a[1];
+      const L2 = vx*vx + vy*vy;
+      let t = L2 ? ((p[0]-a[0])*vx + (p[1]-a[1])*vy) / L2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(p[0]-(a[0]+vx*t), p[1]-(a[1]+vy*t));
+    };
+    let sum = 0;
+    rs.forEach(p => {
+      let best = Infinity;
+      for(let i = 0; i < verts.length; i++)
+        best = Math.min(best, segDist(p, verts[i], verts[(i+1)%verts.length]));
+      sum += best;
+    });
+    return (sum / rs.length) / Math.max(1, box.diag) * 6;
+  },
+
+  // --- arrowheads -----------------------------------------------------
+  // An arrow is a mostly-straight shaft whose last fifth doubles back.
+  arrowHead(pts, box){
+    const n = pts.length;
+    if(n < 12) return null;
+    const cut = Math.floor(n * 0.78);
+    const shaft = pts.slice(0, cut), head = pts.slice(cut);
+    if(head.length < 4) return null;
+    const sa = shaft[0], sb = shaft[shaft.length-1];
+    const shaftAng = Math.atan2(sb[1]-sa[1], sb[0]-sa[0]);
+    // Does the tail reverse direction relative to the shaft?
+    let reversed = 0;
+    for(let i = 1; i < head.length; i++){
+      const a = Math.atan2(head[i][1]-head[i-1][1], head[i][0]-head[i-1][0]);
+      let d = Math.abs(a - shaftAng);
+      while(d > Math.PI) d = Math.abs(d - 2*Math.PI);
+      if(d > 1.9) reversed++;
+    }
+    if(reversed < Math.max(2, head.length * 0.25)) return null;
+    return { from: sa, to: sb, shaftError: this.lineError(this.resample(shaft, 32), box) };
+  },
+
+  // --- the classifier -------------------------------------------------
+  recognise(points){
+    if(!points || points.length < 6) return null;
+    const raw = points.map(p => [p[0], p[1]]);
+    const box = this.bbox(raw);
+    if(box.diag < 12) return null;                 // too small to be deliberate
+
+    const rs = this.resample(raw, 64);
+    const gap = Math.hypot(raw[raw.length-1][0]-raw[0][0], raw[raw.length-1][1]-raw[0][1]);
+    const closed = gap / box.diag < 0.28;
+    const straightness = gap / Math.max(1, this.pathLength(raw));
+    const conf = err => Math.max(0, Math.min(1, 1 - err));
+    const cands = [];
+
+    // Open, and nearly as long as the distance it covers -> line or arrow.
+    if(!closed && straightness > 0.72){
+      const head = this.arrowHead(raw, box);
+      if(head){
+        cands.push({ kind:'arrow', confidence: conf(head.shaftError * 1.15),
+                     geom: { x1:head.from[0], y1:head.from[1], x2:head.to[0], y2:head.to[1] } });
+      }
+      cands.push({ kind:'line', confidence: conf(this.lineError(rs, box)),
+                   geom: { x1:raw[0][0], y1:raw[0][1], x2:raw[raw.length-1][0], y2:raw[raw.length-1][1] } });
+    }
+
+    if(closed){
+      const cs = this.corners(rs, 52, true);
+      const aspect = box.w / Math.max(1, box.h);
+
+      // Circle and ellipse share a fit; the aspect ratio decides the label.
+      const eErr = this.ellipseError(rs, box);
+      const isCircle = aspect > 0.82 && aspect < 1.22;
+      cands.push({
+        kind: isCircle ? 'circle' : 'ellipse',
+        confidence: conf(eErr),
+        geom: isCircle
+          ? { cx:box.cx, cy:box.cy, r:(box.w+box.h)/4 }
+          : { cx:box.cx, cy:box.cy, rx:box.w/2, ry:box.h/2 },
+      });
+
+      // Four corners and edges hugging the bounding box -> rectangle.
+      const rErr = this.rectError(rs, box);
+      cands.push({
+        kind: (aspect > 0.88 && aspect < 1.14) ? 'square' : 'rectangle',
+        confidence: conf(rErr + Math.abs(cs.length - 4) * 0.13),
+        geom: { x:box.x0, y:box.y0, w:box.w, h:box.h },
+      });
+
+      if(cs.length >= 3 && cs.length <= 4){
+        const verts = cs.slice(0, 3).map(i => rs[i]);
+        cands.push({ kind:'triangle',
+                     confidence: conf(this.polyError(rs, verts, box) + Math.abs(cs.length - 3) * 0.16),
+                     geom: { points: verts.map(v => [+v[0].toFixed(1), +v[1].toFixed(1)]) } });
+      }
+      // A curve has no sharp corners, so corner count penalises the ellipse
+      // rather than the polygons when the stroke clearly has vertices.
+      if(cs.length >= 3){
+        const eIdx = cands.findIndex(x => x.kind === 'circle' || x.kind === 'ellipse');
+        if(eIdx > -1) cands[eIdx].confidence = Math.max(0, cands[eIdx].confidence - 0.18);
+      }
+    }
+
+    if(!cands.length) return null;
+    cands.sort((a, b) => b.confidence - a.confidence);
+    const best = cands[0];
+    return best.confidence >= 0.35 ? best : null;
+  },
+};
 
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
@@ -4490,7 +5324,8 @@ document.getElementById('kb-purge')?.addEventListener('click', async () => {
   const src = sources[n - 1];
   const before = KB.length;
   KB = KB.filter(e => !(e.source || 'manual').startsWith(src));
-  localStorage.setItem('agenda-solar-kb', JSON.stringify(KB));
+  if(SharedKB.loaded) await SharedKB.removeSource(src);
+  else localStorage.setItem('agenda-solar-kb', JSON.stringify(KB));
   // The notebook filed from that source goes too, so the galaxy matches.
   const nb = notebooks.find(x => x.title === SYS_PREFIX + src);
   if(nb){
@@ -6123,6 +6958,10 @@ function openNote(id){
   noteTags.set(n.tags || []);
   document.getElementById('notebook-canvas').innerHTML = n.content || '';
   hydrateMedia(document.getElementById('notebook-canvas'));
+  // Ink lives beside the text, not inside it.
+  applyInkSettings();
+  Ink.load(n.ink || null);
+  Ink.show(!!(n.ink && Ink.doc.strokes.length));
   document.getElementById('notebook-status').textContent = 'Saved';
   document.getElementById('nb-delete-btn').style.display = 'inline-block';
   notebookModalBackdrop.classList.add('open');
@@ -6138,6 +6977,9 @@ document.getElementById('new-note-btn').addEventListener('click', () => {
   document.getElementById('nb-date-input').value = '';
   noteTags.set([]);
   document.getElementById('notebook-canvas').innerHTML = '';
+  applyInkSettings();
+  Ink.load(null);
+  Ink.show(false);
   document.getElementById('notebook-status').textContent = '';
   document.getElementById('nb-delete-btn').style.display = 'none';
   notebookModalBackdrop.classList.add('open');
@@ -6167,7 +7009,8 @@ document.getElementById('nb-delete-btn').addEventListener('click', async () => {
 let nbSaveTimer = null;
 function scheduleNotebookSave(){
   const title = document.getElementById('nb-title-input').value.trim();
-  const content = document.getElementById('notebook-canvas').innerHTML.trim();
+  const content = document.getElementById('notebook-canvas').innerHTML.trim()
+    || (Ink.doc.strokes.length ? '<p><em>Handwritten note</em></p>' : '');
   if(isDraftNote && !title && !content) return; // still empty — don't create anything
   document.getElementById('notebook-status').textContent = 'Saving...';
   clearTimeout(nbSaveTimer);
@@ -6191,6 +7034,7 @@ async function saveNote(){
     linked_date: document.getElementById('nb-date-input').value || null,
     tags: noteTags.get(),
     content: serialiseCanvas(),
+    ink: Ink.serialise(),
   };
   try{
     if(isDraftNote){
@@ -7604,7 +8448,7 @@ async function decStr(val){
 // Which fields get sealed. Dates, times, priority and tags stay clear so the
 // calendar, sorting and filtering keep working without unlocking first.
 const CASE_SECRETS = ['titulo', 'ticket', 'phone'];
-const NOTE_SECRETS = ['title', 'content'];
+const NOTE_SECRETS = ['title', 'content', 'ink'];
 
 async function sealCase(p){
   if(!cryptoKey) return p;

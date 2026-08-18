@@ -272,6 +272,17 @@
       </div>
       <p class="hint">Drag to orbit, scroll to zoom. <b>Click</b> a star to focus it and dim everything more than one link away; <b>double-click</b> to open it. Red rings are notes nothing links to. Ask TARS to “find the note about…” to search by voice. Colour is by cluster, size by link count, thickness by how much two notes share.</p>
       <div class="set-row">
+        <div class="set-info"><b>Profiles</b><span id="profile-status">signed in</span></div>
+        <button class="btn-ghost" id="profile-new">Create profile</button>
+      </div>
+      <p class="hint">Each profile keeps its <b>own</b> cases, notebooks, notes and memories, encrypted with its own key — no profile can read another's. The <b>knowledge base is shared</b>: fault codes and procedures are common to everyone, so never put client names or personal details in a knowledge entry.</p>
+
+      <div class="set-row">
+        <div class="set-info"><b>Shared knowledge</b><span id="kb-share-status">checking…</span></div>
+        <button class="btn-ghost" id="kb-seed">Publish local entries</button>
+      </div>
+
+      <div class="set-row">
         <div class="set-info"><b>Screen reading</b><span id="screen-status">not sharing</span></div>
         <button class="btn-ghost" id="screen-share">Share a window</button>
         <button class="btn-ghost" id="vision-test">Check vision</button>
@@ -492,6 +503,28 @@
       <button type="button" data-cmd="removeFormat" title="Clear formatting">⌧</button>
     </div>
     <div id="notebook-canvas" contenteditable="true" data-placeholder="Type '/' for blocks, or just start writing..."></div>
+
+    <div id="ink-wrap" style="display:none">
+      <div class="ink-bar">
+        <button class="ink-tool active" data-ink-tool="pen" title="Pen">✒</button>
+        <button class="ink-tool" data-ink-tool="highlighter" title="Highlighter">▬</button>
+        <button class="ink-tool" data-ink-tool="eraser" title="Eraser">⌫</button>
+        <button class="ink-tool" data-ink-tool="pan" title="Pan (or hold Alt)">✥</button>
+        <span class="ink-sep"></span>
+        <label class="ink-lab">Size<input type="range" id="ink-width" min="1" max="14" step="0.5" value="2.4"></label>
+        <label class="ink-lab">Smooth<input type="range" id="ink-smooth" min="0" max="80" step="5" value="35"></label>
+        <span class="ink-sep"></span>
+        <button class="ink-act" id="ink-undo" title="Undo (Ctrl+Z)">↺</button>
+        <button class="ink-act" id="ink-redo" title="Redo (Ctrl+Shift+Z)">↻</button>
+        <button class="ink-act" id="ink-fit" title="Reset zoom">⤢</button>
+        <button class="ink-act" id="ink-smart" title="Smart Ink — tidy recognised shapes">◇</button>
+        <button class="ink-act" id="ink-revert" title="Undo last shape recognition">↶◇</button>
+        <button class="ink-act" id="ink-clear" title="Erase all ink">✕</button>
+        <span class="ink-info" id="ink-info">0 strokes · 100%</span>
+      </div>
+      <canvas id="ink-canvas"></canvas>
+      <div class="ink-prompt" id="ink-prompt" style="display:none"></div>
+    </div>
     <div class="slash-menu" id="slash-menu"></div>
     <div class="img-bar" id="img-bar">
       <button type="button" data-w="25%">25%</button>
