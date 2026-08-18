@@ -513,6 +513,19 @@
         <button class="ink-tool" data-ink-tool="select" title="Select handwriting">▢</button>
         <button class="ink-tool" data-ink-tool="pan" title="Pan (or hold Alt)">✥</button>
         <span class="ink-sep"></span>
+        <span class="ink-colours" id="ink-colours"></span>
+        <span class="ink-sep"></span>
+        <select class="ink-shapes" id="ink-shapes" title="Insert a shape">
+          <option value="">Shape…</option>
+          <option value="rectangle">Rectangle</option>
+          <option value="square">Square</option>
+          <option value="circle">Circle</option>
+          <option value="ellipse">Ellipse</option>
+          <option value="triangle">Triangle</option>
+          <option value="arrow">Arrow</option>
+          <option value="line">Line</option>
+        </select>
+        <span class="ink-sep"></span>
         <label class="ink-lab">Size<input type="range" id="ink-width" min="1" max="14" step="0.5" value="2.4"></label>
         <label class="ink-lab">Smooth<input type="range" id="ink-smooth" min="0" max="80" step="5" value="35"></label>
         <span class="ink-sep"></span>

@@ -884,6 +884,15 @@
     max-height:110px; overflow:auto; }
   #hand-ctx.active{ color:var(--amber); border-color:var(--amber); }
 
+
+  .ink-colours{ display:flex; gap:4px; }
+  .ink-swatch{ width:19px; height:19px; border-radius:50%; border:2px solid var(--line); padding:0; }
+  .ink-swatch.auto{ background: linear-gradient(135deg, var(--text) 50%, var(--muted) 50%); }
+  .ink-swatch.on{ border-color: var(--amber); transform: scale(1.15); }
+  .ink-shapes{ height:28px; border-radius:7px; border:1px solid var(--line);
+    background:var(--panel); color:var(--muted); font-size:.68rem; padding:0 5px; }
+  .ink-shapes:hover{ color:var(--amber); border-color:var(--amber); }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

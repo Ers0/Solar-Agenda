@@ -2868,7 +2868,7 @@ async function readJson(resp){
   return { ok: resp.ok, status: resp.status, json: json || {}, text };
 }
 
-let lastLatency = null, lastModel = null;
+let lastLatency = null, lastModel = null, lastReasoner = false;
 async function callAiAgent(messages, tools, opts){
   const body = tools && tools.length ? { messages, tools } : { messages };
   Object.assign(body, opts || {});
@@ -2894,6 +2894,7 @@ async function callAiAgent(messages, tools, opts){
   }
   lastLatency = data.latency_ms ?? null;
   lastModel = data.model || null;
+  lastReasoner = !!data.reasoner;
   if(data.recovered) console.info('[assistant] recovered:', data.recovered);
   return data.message || { content: data.reply || '' };
 }
@@ -4213,6 +4214,7 @@ const Ink = {
   active: false,                 // is the ink layer showing
   tool: 'pen',                   // pen | highlighter | eraser
   colour: null,                  // null = follow the theme text colour
+  palette: ['', '#e6584c', '#f2a71b', '#48b26b', '#4f9fd8', '#a86fd6', '#111111'],
   width: 2.4,
   smoothing: 0.35,               // 0 = raw, 0.8 = heavily stabilised
   pressureOn: true,
@@ -4234,8 +4236,13 @@ const Ink = {
     // pressure and pointerType where the hardware provides them.
     this.cv.addEventListener('pointerdown', e => this.down(e));
     this.cv.addEventListener('pointermove', e => this.move(e));
-    ['pointerup','pointercancel','pointerleave'].forEach(ev =>
+    // Only a real release ends a stroke. 'pointerleave' also fires when a fast
+    // pen crosses the canvas edge or the cursor briefly exits, which split one
+    // stroke into many — the dashed, gappy line.
+    ['pointerup','pointercancel'].forEach(ev =>
       this.cv.addEventListener(ev, e => this.up(e)));
+    // A pen lifted outside the canvas still has to finish the stroke.
+    window.addEventListener('pointerup', e => { if(this.drawing || this.panning || this.selecting) this.up(e); });
     // Stop the browser scrolling or selecting while a pen is down.
     this.cv.style.touchAction = 'none';
     this.cv.addEventListener('contextmenu', e => e.preventDefault());
@@ -4348,12 +4355,16 @@ const Ink = {
         ? { x: this.last.x + (raw.x - this.last.x) * a, y: this.last.y + (raw.y - this.last.y) * a }
         : raw;
       // Drop points too close to matter; keeps the document small.
-      if(this.last && Math.hypot(p.x - this.last.x, p.y - this.last.y) < 0.4) continue;
+      // Thinning helps file size but must not starve the curve; at heavy
+      // smoothing consecutive points barely move, so the threshold scales down.
+      const minGap = 0.15 + (1 - this.smoothing) * 0.35;
+      if(this.last && Math.hypot(p.x - this.last.x, p.y - this.last.y) < minGap) continue;
       this.cur.points.push([+p.x.toFixed(2), +p.y.toFixed(2), +this.pressureOf(ev).toFixed(3)]);
       this.last = p;
     }
-    // Draw only the newest segment rather than the whole document.
-    this.drawStroke(this.cur, this.cur.points.length - 3);
+    // Redraw the live stroke from its start: cheap for one stroke, and it
+    // cannot leave gaps the way a guessed start index could.
+    this.drawStroke(this.cur, 1);
   },
 
   up(e){
@@ -4547,14 +4558,14 @@ const Ink = {
 
 
   // --- Smart Ink ------------------------------------------------------
-  smartInk: false,
+  smartInk: true,      // shapes tidy on release unless switched off
   pending: null,          // a medium-confidence shape awaiting a decision
   recTimer: null,
 
   scheduleRecognise(stroke){
     clearTimeout(this.recTimer);
     const id = stroke.id;
-    this.recTimer = setTimeout(() => this.recogniseStroke(id), 420);
+    this.recTimer = setTimeout(() => this.recogniseStroke(id), 220);
   },
 
   recogniseStroke(strokeId){
@@ -4638,6 +4649,38 @@ const Ink = {
   },
 
 
+
+
+  // --- Preset shapes ---------------------------------------------------
+  // Drop a clean shape without drawing it. Placed at the centre of the current
+  // view so it lands where the user is looking, and sized to the viewport.
+  insertShape(kind){
+    const cv = this.cv;
+    if(!cv) return;
+    const r = cv.getBoundingClientRect();
+    const v = this.doc.view;
+    const cx = (r.width / 2 - v.panX) / v.zoom;
+    const cy = (r.height / 2 - v.panY) / v.zoom;
+    const s = Math.min(r.width, r.height) / v.zoom * 0.22;
+    let geom;
+    switch(kind){
+      case 'arrow':
+      case 'line':      geom = { x1:cx-s, y1:cy, x2:cx+s, y2:cy }; break;
+      case 'circle':    geom = { cx, cy, r:s*0.7 }; break;
+      case 'ellipse':   geom = { cx, cy, rx:s, ry:s*0.6 }; break;
+      case 'triangle':  geom = { points:[[cx, cy-s*0.8],[cx+s*0.9, cy+s*0.7],[cx-s*0.9, cy+s*0.7]] }; break;
+      case 'square':    geom = { x:cx-s*0.7, y:cy-s*0.7, w:s*1.4, h:s*1.4 }; break;
+      default:          geom = { x:cx-s, y:cy-s*0.6, w:s*2, h:s*1.2 }; kind = 'rectangle';
+    }
+    this.pushUndo();
+    this.doc.objects.push({
+      id: 'o' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+      type:'shape', kind, geom, colour:this.colour, width:this.width,
+      source:'preset', t:Date.now(),
+    });
+    this.redraw(); this.markDirty(); this.status();
+    SFX.tick();
+  },
 
   // --- Recognition context (Phase 4) ---------------------------------
   // Supplies vocabulary that is likely to appear, so the model spells
@@ -4908,7 +4951,9 @@ const Ink = {
     this.dirty = true;
     const s = document.getElementById('notebook-status');
     if(s) s.textContent = 'Unsaved';
-    scheduleNoteSave?.();
+    // The editor's autosave is scheduleNotebookSave; calling a name that does
+    // not exist threw on every stroke and left ink unsaved.
+    if(typeof scheduleNotebookSave === 'function') scheduleNotebookSave();
   },
   serialise(){
     return this.doc.strokes.length || this.doc.objects.length
@@ -4946,12 +4991,39 @@ const Ink = {
     if(wrap) wrap.style.display = on ? 'block' : 'none';
     const btn = document.getElementById('nb-ink-toggle');
     if(btn) btn.classList.toggle('active', on);
-    if(on){ this.mount(); this.resize(); this.updateHandBar(); }
+    if(on){ this.mount(); this.resize(); this.updateHandBar(); renderInkColours(); }
   },
 };
 
 
 // --- ink wiring -------------------------------------------------------
+// --- colours and preset shapes ---
+function renderInkColours(){
+  const box = document.getElementById('ink-colours');
+  if(!box || box._built) return;
+  box._built = true;
+  box.innerHTML = Ink.palette.map(hex =>
+    `<button class="ink-swatch${hex === '' ? ' auto' : ''}" data-ink-colour="${hex}"
+      title="${hex ? hex : 'Follow the theme'}"
+      style="${hex ? `background:${hex}` : ''}"></button>`).join('');
+  box.querySelectorAll('[data-ink-colour]').forEach(b => {
+    b.addEventListener('click', () => {
+      Ink.colour = b.dataset.inkColour || null;
+      settings.inkColour = Ink.colour; saveSettings();
+      box.querySelectorAll('[data-ink-colour]').forEach(x => x.classList.toggle('on', x === b));
+      SFX.tick();
+    });
+  });
+  const cur = settings.inkColour || '';
+  const match = box.querySelector(`[data-ink-colour="${cur}"]`);
+  if(match) match.classList.add('on');
+}
+document.getElementById('ink-shapes')?.addEventListener('change', e => {
+  if(!e.target.value) return;
+  Ink.insertShape(e.target.value);
+  e.target.value = '';
+});
+
 document.querySelectorAll('[data-ink-tool]').forEach(b => {
   b.addEventListener('click', () => {
     Ink.tool = b.dataset.inkTool;
@@ -5015,8 +5087,9 @@ function applyInkSettings(){
   if(typeof settings.inkWidth === 'number') Ink.width = settings.inkWidth;
   if(typeof settings.inkSmoothing === 'number') Ink.smoothing = settings.inkSmoothing / 100;
   Ink.pressureOn = settings.inkPressure !== false;
-  Ink.smartInk = !!settings.smartInk;
+  Ink.smartInk = settings.smartInk !== false;
   Ink.contextOn = settings.inkContext !== false;
+  Ink.colour = settings.inkColour || null;
   const cb = document.getElementById('hand-ctx');
   if(cb){ cb.textContent = 'Context: ' + (Ink.contextOn ? 'on' : 'off');
           cb.classList.toggle('active', Ink.contextOn); }
@@ -7140,9 +7213,24 @@ async function runAssistantTurn(text, spoken){
 
   // Belt and braces: the function strips these too, but a leaked <think>
   // block or raw tool XML must never reach the user.
-  let display = String(msg.content || '')
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<think>[\s\S]*$/i, '')
+  // A reasoning model puts its deliberation in <think>. Removing an UNCLOSED
+  // block deleted the answer as well, which is why replies collapsed to "Done."
+  const rawContent = String(msg.content || '');
+  let display = (() => {
+    // Order matters: check for a closing tag FIRST. A reply that opens with
+    // reasoning and no opening tag would otherwise be returned wholesale.
+    if(/<\/think>/i.test(rawContent)){
+      const after = rawContent.split(/<\/think>/i).pop().trim();
+      if(after) return after;
+    }
+    const closed = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    if(closed && !/<think>/i.test(closed)) return closed;
+    // Unclosed block: the whole reply was deliberation. Take the last
+    // paragraph, which is usually the conclusion, rather than showing nothing.
+    const inner = rawContent.replace(/<\/?think>/gi, '').trim();
+    const paras = inner.split(/\n\s*\n/).filter(Boolean);
+    return (paras.length ? paras[paras.length - 1] : inner).trim();
+  })()
     .replace(/<tool_call>[\s\S]*?(<\/tool_call>|$)/gi, '')
     .replace(/<\/?function[^>]*>/gi, '')
     .replace(/<\/?parameter[^>]*>/gi, '')
@@ -7153,7 +7241,8 @@ async function runAssistantTurn(text, spoken){
     const last = actions[actions.length - 1];
     display = last
       ? (last.ok ? `Done — ${last.detail || last.tool}.` : `That failed: ${last.detail || last.tool}.`)
-      : 'Done.';
+      : 'The model returned an empty reply. Ask again, or switch model in Settings.';
+    if(!last) console.warn('[assistant] empty reply from', lastModel, '| raw:', rawContent.slice(0, 200));
   }
   let conf = null;
   display = display.replace(/\n?\s*CONFIDENCE:\s*(\d{1,3})\s*%?\s*$/i,
@@ -8698,7 +8787,11 @@ document.getElementById('diag-run')?.addEventListener('click', async () => {
       const out = await readJson(r);
       const d = out.json;
       if(!out.ok) return lines.push(`${name}: HTTP ${out.status}${d.code ? ' ' + d.code : ''}`);
-      if(name === 'assistant') return lines.push(`assistant: ok — ${d.label || d.provider} / ${d.model || '?'} (${d.available || 0} models)`);
+      if(name === 'assistant') return lines.push(`assistant: ok — ${d.label || d.provider}`
+        + ` / chat ${d.model || '?'}`
+        + (d.toolModel && d.toolModel !== d.model ? ` / tools ${d.toolModel}` : '')
+        + ((d.available || []).length ? ` (${(d.available || []).length} models)` : '')
+        + (d.error ? ` — ${d.error}` : ''));
       if(name === 'search'){
         const keyed = [d.serper && 'Serper', d.tavily && 'Tavily', d.exa && 'Exa',
                        d.brave && 'Brave', d.google && 'Google'].filter(Boolean);
