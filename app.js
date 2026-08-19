@@ -2200,6 +2200,53 @@ async function probeTts(force){
 }
 let ttsServerVoice = null, ttsServerModel = null, ttsLastEngine = '—', ttsLastError = '';
 
+
+// Voice has many independent ways to be silent — muted, no permission, a
+// suspended audio context, no key, a browser without the API. Guessing between
+// them from "nothing happens" is hopeless, so it reports on all of them.
+async function voiceDiagnostics(){
+  const lines = [];
+  lines.push('Recording supported: ' + (VOICE.supported ? 'yes' : 'NO — needs Chrome, Edge or Safari'));
+  lines.push('Voice mode: ' + (VOICE.active ? 'running' : 'not started'));
+  lines.push('Replies muted: ' + (settings.voiceMuted ? 'YES — this alone makes it silent' : 'no'));
+
+  // Microphone permission, without prompting if the browser can tell us.
+  let mic = 'unknown';
+  try{
+    if(navigator.permissions?.query){
+      const st = await navigator.permissions.query({ name:'microphone' });
+      mic = st.state;
+    }
+  }catch(e){}
+  lines.push('Microphone permission: ' + mic + (mic === 'denied' ? ' — blocked in the address bar' : ''));
+
+  // A suspended context plays nothing and reads silence from the mic.
+  let ctxState = 'not created';
+  try{
+    const ctx = acAlways();
+    if(ctx){
+      ctxState = ctx.state;
+      if(ctx.state === 'suspended'){
+        await ctx.resume();
+        ctxState = ctx.state + ' -> ' + ctx.state;
+      }
+    }
+  }catch(e){ ctxState = 'error: ' + (e.name || e); }
+  lines.push('Audio engine: ' + ctxState);
+
+  await probeTts(true);
+  lines.push('ElevenLabs key: ' + (ttsConfigured === false ? 'not set (browser voice used)'
+    : ttsConfigured ? 'set' : 'unknown'));
+  lines.push('Last spoke via: ' + (ttsLastEngine || 'nothing yet'));
+
+  const voices = (() => { try{ return speechSynthesis.getVoices().length; }catch(e){ return 0; } })();
+  lines.push('Browser voices available: ' + voices + (voices ? '' : ' — the fallback is silent too'));
+
+  const warn = ttsFieldWarning();
+  if(warn.length) lines.push('\nField problems:\n- ' + warn.join('\n- '));
+  return lines.join('\n');
+}
+
 function renderTtsStatus(){
   const el = document.getElementById('tts-status');
   if(!el) return;
@@ -2222,7 +2269,15 @@ function ttsFieldWarning(){
 }
 
 async function speak(text, lang){
-  if(settings.voiceMuted || !text) return;
+  if(!text) return;
+  if(settings.voiceMuted){
+    // Returning silently here is indistinguishable from broken audio, which
+    // is exactly how "completely silent" gets reported as a bug.
+    ttsLastEngine = 'muted';
+    renderTtsStatus();
+    console.info('[tts] replies are muted — unmute in the voice panel');
+    return;
+  }
   if(ttsConfigured === null) await probeTts();
   setVoiceState(VSTATE.SPEAKING);
 
@@ -2233,6 +2288,10 @@ async function speak(text, lang){
     await speakFallback(text, lang);
     return;
   }
+
+  // A context created before any gesture starts suspended and stays that way,
+  // which produces perfect silence with no error anywhere.
+  try{ const ctx = acAlways(); if(ctx && ctx.state === 'suspended') await ctx.resume(); }catch(e){}
 
   try{
     await AudioOut.play(text, lang);
@@ -2658,6 +2717,8 @@ async function startVoice(opts){
   primeVoices();
   setVoiceState('thinking');
   WakeWord.start();          // without this the provider rejects every phrase
+  // Holds the tab "audible" so background timers are not throttled to a crawl.
+  if(settings.bgListen !== false) startKeepAlive();
   calibrateVAD();
   clearInterval(VOICE.vadTimer);
   VOICE.vadTimer = setInterval(vadTick, 80);
@@ -10035,7 +10096,22 @@ bindSetting('tts-model', 'ttsModelId');
 });
 // last resort: flush anything typed but not yet committed
 window.addEventListener('beforeunload', () => { try{ saveSettings(); }catch(e){} });
+document.getElementById('tts-diag')?.addEventListener('click', async () => {
+  const btn = document.getElementById('tts-diag');
+  btn.disabled = true; btn.textContent = 'Checking…';
+  const report = await voiceDiagnostics();
+  btn.disabled = false; btn.textContent = 'Voice check';
+  alert(report);
+});
 document.getElementById('tts-test')?.addEventListener('click', async () => {
+  if(settings.voiceMuted){
+    if(confirm('Replies are muted, which is why nothing is heard.\n\nUnmute now?')){
+      settings.voiceMuted = false; saveSettings();
+      const mb = document.getElementById('voice-mute');
+      if(mb) mb.textContent = 'Mute replies';
+      renderTtsStatus();
+    } else return;
+  }
   const warn = ttsFieldWarning();
   if(warn.length){ alert('Check these first:\n\n• ' + warn.join('\n• ')); return; }
   await probeTts(true);
