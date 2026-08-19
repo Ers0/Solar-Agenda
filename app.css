@@ -901,6 +901,17 @@
   .ai-share:hover{ color:var(--amber) !important; border-color:var(--amber); }
   .ai-share.on{ color:#fff !important; background:var(--urgente) !important; border-color:var(--urgente); }
 
+
+  #hw-canvas{ display:block; width:100%; height:180px; border-radius:10px;
+    border:1px solid var(--line); background:#fff; cursor:crosshair; touch-action:none; }
+  .hw-prompt{ padding:9px 12px; margin-bottom:8px; border-radius:9px;
+    background:var(--panel-2); border:1px solid var(--line);
+    font-size:1.05rem; letter-spacing:.06em; color:var(--amber); text-align:center; }
+  .hw-actions{ display:flex; gap:7px; margin-top:8px; }
+  .hw-actions button{ flex:1; padding:7px 10px; font-size:.72rem; }
+  .hw-free{ flex:2; padding:7px 10px; border-radius:8px; border:1px solid var(--line);
+    background:var(--bg); color:var(--text); font-size:.76rem; }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

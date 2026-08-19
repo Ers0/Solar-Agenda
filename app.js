@@ -2931,11 +2931,41 @@ async function readJson(resp){
 }
 
 let lastLatency = null, lastModel = null, lastReasoner = false;
+
+// Groq's free tier is per-minute and per-model. A burst of tool calls can
+// exhaust it in seconds, so requests are spaced locally rather than being
+// fired and rejected — a rejected call costs the same quota as a good one.
+const RateGuard = {
+  times: [], MAX_PER_MIN: 20, MIN_GAP: 900,
+  async wait(){
+    const now = Date.now();
+    this.times = this.times.filter(t => now - t < 60000);
+    if(this.times.length >= this.MAX_PER_MIN){
+      const oldest = this.times[0];
+      const pause = 60000 - (now - oldest) + 250;
+      showHeard(`Pacing requests — ${Math.ceil(pause / 1000)}s`);
+      await new Promise(r => setTimeout(r, pause));
+      return this.wait();
+    }
+    const last = this.times[this.times.length - 1];
+    if(last && now - last < this.MIN_GAP){
+      await new Promise(r => setTimeout(r, this.MIN_GAP - (now - last)));
+    }
+    this.times.push(Date.now());
+  },
+  remaining(){
+    const now = Date.now();
+    this.times = this.times.filter(t => now - t < 60000);
+    return Math.max(0, this.MAX_PER_MIN - this.times.length);
+  },
+};
+
 async function callAiAgent(messages, tools, opts){
   const body = tools && tools.length ? { messages, tools } : { messages };
   Object.assign(body, opts || {});
   let data;
   try{
+    await RateGuard.wait();
     const resp = await fetch(FN_URL + "/agenda-ai", { method:"POST", headers: authHeaders(), body: JSON.stringify(body) });
     const out = await readJson(resp);
     data = out.json;
@@ -3753,6 +3783,7 @@ const TOOLS = [
     description: "Draw a flow diagram on the open note from a description — a triage flow, a decision tree, a procedure. Give the boxes and how they connect; the app decides where everything goes. Ask the user at most three clarifying questions first, then draw a draft they can correct.",
     schema: { type:'object', properties:{
       title:{ type:'string', description:'What the diagram is about.' },
+      note:{ type:'string', description:'Which note to draw on. Omit to use the open note, or the most recent one.' },
       nodes:{ type:'array', description:'The boxes. Each needs a short id and a label of a few words.',
         items:{ type:'object', properties:{
           id:{ type:'string' },
@@ -3765,7 +3796,21 @@ const TOOLS = [
           required:['from','to'] } } },
       required:['nodes'] },
     async execute(args){
-      if(!activeNoteId) return 'No note is open. Ask the user to open or create one first — do not claim a diagram was drawn.';
+      // Requiring an already-open note made TARS ask which note to use even
+      // when one was on screen. It now opens the named note itself, or the
+      // most recent one, rather than interrogating the user.
+      if(!activeNoteId){
+        let target = null;
+        if(args.note){
+          const q = String(args.note).toLowerCase();
+          target = (notes || []).find(x => String(x.title || '').toLowerCase().includes(q));
+        }
+        if(!target && activeFolderId)
+          target = (notes || []).filter(x => x.notebook_id === activeFolderId)
+            .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))[0];
+        if(!target) return 'There is no note to draw on. Ask the user to create one — do not claim a diagram was drawn.';
+        await openNote(target.id);
+      }
       const nodes = (args.nodes || []).filter(n => n && n.id && n.label);
       if(!nodes.length) return 'No usable boxes were given, so nothing was drawn.';
       if(nodes.length > 24) return 'That is too many boxes for one readable diagram. Suggest splitting it.';
@@ -5711,6 +5756,196 @@ const Ink = {
   },
 };
 
+
+
+
+// --- handwriting drill -----------------------------------------------
+// A small pad of its own, deliberately separate from the note canvas: this is
+// teaching, not note-taking, and mixing the two would put practice strokes
+// into real notes.
+const HwPad = {
+  cv: null, ctx: null, strokes: [], cur: null, drawing: false, idx: -1, dpr: 1,
+
+  mount(){
+    this.cv = document.getElementById('hw-canvas');
+    if(!this.cv || this.cv._bound) return;
+    this.cv._bound = true;
+    this.ctx = this.cv.getContext('2d');
+    this.fit();
+    const pt = e => {
+      const r = this.cv.getBoundingClientRect();
+      return { x:(e.clientX - r.left), y:(e.clientY - r.top),
+               p: e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5 };
+    };
+    this.cv.addEventListener('pointerdown', e => {
+      this.cv.setPointerCapture?.(e.pointerId);
+      const q = pt(e);
+      this.cur = { id:'h'+Date.now().toString(36), tool:'pen', width:2.6,
+                   points:[[q.x, q.y, q.p]] };
+      this.drawing = true;
+    });
+    this.cv.addEventListener('pointermove', e => {
+      if(!this.drawing) return;
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      evs.forEach(ev => {
+        const q = pt(ev);
+        const last = this.cur.points[this.cur.points.length - 1];
+        if(Math.hypot(q.x - last[0], q.y - last[1]) < 0.5) return;
+        this.cur.points.push([q.x, q.y, q.p]);
+      });
+      this.paint();
+    });
+    ['pointerup','pointercancel'].forEach(ev => this.cv.addEventListener(ev, () => {
+      if(!this.drawing) return;
+      this.drawing = false;
+      if(this.cur && this.cur.points.length > 1) this.strokes.push(this.cur);
+      this.cur = null;
+      this.paint();
+    }));
+    window.addEventListener('resize', () => { if(this.cv.offsetParent) this.fit(); });
+  },
+
+  fit(){
+    const r = this.cv.getBoundingClientRect();
+    this.dpr = Math.min(2.5, window.devicePixelRatio || 1);
+    this.cv.width = Math.max(1, Math.round(r.width * this.dpr));
+    this.cv.height = Math.max(1, Math.round(r.height * this.dpr));
+    this.paint();
+  },
+
+  paint(){
+    const g = this.ctx;
+    if(!g) return;
+    g.setTransform(1,0,0,1,0,0);
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, this.cv.width, this.cv.height);
+    // A baseline, so samples are written at a consistent size.
+    g.strokeStyle = '#e2e6ea'; g.lineWidth = 1;
+    const mid = this.cv.height * 0.68;
+    g.beginPath(); g.moveTo(0, mid); g.lineTo(this.cv.width, mid); g.stroke();
+    g.scale(this.dpr, this.dpr);
+    g.strokeStyle = '#111'; g.lineCap = 'round'; g.lineJoin = 'round';
+    const all = this.cur ? this.strokes.concat([this.cur]) : this.strokes;
+    all.forEach(s => {
+      for(let i = 1; i < s.points.length; i++){
+        const a = s.points[i-1], b = s.points[i];
+        g.lineWidth = s.width * (0.5 + ((a[2] + b[2]) / 2));
+        g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+      }
+    });
+  },
+
+  clear(){ this.strokes = []; this.cur = null; this.paint(); },
+
+  prompt(){
+    const el = document.getElementById('hw-prompt');
+    if(!el) return;
+    el.textContent = this.idx >= 0 && this.idx < Handwriting.DRILL.length
+      ? Handwriting.DRILL[this.idx]
+      : 'Drill complete — write anything below, or start again';
+  },
+  next(){ this.idx++; this.clear(); this.prompt(); },
+};
+
+document.getElementById('hw-start')?.addEventListener('click', () => {
+  HwPad.mount(); HwPad.idx = -1; HwPad.next();
+  document.getElementById('hw-start').textContent = 'Restart drill';
+});
+document.getElementById('hw-clear')?.addEventListener('click', () => { HwPad.mount(); HwPad.clear(); });
+document.getElementById('hw-skip')?.addEventListener('click', () => { HwPad.mount(); HwPad.next(); });
+
+document.getElementById('hw-save')?.addEventListener('click', async () => {
+  HwPad.mount();
+  const label = Handwriting.DRILL[HwPad.idx];
+  if(HwPad.idx < 0 || !label){ alert('Press "Start drill" first.'); return; }
+  if(!HwPad.strokes.length){ alert('Write the prompt above before saving.'); return; }
+  const kind = label.length <= 24 && /^[A-Za-z0-9 ]+$/.test(label) ? 'letter' : 'word';
+  const ok = await Handwriting.add(label, HwPad.strokes, kind);
+  if(!ok){ alert('That could not be saved.'); return; }
+  Handwriting.sheet = null;              // the chart must be rebuilt
+  renderHandwritingStatus();
+  HwPad.next();
+});
+
+document.getElementById('hw-save-free')?.addEventListener('click', async () => {
+  HwPad.mount();
+  const label = (document.getElementById('hw-free')?.value || '').trim();
+  if(!label){ alert('Type what you wrote, so TARS knows what it means.'); return; }
+  if(!HwPad.strokes.length){ alert('Write something in the box first.'); return; }
+  const ok = await Handwriting.add(label, HwPad.strokes, 'phrase');
+  if(!ok){ alert('That could not be saved.'); return; }
+  Handwriting.sheet = null;
+  document.getElementById('hw-free').value = '';
+  renderHandwritingStatus();
+  HwPad.clear();
+});
+
+document.getElementById('hw-preview')?.addEventListener('click', async () => {
+  await Handwriting.load(true);
+  const sheet = Handwriting.buildSheet();
+  if(!sheet){ alert('No samples yet. Run the drill and save a few.'); return; }
+  const w = window.open('');
+  if(w) w.document.write(`<body style="margin:0;background:#222"><img src="${sheet}" style="max-width:100%"></body>`);
+  else alert('Allow pop-ups to preview the sheet.');
+});
+
+document.getElementById('hw-forget')?.addEventListener('click', async () => {
+  if(!confirm('Remove every handwriting sample? TARS will read your writing without a reference again.')) return;
+  await Handwriting.remove(null);
+  renderHandwritingStatus();
+});
+
+// --- settings layout -------------------------------------------------
+// Everything added over time landed in whichever panel was convenient, so
+// Knowledge ended up holding voice, mail, screen sharing and profiles. Rows
+// are relocated by id at runtime rather than by rewriting the markup: the
+// panels stay simple, and adding a row later cannot silently put it in the
+// wrong place.
+const SETTINGS_HOME = {
+  assistant:   ['prov-select', 'ai-reset', 'humour-slider', 'honesty-slider',
+                'proactive-select', 'learn-review', 'reflect-run', 'confirm-toggle',
+                'audit-view', 'svc-check'],
+  voice:       ['tts-voice', 'tts-test', 'tts-diag', 'mic-sens', 'pause-tol',
+                'autolisten-toggle', 'bglisten-toggle', 'voice-select'],
+  writing:     ['ink-width-set', 'ink-pressure', 'hw-start', 'hw-preview', 'hw-forget'],
+  knowledge:   ['kb-json', 'kb-add-btn', 'kb-sync', 'kb-purge', 'kb-seed',
+                'galaxy-scan', 'kb-map', 'tpl-list'],
+  connections: ['mail-pick', 'mail-scan', 'mail-files', 'mail-forget',
+                'screen-share', 'vision-test', 'screen-keep', 'profile-new',
+                'drive-connect', 'drive-client'],
+};
+
+function organiseSettings(){
+  const panels = {};
+  document.querySelectorAll('[data-sub-panel]').forEach(p => { panels[p.dataset.subPanel] = p; });
+  Object.entries(SETTINGS_HOME).forEach(([panel, ids]) => {
+    const target = panels[panel];
+    if(!target) return;
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if(!el) return;
+      // Move the whole row, plus any hint paragraph that follows it.
+      const row = el.closest('.set-row') || el.closest('.kb-add') || el.closest('.set-actions');
+      if(!row || row.parentElement === target) return;
+      const extras = [];
+      let sib = row.nextElementSibling;
+      while(sib && (sib.classList.contains('hint') || sib.tagName === 'P')){
+        extras.push(sib); sib = sib.nextElementSibling;
+      }
+      target.appendChild(row);
+      extras.forEach(e => target.appendChild(e));
+    });
+  });
+  // A panel left empty after the shuffle would look broken.
+  Object.entries(panels).forEach(([name, p]) => {
+    if(!p.children.length){
+      const note = document.createElement('p');
+      note.className = 'hint';
+      note.textContent = 'Nothing here yet.';
+      p.appendChild(note);
+    }
+  });
+}
 
 // --- ink wiring -------------------------------------------------------
 // --- colours and preset shapes ---
@@ -8181,7 +8416,7 @@ const TARS = {
 
   errorFor(code){
     switch(code){
-      case 'rate_limit':    return "I'm rate limited. Try again in a moment.";
+      case 'rate_limit':    return "The model is rate limited. It clears within a minute — or switch model in Settings.";
       case 'too_large':     return "That request came out too large for the model. I've trimmed the context — try again.";
       case 'auth':          return "Session expired. Sign in again.";
       case 'auth_upstream': return "The language service is rejecting my credentials. That needs fixing in settings.";
@@ -8268,7 +8503,7 @@ function toSpoken(text){
 
 // The assistant sees a factual snapshot of the real data; without it, it
 // answered schedule questions from imagination.
-function buildAiSystemPrompt(spoken, R){
+function buildAiSystemPrompt(spoken, R, terse){
   const today = todaysCases();
   const pending = today.filter(c => statusRank(c.status) === 0);
   const done = today.filter(c => statusRank(c.status) === 1);
@@ -8296,6 +8531,12 @@ function buildAiSystemPrompt(spoken, R){
   // globals, so a fast follow-up could overwrite the previous turn's hits and
   // an answer would be cited against a different question's sources.
   R = R || { kb: [], mem: [], rules: [], learnBrief: '', assessment: '' };
+  // Computed once: it was previously rebuilt for every mention in the prompt.
+  const noteCtx = (typeof NotePage !== 'undefined') ? NotePage.context() : '';
+  // Terse mode: persona and rules only. Used for the turn that merely reports
+  // what a tool returned, where the briefing adds nothing.
+  if(terse) return [...TARS.persona,
+    "Report what the tool returned, briefly. Do not invent detail it did not contain."].join('\n');
   const kbBlock = R.kb.length
     ? 'Knowledge base matches:\n' + R.kb.map((e, i) =>
         `- [KB${i + 1} | ${e.title}${e.source ? ' — ' + e.source : ''}] ${String(e.content).slice(0, 420)}`).join('\n')
@@ -8313,16 +8554,14 @@ function buildAiSystemPrompt(spoken, R){
     R.assessment || 'Not assessed.',
     "Never exceed the stated confidence ceiling. If the grounding is 'none', say you have nothing stored on it and label any answer as general reasoning rather than knowledge. Distinguish what you know from what you are inferring.",
     "",
-    "=== LEARNED FROM EXPERIENCE ===",
-    R.learnBrief || 'No learned rules yet.',
-    "Treat a learned rule as stronger than your own assumption but weaker than the knowledge base. State the confidence when it is below 70. If two rules conflict, say so and ask which holds — never pick silently.",
-    "",
-    "=== CURRENT WORK ===",
-    Focus.brief(),
-    "",
-    ...(typeof NotePage !== 'undefined' && NotePage.context()
-        ? ["=== OPEN NOTEBOOK PAGE ===", NotePage.context(),
-           "This is the structured content of the page, not a picture of it. Unrecognised strokes are listed only as a count — never invent what they say.", ""]
+    ...(R.learnBrief && !/^No learned rules/.test(R.learnBrief)
+        ? ["=== LEARNED ===", R.learnBrief,
+           "Stronger than your assumption, weaker than the knowledge base. Say the confidence below 70. Never silently pick between conflicting rules.", ""]
+        : []),
+    ...(Focus.current ? ["=== CURRENT WORK ===", Focus.brief(), ""] : []),
+    ...(noteCtx
+        ? ["=== OPEN NOTEBOOK PAGE ===", noteCtx,
+           "Structured content, not a picture. Never invent what unrecognised strokes say.", ""]
         : []),
     "=== WHAT THE USER IS LOOKING AT ===",
     TarsContext.brief(),
@@ -8519,7 +8758,11 @@ async function runAssistantTurn(text, spoken){
       convo.push(toolMsg); aiHistory.push(toolMsg);
     }
     if(spoken) setVoiceState('thinking');
-    msg = await callAiAgent(convo, null, { max_tokens: spoken ? 220 : 900 });
+    // The follow-up turn only has to phrase a tool result. Resending the whole
+    // briefing doubles the token cost of every tool call, which is a large
+    // part of what has been exhausting the rate limit.
+    convo[0] = { role:'system', content: buildAiSystemPrompt(spoken, R, true) };
+    msg = await callAiAgent(convo, null, { max_tokens: spoken ? 200 : 700 });
   }
 
   // Belt and braces: the function strips these too, but a leaked <think>
@@ -10053,6 +10296,11 @@ document.querySelectorAll('.sub-tab').forEach(btn => {
   btn.addEventListener('click', () => {
     const key = btn.dataset.sub;
     document.querySelectorAll('.sub-tab').forEach(b => {
+  b.addEventListener('click', () => {
+    // The pad needs a real size before it can be drawn on, which it only has
+    // once its panel is visible.
+    if(b.dataset.sub === 'writing') setTimeout(() => { HwPad.mount(); HwPad.fit(); }, 60);
+  });
       const on = b === btn;
       b.classList.toggle('active', on);
       b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -10101,6 +10349,8 @@ function renderSettings(){
     const el = document.getElementById(id);
     if(el && settings[key] != null) el.value = settings[key];
   });
+  organiseSettings();
+  Handwriting.load().then(renderHandwritingStatus);
   probeTts(); renderTtsStatus(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens(); renderBgListen(); renderPauseTol();
   Reflect_.run();
   Learn.load().then(renderLearnStats);

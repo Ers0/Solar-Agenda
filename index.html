@@ -158,7 +158,10 @@
   <div id="view-settings" class="hidden">
     <div class="sub-tabs" role="tablist" aria-label="Settings sections">
       <button class="sub-tab active" role="tab" data-sub="assistant" aria-selected="true">Assistant</button>
-      <button class="sub-tab" role="tab" data-sub="knowledge" aria-selected="false">Knowledge</button>
+      <button class="sub-tab" role="tab" data-sub="voice" aria-selected="false">Voice</button>
+        <button class="sub-tab" role="tab" data-sub="writing" aria-selected="false">Writing</button>
+        <button class="sub-tab" role="tab" data-sub="knowledge" aria-selected="false">Knowledge</button>
+        <button class="sub-tab" role="tab" data-sub="connections" aria-selected="false">Connections</button>
       <button class="sub-tab" role="tab" data-sub="media" aria-selected="false">Media</button>
       <button class="sub-tab" role="tab" data-sub="appearance" aria-selected="false">Appearance</button>
       <button class="sub-tab" role="tab" data-sub="data" aria-selected="false">Data</button>
@@ -166,7 +169,38 @@
     <div class="sub-panel" data-sub-panel="assistant">
       <section class="panel"><p class="hint">Nothing here yet.</p></section>
     </div>
-    <div class="sub-panel hidden" data-sub-panel="knowledge">
+    <div class="sub-panel hidden" data-sub-panel="voice"></div>
+
+      <div class="sub-panel hidden" data-sub-panel="writing">
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:8px"><b>Teach TARS your handwriting</b><span id="hw-status">nothing taught yet</span></div>
+          <p class="hint" style="margin:0 0 10px">Write each prompt in the box below and press Save. TARS keeps your letterforms as a reference sheet and compares against it when reading a page. Corrections you make after a transcription are saved here too — those are the most useful samples.</p>
+          <div class="hw-prompt" id="hw-prompt">Press Start to begin</div>
+          <canvas id="hw-canvas"></canvas>
+          <div class="hw-actions">
+            <button class="btn-ghost" id="hw-start">Start drill</button>
+            <button class="btn-ghost" id="hw-clear">Clear</button>
+            <button class="btn-ghost" id="hw-skip">Skip</button>
+            <button class="btn-primary" id="hw-save">Save sample</button>
+          </div>
+          <div class="hw-actions" style="margin-top:6px">
+            <input class="hw-free" id="hw-free" placeholder="…or write anything and type what it says">
+            <button class="btn-ghost" id="hw-save-free">Save that</button>
+          </div>
+        </div>
+        <div class="set-row">
+          <div class="set-info"><b>Reference sheet</b><span id="hw-sheet-status">built from your samples</span></div>
+          <button class="btn-ghost" id="hw-preview">Preview</button>
+        </div>
+        <div class="set-row">
+          <div class="set-info"><b>Stored samples</b><span>Remove them all if your writing changes</span></div>
+          <button class="btn-ghost" id="hw-forget">Forget all</button>
+        </div>
+      </div>
+
+      <div class="sub-panel hidden" data-sub-panel="connections"></div>
+
+      <div class="sub-panel hidden" data-sub-panel="knowledge">
 <section class="panel" style="margin-bottom:16px;">
       <div class="day-panel-header"><h2>Knowledge base</h2></div>
       <p class="hint">Feeds the assistant with your own reference material. It answers from these entries first and shows a confidence bar. Either commit a <b>kb.json</b> file to the site root, or paste the JSON below.</p>
