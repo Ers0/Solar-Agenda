@@ -2800,6 +2800,7 @@ const TOOL_HINTS = {
   update_case:     /\b(change|move|reschedule|update|set .* to|mudar?|alterar|remarcar)\b/i,
   add_knowledge:   /\b(save|store|note down|knowledge|remember .*(error|code|fault)|salvar|guardar|anotar|erro)\b/i,
   create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
+  draw_diagram:    /\b(diagram|flow ?chart|draw|sketch|visuali[sz]e|map out|desenh|fluxograma)\b/i,
   read_page:       /\b(this page|summari[sz]e|what.*here|whats on (this|the) page|resum|esta p[aá]gina)\b/i,
   cleanup_page:    /\b(clean ?up|tidy|organi[sz]e|checklist|turn (these|this) into|organiz|limpar)\b/i,
   read_diagram:    /\b(diagram|flow|chart|connect|arrows?|fluxo|diagrama)\b/i,
@@ -3351,7 +3352,12 @@ const TOOLS = [
         return `Could not read the screen (${res.error}${res.detail ? ': ' + res.detail : ''}). `
              + 'Say so plainly — never invent what was on it.';
       }
-      return `Read from the shared window:\n${res.reply}\n\n`
+      return `Read from the shared ${Screen_.surface === 'monitor' ? 'screen' : 'window'}`
+        + `${Screen_.surfaceLabel ? ' (' + Screen_.surfaceLabel + ')' : ''}:\n${res.reply}\n\n`
+        + (Screen_.surface === 'monitor'
+            ? 'This is a whole-screen capture, so it shows whatever was in front. If the user expected a different program, '
+              + 'tell them to share that program\'s window instead — window capture works even when it is behind.\n'
+            : '')
         + 'Answer the user from this. If a value looks cut off or unreadable, say so rather than filling it in.';
     },
   },
@@ -3675,6 +3681,42 @@ const TOOLS = [
     }
     return `Case created: "${created.titulo}" on ${created.case_date}`
       + (created.horario ? ` at ${created.horario}.` : '.') + extra;
+    },
+  },
+  {
+    name: 'draw_diagram',
+    permission: PERM.LOW,
+    description: "Draw a flow diagram on the open note from a description — a triage flow, a decision tree, a procedure. Give the boxes and how they connect; the app decides where everything goes. Ask the user at most three clarifying questions first, then draw a draft they can correct.",
+    schema: { type:'object', properties:{
+      title:{ type:'string', description:'What the diagram is about.' },
+      nodes:{ type:'array', description:'The boxes. Each needs a short id and a label of a few words.',
+        items:{ type:'object', properties:{
+          id:{ type:'string' },
+          label:{ type:'string' },
+          kind:{ type:'string', enum:['step','decision'], description:'decision draws as an ellipse.' } },
+          required:['id','label'] } },
+      edges:{ type:'array', description:'Which box leads to which.',
+        items:{ type:'object', properties:{
+          from:{ type:'string' }, to:{ type:'string' } },
+          required:['from','to'] } } },
+      required:['nodes'] },
+    async execute(args){
+      if(!activeNoteId) return 'No note is open. Ask the user to open or create one first — do not claim a diagram was drawn.';
+      const nodes = (args.nodes || []).filter(n => n && n.id && n.label);
+      if(!nodes.length) return 'No usable boxes were given, so nothing was drawn.';
+      if(nodes.length > 24) return 'That is too many boxes for one readable diagram. Suggest splitting it.';
+      const ids = new Set(nodes.map(n => n.id));
+      // Silently dropping a bad edge would produce a diagram missing a link
+      // the user asked for, so they are counted and reported.
+      const all = (args.edges || []).filter(e => e && e.from && e.to);
+      const edges = all.filter(e => ids.has(e.from) && ids.has(e.to));
+      const dropped = all.length - edges.length;
+
+      const res = Ink.buildDiagram({ title: args.title, nodes, edges });
+      if(!res.ok) return `The diagram could not be drawn (${res.reason}). Say so plainly.`;
+      return `Drew ${res.nodes} boxes and ${res.edges} arrows on the page.`
+        + (dropped ? ` ${dropped} connection(s) referenced boxes that do not exist and were skipped — mention this.` : '')
+        + ' Tell the user they can drag any box and the arrows will follow, and offer to change it.';
     },
   },
   {
@@ -4296,6 +4338,7 @@ const Ink = {
     v.panX = px - (px - v.panX) * (next / v.zoom);
     v.panY = py - (py - v.panY) * (next / v.zoom);
     v.zoom = next;
+    this.cacheDirty = true;
     this.redraw(); this.status();
   },
   resetView(){ this.doc.view = { zoom:1, panX:0, panY:0 }; this.redraw(); this.status(); },
@@ -4321,8 +4364,30 @@ const Ink = {
     // A stylus barrel button erases, which is the tablet convention.
     if(this.tool === 'select'){
       const p = this.toDoc(e);
+      // A handle sits on top of whatever it belongs to, so it is tested first.
+      const hd = this.handleAt(p);
+      if(hd){
+        this.resizing = { handle: hd };
+        this.pushUndo();
+        this.rebuildCache();
+        return;
+      }
+      const hitEl = this.elementAt(p);
+      if(hitEl){
+        // Shift adds to the selection; a plain click on something already
+        // selected keeps the group so a multi-drag is possible.
+        if(e.shiftKey) this.sel.has(hitEl.id) ? this.sel.delete(hitEl.id) : this.sel.add(hitEl.id);
+        else if(!this.sel.has(hitEl.id)) this.sel = new Set([hitEl.id]);
+        this.dragging = { from: p, moved: false };
+        this.cacheDirty = true;
+        this.redraw(); this.status();
+        return;
+      }
+      if(!e.shiftKey) this.sel.clear();
       this.selecting = true;
+      this.marquee = { x0:p.x, y0:p.y, x1:p.x, y1:p.y };
       this.selection = { x0:p.x, y0:p.y, x1:p.x, y1:p.y };
+      this.redraw();
       return;
     }
     const erasing = this.tool === 'eraser' || e.button === 5 || (e.buttons & 32) ||
@@ -4346,11 +4411,40 @@ const Ink = {
     if(this.panning && this.panFrom){
       this.doc.view.panX = this.panFrom.panX + (e.offsetX - this.panFrom.x);
       this.doc.view.panY = this.panFrom.panY + (e.offsetY - this.panFrom.y);
+      this.cacheDirty = true;
       this.redraw();
       return;
     }
-    if(this.selecting && this.selection){
+    if(this.resizing){
+      this.applyResize(this.resizing.handle, this.toDoc(e));
+      this.redraw();
+      return;
+    }
+    if(this.dragging){
       const p = this.toDoc(e);
+      const dx = p.x - this.dragging.from.x, dy = p.y - this.dragging.from.y;
+      if(!this.dragging.moved && Math.hypot(dx, dy) > 1.5){
+        this.dragging.moved = true;
+        this.pushUndo();                       // only once a real move begins
+        this.rebuildCache();
+      }
+      if(this.dragging.moved){
+        this.cv?.classList.add('grabbing');
+        const els = this.selectedElements();
+        els.forEach(o => Geo.move(o, dx, dy));
+        // Nudge into alignment with nearby edges and centres.
+        const snap = e.altKey ? { dx:0, dy:0 } : this.snapDelta(els);
+        if(snap.dx || snap.dy) els.forEach(o => Geo.move(o, snap.dx, snap.dy));
+        els.forEach(o => this.moveBoundText(o));
+        this.refreshBindings(els.map(o => o.id));
+        this.dragging.from = { x: p.x + snap.dx, y: p.y + snap.dy };
+        this.redraw();
+      }
+      return;
+    }
+    if(this.selecting && this.marquee){
+      const p = this.toDoc(e);
+      this.marquee.x1 = p.x; this.marquee.y1 = p.y;
       this.selection.x1 = p.x; this.selection.y1 = p.y;
       this.redraw();
       return;
@@ -4385,8 +4479,38 @@ const Ink = {
 
   up(e){
     if(this.panning){ this.panning = false; this.panFrom = null; return; }
+    if(this.resizing){
+      this.resizing = null;
+      this.cacheDirty = true;
+      this.markDirty();
+      this.redraw(); this.status();
+      return;
+    }
+    if(this.dragging){
+      const moved = this.dragging.moved;
+      // An arrow dropped onto a shape binds to it.
+      if(moved) this.selectedElements().forEach(o => {
+        if(o.kind === 'arrow' || o.kind === 'line') this.bindArrow(o);
+      });
+      this.dragging = null;
+      this.cv?.classList.remove('grabbing');
+      this.cacheDirty = true;
+      if(moved) this.markDirty();
+      else this.undoStack.pop();               // a click is not an edit
+      this.redraw(); this.status();
+      return;
+    }
     if(this.selecting){
       this.selecting = false;
+      const m = this.marquee;
+      this.marquee = null;
+      if(m){
+        const r = { x0:Math.min(m.x0,m.x1), y0:Math.min(m.y0,m.y1),
+                    x1:Math.max(m.x0,m.x1), y1:Math.max(m.y0,m.y1) };
+        if(r.x1 - r.x0 > 4 || r.y1 - r.y0 > 4){
+          (this.doc.objects || []).forEach(o => { if(Geo.within(o, r)) this.sel.add(o.id); });
+        }
+      }
       const s = this.selection;
       // Normalise, and treat a tap as clearing the selection.
       if(s){
@@ -4475,12 +4599,54 @@ const Ink = {
     if(!this.ctx || !this.cv) return;
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.cv.width, this.cv.height);
-    // A stroke replaced by a shape is hidden, never deleted.
-    this.doc.strokes.forEach(s => { if(!s.hidden) this.drawStroke(s, 1); });
-    this.doc.objects.forEach(o => this.drawObject(o));
+
+    if(this.dragging){
+      // Mid-drag: blit the cached page, then paint only what is moving.
+      if(this.cacheDirty || !this.cache) this.rebuildCache();
+      this.ctx.drawImage(this.cache, 0, 0);
+      this.selectedElements().forEach(o => this.drawObject(o));
+    } else {
+      // A stroke replaced by a shape is hidden, never deleted.
+      this.doc.strokes.forEach(s => { if(!s.hidden) this.drawStroke(s, 1); });
+      this.doc.objects.forEach(o => this.drawObject(o));
+      this.cacheDirty = true;
+    }
     if(this.pending) this.drawObject(this.pending.shape, true);
     if(this.cur) this.drawStroke(this.cur, 1);
     if(this.selection) this.drawSelection();
+    this.drawSelectionUI();
+  },
+
+
+  // Text objects were only ever data before; a diagram needs them drawn.
+  drawTextObject(o){
+    const ctx = this.ctx, v = this.doc.view;
+    if(!ctx || !o.content) return;
+    ctx.save();
+    ctx.scale(this.dpr, this.dpr);
+    ctx.translate(v.panX, v.panY);
+    ctx.scale(v.zoom, v.zoom);
+    ctx.fillStyle = o.colour || this.themeColour();
+    const size = Math.max(11, o.fontSize || 14);
+    ctx.font = `500 ${size}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textBaseline = 'middle';
+    const cx = o.x + (o.width || 0) / 2, cy = o.y + (o.height || 0) / 2;
+    // Wrap to the width it was given rather than spilling out of its box.
+    const words = String(o.content).split(/\s+/);
+    const maxW = Math.max(24, o.width || 120);
+    const lines = [];
+    let line = '';
+    words.forEach(w => {
+      const t = line ? line + ' ' + w : w;
+      if(ctx.measureText(t).width > maxW && line){ lines.push(line); line = w; }
+      else line = t;
+    });
+    if(line) lines.push(line);
+    ctx.textAlign = 'center';
+    const lh = size * 1.25;
+    const top = cy - (lines.length - 1) * lh / 2;
+    lines.forEach((ln, i) => ctx.fillText(ln, cx, top + i * lh));
+    ctx.restore();
   },
 
   // Clean geometry from a recognised shape. Drawn in the same ink colour so
@@ -4488,6 +4654,7 @@ const Ink = {
   drawObject(o, preview){
     const ctx = this.ctx, v = this.doc.view;
     if(!ctx || !o) return;
+    if(o.type === 'text'){ this.drawTextObject(o); return; }
     ctx.save();
     ctx.scale(this.dpr, this.dpr);
     ctx.translate(v.panX, v.panY);
@@ -4547,28 +4714,44 @@ const Ink = {
   },
 
   // --- history ------------------------------------------------------
+  // A snapshot must cover objects as well as strokes. Storing only strokes
+  // meant moving, deleting or recognising a shape could not be undone at all.
+  snapshot(){
+    return JSON.stringify({ s: this.doc.strokes, o: this.doc.objects });
+  },
+  restore(json){
+    const d = JSON.parse(json);
+    this.doc.strokes = d.s || [];
+    this.doc.objects = d.o || [];
+    // Anything that vanished cannot stay selected.
+    const live = new Set(this.doc.objects.map(o => o.id));
+    this.sel = new Set([...this.sel].filter(id => live.has(id)));
+    this.cacheDirty = true;
+  },
   pushUndo(){
-    this.undoStack.push(JSON.stringify(this.doc.strokes));
+    this.undoStack.push(this.snapshot());
     if(this.undoStack.length > 60) this.undoStack.shift();
     this.redoStack.length = 0;
   },
   undo(){
     if(!this.undoStack.length) return;
-    this.redoStack.push(JSON.stringify(this.doc.strokes));
-    this.doc.strokes = JSON.parse(this.undoStack.pop());
+    this.redoStack.push(this.snapshot());
+    this.restore(this.undoStack.pop());
     this.redraw(); this.markDirty(); this.status();
   },
   redo(){
     if(!this.redoStack.length) return;
-    this.undoStack.push(JSON.stringify(this.doc.strokes));
-    this.doc.strokes = JSON.parse(this.redoStack.pop());
+    this.undoStack.push(this.snapshot());
+    this.restore(this.redoStack.pop());
     this.redraw(); this.markDirty(); this.status();
   },
   clear(){
-    if(!this.doc.strokes.length) return;
-    if(!confirm('Erase all ink on this note? The typed text is not affected.')) return;
+    if(!this.doc.strokes.length && !this.doc.objects.length) return;
+    if(!confirm('Erase all ink and shapes on this note? The typed text is not affected.')) return;
     this.pushUndo();
     this.doc.strokes = [];
+    this.doc.objects = [];
+    this.sel.clear();
     this.redraw(); this.markDirty(); this.status();
   },
 
@@ -4666,6 +4849,444 @@ const Ink = {
 
 
 
+
+
+
+
+  // --- Building a diagram (Phase 3) -----------------------------------
+  // Everything a diagram produces is an ordinary element. There is no special
+  // "TARS diagram" object, which is precisely why the result is editable:
+  // Phase 1 selects and moves it, Phase 2 keeps its arrows attached.
+  buildDiagram(spec){
+    const laid = Layout.flow(spec, this.viewOrigin());
+    if(!laid.boxes.length) return { ok:false, reason:'no nodes' };
+    this.pushUndo();
+
+    const nid = () => 'o' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+    const made = [], byNode = {};
+
+    laid.boxes.forEach(b => {
+      const shape = {
+        id: nid(), type:'shape',
+        // A decision reads better as an ellipse; everything else is a box.
+        kind: b.kind === 'decision' ? 'ellipse' : 'rectangle',
+        geom: b.kind === 'decision'
+          ? { cx:b.x + b.w/2, cy:b.y + b.h/2, rx:b.w/2, ry:b.h/2 }
+          : { x:b.x, y:b.y, w:b.w, h:b.h },
+        colour: this.colour, width: this.width, source:'diagram', t: Date.now(),
+      };
+      const label = {
+        id: nid(), type:'text', content: b.label,
+        x: b.x + 8, y: b.y + b.h/2 - 9,
+        width: b.w - 16, height: 18,
+        containerId: shape.id, source:'diagram', t: Date.now(),
+      };
+      this.doc.objects.push(shape, label);
+      made.push(shape.id, label.id);
+      byNode[b.id] = shape.id;
+      this.moveBoundText(shape);
+    });
+
+    (spec.edges || []).forEach(e => {
+      const from = byNode[e.from], to = byNode[e.to];
+      if(!from || !to || from === to) return;
+      const arrow = {
+        id: nid(), type:'shape', kind:'arrow',
+        geom: { x1:0, y1:0, x2:0, y2:0 },
+        startBinding: from, endBinding: to,     // bound from birth
+        colour: this.colour, width: this.width, source:'diagram', t: Date.now(),
+      };
+      this.doc.objects.push(arrow);
+      made.push(arrow.id);
+      this.refreshArrow(arrow);
+    });
+
+    this.sel = new Set(made);
+    this.cacheDirty = true;
+    this.show(true);
+    this.redraw(); this.markDirty(); this.status();
+    return { ok:true, nodes: laid.boxes.length, edges: (spec.edges || []).length };
+  },
+
+  // Place a new diagram where the user is currently looking.
+  viewOrigin(){
+    const r = this.cv ? this.cv.getBoundingClientRect() : { width:600, height:400 };
+    const v = this.doc.view;
+    return { x: (20 - v.panX) / v.zoom, y: (20 - v.panY) / v.zoom };
+  },
+
+  // --- z-order, style, clipboard ---------------------------------------
+  raise(toTop){
+    if(!this.sel.size) return false;
+    this.pushUndo();
+    const sel = this.doc.objects.filter(o => this.sel.has(o.id));
+    const rest = this.doc.objects.filter(o => !this.sel.has(o.id));
+    this.doc.objects = toTop ? [...rest, ...sel] : [...sel, ...rest];
+    this.cacheDirty = true;
+    this.redraw(); this.markDirty();
+    return true;
+  },
+
+  styleSelected(patch){
+    if(!this.sel.size) return false;
+    this.pushUndo();
+    this.selectedElements().forEach(o => Object.assign(o, patch));
+    this.cacheDirty = true;
+    this.redraw(); this.markDirty();
+    return true;
+  },
+
+  clipboard: null,
+  copySelected(){
+    if(!this.sel.size) return false;
+    this.clipboard = JSON.stringify(this.selectedElements());
+    return true;
+  },
+  paste(){
+    if(!this.clipboard) return false;
+    let items;
+    try{ items = JSON.parse(this.clipboard); }catch(e){ return false; }
+    if(!items.length) return false;
+    this.pushUndo();
+    // Ids are remapped so pasted containers and bindings point at the copies,
+    // not at the originals.
+    const map = {};
+    // The counter must advance per item. Reading it from the map before the
+    // map was written gave every copy in one paste the same suffix, so a
+    // pasted arrow still pointed at the original box.
+    let seq = 0;
+    const copies = items.map(o => {
+      const cl = JSON.parse(JSON.stringify(o));
+      cl.id = 'o' + Date.now().toString(36) + Math.random().toString(36).slice(2,6) + (seq++);
+      map[o.id] = cl.id;
+      delete cl.fromStroke; delete cl.recognisedAs;
+      Geo.move(cl, 20, 20);
+      return cl;
+    });
+    copies.forEach(cl => {
+      if(cl.containerId) cl.containerId = map[cl.containerId] || null;
+      if(cl.startBinding) cl.startBinding = map[cl.startBinding] || null;
+      if(cl.endBinding) cl.endBinding = map[cl.endBinding] || null;
+    });
+    this.doc.objects.push(...copies);
+    this.sel = new Set(copies.map(o => o.id));
+    this.refreshBindings(copies.map(o => o.id));
+    this.cacheDirty = true;
+    this.redraw(); this.markDirty(); this.status();
+    return true;
+  },
+
+  // --- Bindings, resize, snapping (Phase 2) ---------------------------
+  // A bound arrow stores which elements it joins, not fixed coordinates, and
+  // recomputes its ends whenever either moves. The payoff is not only that
+  // dragging feels right: NotePage.graph() can now READ the connections
+  // instead of inferring them from how close the ends happen to land.
+  BIND_TOL: 22,
+
+  bindableAt(p, exceptId){
+    const objs = (this.doc.objects || []).filter(o =>
+      o.id !== exceptId && o.kind !== 'arrow' && o.kind !== 'line');
+    const tol = this.BIND_TOL / Math.max(0.35, this.doc.view.zoom);
+    for(let i = objs.length - 1; i >= 0; i--){
+      if(Geo.hit(objs[i], p.x, p.y, tol)) return objs[i];
+    }
+    return null;
+  },
+
+  // Attach an arrow's ends to whatever they were dropped on.
+  bindArrow(arrow){
+    if(!arrow || (arrow.kind !== 'arrow' && arrow.kind !== 'line')) return;
+    const g = arrow.geom;
+    const a = this.bindableAt({ x:g.x1, y:g.y1 }, arrow.id);
+    const b = this.bindableAt({ x:g.x2, y:g.y2 }, arrow.id);
+    arrow.startBinding = a ? a.id : null;
+    arrow.endBinding   = b && b.id !== (a && a.id) ? b.id : null;
+    this.refreshArrow(arrow);
+  },
+
+  // Recompute a bound arrow's endpoints from its anchors.
+  refreshArrow(arrow){
+    const g = arrow.geom;
+    if(!g) return;
+    const byId = id => (this.doc.objects || []).find(o => o.id === id);
+    const from = arrow.startBinding ? byId(arrow.startBinding) : null;
+    const to   = arrow.endBinding ? byId(arrow.endBinding) : null;
+    if(!from && !to) return;
+    // Aim each end at the other anchor's centre, or at the free endpoint.
+    const target = to ? Geo.centre(to) : { x:g.x2, y:g.y2 };
+    const source = from ? Geo.centre(from) : { x:g.x1, y:g.y1 };
+    if(from){ const p = Geo.exitPoint(from, target.x, target.y); g.x1 = p.x; g.y1 = p.y; }
+    if(to){   const p = Geo.exitPoint(to, source.x, source.y);   g.x2 = p.x; g.y2 = p.y; }
+  },
+
+  // After anything moves or resizes, every arrow touching it is redrawn.
+  refreshBindings(changedIds){
+    const ids = changedIds ? new Set(changedIds) : null;
+    (this.doc.objects || []).forEach(o => {
+      if(o.kind !== 'arrow' && o.kind !== 'line') return;
+      if(!o.startBinding && !o.endBinding) return;
+      if(ids && !ids.has(o.startBinding) && !ids.has(o.endBinding) && !ids.has(o.id)) return;
+      this.refreshArrow(o);
+    });
+  },
+
+  // --- resize handles --------------------------------------------------
+  HANDLE: 5,               // drawn radius; the hit area is larger
+  handlesFor(els){
+    if(!els.length) return [];
+    // One box around the whole selection: resizing a group behaves like
+    // resizing one thing.
+    let b = Geo.bounds(els[0]);
+    els.slice(1).forEach(el => {
+      const o = Geo.bounds(el);
+      b = { x0:Math.min(b.x0,o.x0), y0:Math.min(b.y0,o.y0),
+            x1:Math.max(b.x1,o.x1), y1:Math.max(b.y1,o.y1) };
+    });
+    const mx = (b.x0 + b.x1) / 2, my = (b.y0 + b.y1) / 2;
+    return [
+      { id:'nw', x:b.x0, y:b.y0 }, { id:'n', x:mx, y:b.y0 }, { id:'ne', x:b.x1, y:b.y0 },
+      { id:'w',  x:b.x0, y:my   },                            { id:'e', x:b.x1, y:my   },
+      { id:'sw', x:b.x0, y:b.y1 }, { id:'s', x:mx, y:b.y1 }, { id:'se', x:b.x1, y:b.y1 },
+    ].map(hd => ({ ...hd, box:b }));
+  },
+
+  handleAt(p){
+    const els = this.selectedElements();
+    if(!els.length) return null;
+    // A generous hit area: 5px handles are unusable with a stylus.
+    const tol = 12 / Math.max(0.35, this.doc.view.zoom);
+    return this.handlesFor(els).find(hd => Math.abs(p.x - hd.x) <= tol && Math.abs(p.y - hd.y) <= tol) || null;
+  },
+
+  applyResize(hd, p){
+    const els = this.selectedElements();
+    if(!els.length) return;
+    const b = { ...hd.box };
+    if(hd.id.includes('n')) b.y0 = p.y;
+    if(hd.id.includes('s')) b.y1 = p.y;
+    if(hd.id.includes('w')) b.x0 = p.x;
+    if(hd.id.includes('e')) b.x1 = p.x;
+    // Dragging past the opposite edge must not invert the shape.
+    if(b.x1 - b.x0 < 8) b.x1 = b.x0 + 8;
+    if(b.y1 - b.y0 < 8) b.y1 = b.y0 + 8;
+
+    const old = hd.box;
+    const sx = (b.x1 - b.x0) / Math.max(1e-6, old.x1 - old.x0);
+    const sy = (b.y1 - b.y0) / Math.max(1e-6, old.y1 - old.y0);
+    els.forEach(el => {
+      const eb = Geo.bounds(el);
+      Geo.resizeTo(el, {
+        x0: b.x0 + (eb.x0 - old.x0) * sx, y0: b.y0 + (eb.y0 - old.y0) * sy,
+        x1: b.x0 + (eb.x1 - old.x0) * sx, y1: b.y0 + (eb.y1 - old.y0) * sy,
+      });
+      this.moveBoundText(el);
+    });
+    this.refreshBindings(els.map(e => e.id));
+  },
+
+  // --- bound text ------------------------------------------------------
+  // A label that belongs to a shape: it centres itself in the shape and
+  // travels with it, so a labelled box behaves as one object.
+  boundTextOf(el){
+    return (this.doc.objects || []).find(o => o.type === 'text' && o.containerId === el.id) || null;
+  },
+  moveBoundText(el){
+    const t = this.boundTextOf(el);
+    if(!t) return;
+    const c = Geo.centre(el);
+    t.x = c.x - (t.width || 0) / 2;
+    t.y = c.y - (t.height || 0) / 2;
+  },
+  attachText(textEl, container){
+    if(!textEl || !container) return;
+    textEl.containerId = container.id;
+    this.moveBoundText(container);
+  },
+
+  // --- snapping --------------------------------------------------------
+  // Aligns to other elements' edges and centres while dragging. Deliberately
+  // tight, so it assists rather than fights.
+  SNAP: 6,
+  snapDelta(els){
+    if(!els.length || this.snapOff) return { dx:0, dy:0 };
+    const moving = els.map(e => e.id);
+    const others = (this.doc.objects || []).filter(o => !moving.includes(o.id));
+    if(!others.length) return { dx:0, dy:0 };
+    let b = Geo.bounds(els[0]);
+    els.slice(1).forEach(el => {
+      const o = Geo.bounds(el);
+      b = { x0:Math.min(b.x0,o.x0), y0:Math.min(b.y0,o.y0),
+            x1:Math.max(b.x1,o.x1), y1:Math.max(b.y1,o.y1) };
+    });
+    const tol = this.SNAP / Math.max(0.35, this.doc.view.zoom);
+    const xs = [b.x0, (b.x0+b.x1)/2, b.x1], ys = [b.y0, (b.y0+b.y1)/2, b.y1];
+    let dx = 0, dy = 0, bx = tol, by = tol;
+    others.forEach(o => {
+      const ob = Geo.bounds(o);
+      [ob.x0, (ob.x0+ob.x1)/2, ob.x1].forEach(ox => xs.forEach(x => {
+        const d = ox - x;
+        if(Math.abs(d) < bx){ bx = Math.abs(d); dx = d; }
+      }));
+      [ob.y0, (ob.y0+ob.y1)/2, ob.y1].forEach(oy => ys.forEach(y => {
+        const d = oy - y;
+        if(Math.abs(d) < by){ by = Math.abs(d); dy = d; }
+      }));
+    });
+    return { dx, dy };
+  },
+
+  // --- Selection and moving (Phase 1) ---------------------------------
+  // Element ids, kept apart from `selection` (the handwriting marquee) so the
+  // recognition flow is untouched.
+  sel: new Set(),
+  dragging: null,        // { from:{x,y}, moved:false }
+  resizing: null,        // { handle }
+  marquee: null,
+
+  // Topmost first: later objects are drawn on top, so they are hit first.
+  elementAt(p){
+    const objs = this.doc.objects || [];
+    const tol = 8 / Math.max(0.35, this.doc.view.zoom);
+    for(let i = objs.length - 1; i >= 0; i--){
+      if(Geo.hit(objs[i], p.x, p.y, tol)) return objs[i];
+    }
+    return null;
+  },
+
+  selectedElements(){ return (this.doc.objects || []).filter(o => this.sel.has(o.id)); },
+
+  setSelection(ids, additive){
+    if(!additive) this.sel.clear();
+    ids.forEach(id => this.sel.add(id));
+    this.cacheDirty = true;
+    this.redraw(); this.status();
+  },
+  clearElementSelection(){
+    if(!this.sel.size) return;
+    this.sel.clear(); this.cacheDirty = true; this.redraw(); this.status();
+  },
+
+  deleteSelected(){
+    if(!this.sel.size) return false;
+    this.pushUndo();
+    // Removing a shape frees the ink it came from, so the original stroke
+    // reappears rather than vanishing with it.
+    this.doc.objects.filter(o => this.sel.has(o.id)).forEach(o => {
+      const src = this.doc.strokes.find(s => s.id === o.fromStroke);
+      if(src){ delete src.hidden; delete src.recognisedAs; }
+    });
+    const gone = new Set([...this.sel]);
+    this.doc.objects = this.doc.objects.filter(o => !gone.has(o.id));
+    // An arrow bound to something that no longer exists must forget it,
+    // rather than keep pointing at a ghost.
+    this.doc.objects.forEach(o => {
+      if(gone.has(o.startBinding)) o.startBinding = null;
+      if(gone.has(o.endBinding)) o.endBinding = null;
+      if(gone.has(o.containerId)) o.containerId = null;
+    });
+    this.sel.clear();
+    this.cacheDirty = true;
+    this.redraw(); this.markDirty(); this.status();
+    return true;
+  },
+
+  duplicateSelected(){
+    if(!this.sel.size) return false;
+    this.pushUndo();
+    // Duplicating shares the paste path so bindings and labels are remapped
+    // too; duplicating a labelled box used to leave the copy's label attached
+    // to the original.
+    const map = {};
+    let seq = 0;
+    const copies = this.selectedElements().map(o => {
+      const clone = JSON.parse(JSON.stringify(o));
+      clone.id = 'o' + Date.now().toString(36) + Math.random().toString(36).slice(2,5) + (seq++);
+      map[o.id] = clone.id;
+      delete clone.fromStroke; delete clone.recognisedAs;   // a copy owns no ink
+      Geo.move(clone, 16, 16);
+      return clone;
+    });
+    copies.forEach(cl => {
+      if(cl.containerId) cl.containerId = map[cl.containerId] || null;
+      if(cl.startBinding) cl.startBinding = map[cl.startBinding] || null;
+      if(cl.endBinding) cl.endBinding = map[cl.endBinding] || null;
+    });
+    this.doc.objects.push(...copies);
+    this.sel = new Set(copies.map(o => o.id));
+    this.refreshBindings(copies.map(o => o.id));
+    this.cacheDirty = true;
+    this.redraw(); this.markDirty(); this.status();
+    return true;
+  },
+
+  nudge(dx, dy){
+    if(!this.sel.size) return false;
+    this.pushUndo();
+    const els = this.selectedElements();
+    els.forEach(o => { Geo.move(o, dx, dy); this.moveBoundText(o); });
+    this.refreshBindings(els.map(o => o.id));
+    this.cacheDirty = true;
+    this.redraw(); this.markDirty();
+    return true;
+  },
+
+  // --- two-layer rendering -------------------------------------------
+  // Everything not being dragged is painted once into an offscreen canvas.
+  // Without this, every drag frame redraws every stroke on the page, which is
+  // the first thing that would feel slow.
+  cacheDirty: true,
+  cache: null,
+
+  rebuildCache(){
+    if(!this.cv) return;
+    if(!this.cache) this.cache = document.createElement('canvas');
+    this.cache.width = this.cv.width;
+    this.cache.height = this.cv.height;
+    const g = this.cache.getContext('2d');
+    g.clearRect(0, 0, this.cache.width, this.cache.height);
+    const real = this.ctx;
+    this.ctx = g;                              // paint into the cache
+    this.doc.strokes.forEach(s => { if(!s.hidden) this.drawStroke(s, 1); });
+    this.doc.objects.forEach(o => { if(!this.dragging || !this.sel.has(o.id)) this.drawObject(o); });
+    this.ctx = real;
+    this.cacheDirty = false;
+  },
+
+  drawSelectionUI(){
+    const ctx = this.ctx, v = this.doc.view;
+    const els = this.selectedElements();
+    if(!els.length && !this.marquee) return;
+    ctx.save();
+    ctx.scale(this.dpr, this.dpr);
+    ctx.translate(v.panX, v.panY);
+    ctx.scale(v.zoom, v.zoom);
+    const amber = getComputedStyle(document.documentElement).getPropertyValue('--amber').trim() || '#f2a71b';
+    ctx.strokeStyle = amber;
+    ctx.lineWidth = 1 / v.zoom;
+    els.forEach(el => {
+      const b = Geo.bounds(el);
+      const pad = 4 / v.zoom;
+      ctx.setLineDash([4 / v.zoom, 3 / v.zoom]);
+      ctx.strokeRect(b.x0 - pad, b.y0 - pad, (b.x1-b.x0) + pad*2, (b.y1-b.y0) + pad*2);
+    });
+    // Handles on the selection as a whole, drawn last so they sit on top.
+    if(els.length && !this.dragging){
+      ctx.setLineDash([]);
+      const r = this.HANDLE / v.zoom;
+      const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0b0e10';
+      this.handlesFor(els).forEach(hd => {
+        ctx.fillStyle = bg;
+        ctx.beginPath(); ctx.rect(hd.x - r, hd.y - r, r*2, r*2); ctx.fill(); ctx.stroke();
+      });
+    }
+    if(this.marquee){
+      const m = this.marquee;
+      ctx.setLineDash([5 / v.zoom, 4 / v.zoom]);
+      ctx.strokeRect(Math.min(m.x0,m.x1), Math.min(m.y0,m.y1),
+                     Math.abs(m.x1-m.x0), Math.abs(m.y1-m.y0));
+    }
+    ctx.restore();
+  },
 
   // --- Preset shapes ---------------------------------------------------
   // Drop a clean shape without drawing it. Placed at the centre of the current
@@ -4977,6 +5598,7 @@ const Ink = {
       : null;
   },
   load(raw){
+    this.sel.clear(); this.cacheDirty = true;
     this.undoStack.length = 0; this.redoStack.length = 0;
     this.doc = { v:1, strokes: [], objects: [], view: { zoom:1, panX:0, panY:0 } };
     if(raw){
@@ -4998,6 +5620,7 @@ const Ink = {
     const ink = this.doc.strokes.filter(s => !s.hidden).length;
     if(el) el.textContent = `${ink} strokes`
       + (this.doc.objects.length ? ` · ${this.doc.objects.length} shapes` : '')
+      + (this.sel.size ? ` · ${this.sel.size} selected` : '')
       + ` · ${Math.round(this.doc.view.zoom * 100)}%`;
   },
 
@@ -5026,6 +5649,9 @@ function renderInkColours(){
     b.addEventListener('click', () => {
       Ink.colour = b.dataset.inkColour || null;
       settings.inkColour = Ink.colour; saveSettings();
+      // With something selected, a swatch recolours it instead of only
+      // arming the pen for the next stroke.
+      if(Ink.sel.size) Ink.styleSelected({ colour: Ink.colour });
       box.querySelectorAll('[data-ink-colour]').forEach(x => x.classList.toggle('on', x === b));
       SFX.tick();
     });
@@ -5043,6 +5669,9 @@ document.getElementById('ink-shapes')?.addEventListener('change', e => {
 document.querySelectorAll('[data-ink-tool]').forEach(b => {
   b.addEventListener('click', () => {
     Ink.tool = b.dataset.inkTool;
+    const cv = document.getElementById('ink-canvas');
+    if(cv) cv.classList.toggle('selecting', Ink.tool === 'select');
+    if(Ink.tool !== 'select') Ink.clearElementSelection();
     document.querySelectorAll('[data-ink-tool]').forEach(x => x.classList.toggle('active', x === b));
     SFX.tick();
   });
@@ -5064,6 +5693,14 @@ document.getElementById('ink-undo')?.addEventListener('click', () => Ink.undo())
 document.getElementById('ink-redo')?.addEventListener('click', () => Ink.redo());
 document.getElementById('ink-fit')?.addEventListener('click', () => Ink.resetView());
 document.getElementById('ink-clear')?.addEventListener('click', () => Ink.clear());
+document.getElementById('ink-front')?.addEventListener('click', () => Ink.raise(true));
+document.getElementById('ink-back')?.addEventListener('click', () => Ink.raise(false));
+document.getElementById('ink-dup')?.addEventListener('click', () => {
+  if(!Ink.duplicateSelected()) alert('Select something first — use the ▢ tool.');
+});
+document.getElementById('ink-del')?.addEventListener('click', () => {
+  if(!Ink.deleteSelected()) alert('Select something first — use the ▢ tool.');
+});
 document.getElementById('ink-smart')?.addEventListener('click', e => {
   Ink.smartInk = !Ink.smartInk;
   settings.smartInk = Ink.smartInk; saveSettings();
@@ -5092,10 +5729,38 @@ document.getElementById('ink-revert')?.addEventListener('click', () => {
 // editor has its own undo and the two must not fight.
 document.addEventListener('keydown', e => {
   if(!Ink.active) return;
-  if(document.activeElement && document.activeElement.id === 'notebook-canvas') return;
-  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){
+  // The rich-text editor has its own undo and its own idea of Delete; never
+  // steal keys while the caret is in it, or in any other input.
+  const ae = document.activeElement;
+  if(ae && (ae.id === 'notebook-canvas' || ae.tagName === 'INPUT' ||
+            ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+
+  const mod = e.ctrlKey || e.metaKey;
+  if(mod && e.key.toLowerCase() === 'z'){
     e.preventDefault();
     e.shiftKey ? Ink.redo() : Ink.undo();
+    return;
+  }
+  if(mod && e.key.toLowerCase() === 'd'){ e.preventDefault(); Ink.duplicateSelected(); return; }
+  if(mod && e.key.toLowerCase() === 'c'){ Ink.copySelected(); return; }
+  if(mod && e.key.toLowerCase() === 'v'){ e.preventDefault(); Ink.paste(); return; }
+  if(mod && e.key === ']'){ e.preventDefault(); Ink.raise(true); return; }
+  if(mod && e.key === '['){ e.preventDefault(); Ink.raise(false); return; }
+  if(mod && e.key.toLowerCase() === 'a'){
+    e.preventDefault();
+    Ink.setSelection((Ink.doc.objects || []).map(o => o.id));
+    return;
+  }
+  if(e.key === 'Delete' || e.key === 'Backspace'){
+    if(Ink.deleteSelected()) e.preventDefault();
+    return;
+  }
+  if(e.key === 'Escape'){ Ink.clearElementSelection(); Ink.clearSelection(); return; }
+  // Arrows nudge; shift makes it a coarse step.
+  const step = e.shiftKey ? 10 : 1;
+  const moves = { ArrowLeft:[-step,0], ArrowRight:[step,0], ArrowUp:[0,-step], ArrowDown:[0,step] };
+  if(moves[e.key]){
+    if(Ink.nudge(moves[e.key][0], moves[e.key][1])) e.preventDefault();
   }
 });
 
@@ -5116,6 +5781,220 @@ function applyInkSettings(){
   if(s) s.value = Math.round(Ink.smoothing * 100);
 }
 
+
+
+// ===== Element geometry (Phase 1) ====================================
+// Hit-testing and bounds for every object type. Pure geometry, so it can be
+// verified without a browser — which matters, because "click selects the wrong
+// thing" is the kind of bug that is miserable to chase by hand.
+const Geo = {
+  // Distance from a point to a line segment.
+  segDist(px, py, x1, y1, x2, y2){
+    const vx = x2 - x1, vy = y2 - y1;
+    const L2 = vx*vx + vy*vy;
+    let t = L2 ? ((px - x1)*vx + (py - y1)*vy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + vx*t), py - (y1 + vy*t));
+  },
+
+  pointInPoly(px, py, pts){
+    let inside = false;
+    for(let i = 0, j = pts.length - 1; i < pts.length; j = i++){
+      const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+      if((yi > py) !== (yj > py) &&
+         px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-9) + xi) inside = !inside;
+    }
+    return inside;
+  },
+
+  // Axis-aligned bounds for any element, used by marquee and by the
+  // selection outline.
+  bounds(el){
+    const g = el.geom || {};
+    if(el.type === 'text')
+      return { x0:el.x, y0:el.y, x1:el.x + (el.width||0), y1:el.y + (el.height||0) };
+    switch(el.kind){
+      case 'circle':   return { x0:g.cx-g.r, y0:g.cy-g.r, x1:g.cx+g.r, y1:g.cy+g.r };
+      case 'ellipse':  return { x0:g.cx-g.rx, y0:g.cy-g.ry, x1:g.cx+g.rx, y1:g.cy+g.ry };
+      case 'square':
+      case 'rectangle':return { x0:g.x, y0:g.y, x1:g.x+g.w, y1:g.y+g.h };
+      case 'triangle': {
+        const p = g.points || [];
+        const xs = p.map(v => v[0]), ys = p.map(v => v[1]);
+        return { x0:Math.min(...xs), y0:Math.min(...ys), x1:Math.max(...xs), y1:Math.max(...ys) };
+      }
+      default: return { x0:Math.min(g.x1,g.x2), y0:Math.min(g.y1,g.y2),
+                        x1:Math.max(g.x1,g.x2), y1:Math.max(g.y1,g.y2) };
+    }
+  },
+
+  // Does a point land on this element? An outline shape is selectable both on
+  // its stroke and anywhere inside, which is what people expect even though
+  // nothing is filled.
+  hit(el, px, py, tol){
+    const t = tol || 8;
+    const g = el.geom || {};
+    if(el.type === 'text'){
+      const b = this.bounds(el);
+      return px >= b.x0 - t && px <= b.x1 + t && py >= b.y0 - t && py <= b.y1 + t;
+    }
+    switch(el.kind){
+      case 'line':
+      case 'arrow':
+        return this.segDist(px, py, g.x1, g.y1, g.x2, g.y2) <= t;
+      case 'circle': {
+        const d = Math.hypot(px - g.cx, py - g.cy);
+        return d <= Math.abs(g.r) + t;
+      }
+      case 'ellipse': {
+        const rx = Math.abs(g.rx) + t, ry = Math.abs(g.ry) + t;
+        if(rx <= 0 || ry <= 0) return false;
+        const dx = (px - g.cx) / rx, dy = (py - g.cy) / ry;
+        return dx*dx + dy*dy <= 1;
+      }
+      case 'square':
+      case 'rectangle':
+        return px >= g.x - t && px <= g.x + g.w + t &&
+               py >= g.y - t && py <= g.y + g.h + t;
+      case 'triangle': {
+        const p = g.points || [];
+        if(p.length !== 3) return false;
+        if(this.pointInPoly(px, py, p)) return true;
+        for(let i = 0; i < 3; i++){
+          const a = p[i], b = p[(i+1)%3];
+          if(this.segDist(px, py, a[0], a[1], b[0], b[1]) <= t) return true;
+        }
+        return false;
+      }
+      default: return false;
+    }
+  },
+
+  // Fully inside a marquee. Partial overlap is deliberately not enough:
+  // dragging a box across a busy page would otherwise grab everything it
+  // brushed past.
+  within(el, r){
+    const b = this.bounds(el);
+    return b.x0 >= r.x0 && b.x1 <= r.x1 && b.y0 >= r.y0 && b.y1 <= r.y1;
+  },
+
+
+  // --- Boundary intersection (Phase 2) --------------------------------
+  // Where a line from this element's centre toward (tx,ty) leaves its
+  // outline. This is what makes a bound arrow touch the edge of a box rather
+  // than burying its head in the middle of it.
+  centre(el){
+    const b = this.bounds(el);
+    return { x:(b.x0 + b.x1) / 2, y:(b.y0 + b.y1) / 2 };
+  },
+
+  segInt(x1,y1,x2,y2, x3,y3,x4,y4){
+    const d = (x2-x1)*(y4-y3) - (y2-y1)*(x4-x3);
+    if(Math.abs(d) < 1e-9) return null;
+    const t = ((x3-x1)*(y4-y3) - (y3-y1)*(x4-x3)) / d;
+    const u = ((x3-x1)*(y2-y1) - (y3-y1)*(x2-x1)) / d;
+    if(t < 0 || t > 1 || u < 0 || u > 1) return null;
+    return { x: x1 + t*(x2-x1), y: y1 + t*(y2-y1), t };
+  },
+
+  // Nearest exit along the ray, plus a small gap so the arrowhead does not
+  // touch the outline.
+  exitPoint(el, tx, ty, gap){
+    const c = this.centre(el);
+    const pad = gap == null ? 4 : gap;
+    const dx = tx - c.x, dy = ty - c.y;
+    const len = Math.hypot(dx, dy);
+    if(len < 1e-6) return c;
+    // Extend well past the shape so the ray certainly crosses it.
+    const far = { x: c.x + dx / len * 1e4, y: c.y + dy / len * 1e4 };
+    const g = el.geom || {};
+    let best = null;
+
+    const consider = p => {
+      if(!p) return;
+      if(!best || p.t < best.t) best = p;
+    };
+
+    if(el.type === 'text' || el.kind === 'rectangle' || el.kind === 'square'){
+      const b = this.bounds(el);
+      consider(this.segInt(c.x,c.y,far.x,far.y, b.x0,b.y0, b.x1,b.y0));
+      consider(this.segInt(c.x,c.y,far.x,far.y, b.x1,b.y0, b.x1,b.y1));
+      consider(this.segInt(c.x,c.y,far.x,far.y, b.x1,b.y1, b.x0,b.y1));
+      consider(this.segInt(c.x,c.y,far.x,far.y, b.x0,b.y1, b.x0,b.y0));
+    } else if(el.kind === 'circle' || el.kind === 'ellipse'){
+      // Solve the ellipse in normalised space, where it is a unit circle.
+      const rx = Math.abs(el.kind === 'circle' ? g.r : g.rx);
+      const ry = Math.abs(el.kind === 'circle' ? g.r : g.ry);
+      if(rx < 1e-6 || ry < 1e-6) return c;
+      const ux = dx / len / rx, uy = dy / len / ry;
+      const k = 1 / Math.hypot(ux, uy);
+      best = { x: c.x + dx / len * k, y: c.y + dy / len * k, t: 0 };
+    } else if(el.kind === 'triangle'){
+      const p = g.points || [];
+      for(let i = 0; i < p.length; i++){
+        const a = p[i], b2 = p[(i+1) % p.length];
+        consider(this.segInt(c.x,c.y,far.x,far.y, a[0],a[1], b2[0],b2[1]));
+      }
+    } else {
+      return c;
+    }
+    if(!best) return c;
+    // Back off along the ray by the gap.
+    return { x: best.x + dx / len * pad, y: best.y + dy / len * pad };
+  },
+
+  // Scale an element into a new bounding box. Each kind stores geometry
+  // differently, so this is the one place that knows how to stretch it.
+  resizeTo(el, b){
+    const w = Math.max(8, b.x1 - b.x0), h = Math.max(8, b.y1 - b.y0);
+    const g = el.geom || {};
+    if(el.type === 'text'){ el.x = b.x0; el.y = b.y0; el.width = w; el.height = h; return; }
+    switch(el.kind){
+      case 'circle':
+        g.cx = b.x0 + w/2; g.cy = b.y0 + h/2; g.r = Math.min(w, h) / 2; break;
+      case 'ellipse':
+        g.cx = b.x0 + w/2; g.cy = b.y0 + h/2; g.rx = w/2; g.ry = h/2; break;
+      case 'square':
+      case 'rectangle':
+        g.x = b.x0; g.y = b.y0; g.w = w; g.h = h; break;
+      case 'triangle': {
+        const old = this.bounds(el);
+        const ow = Math.max(1e-6, old.x1 - old.x0), oh = Math.max(1e-6, old.y1 - old.y0);
+        (g.points || []).forEach(p => {
+          p[0] = b.x0 + (p[0] - old.x0) / ow * w;
+          p[1] = b.y0 + (p[1] - old.y0) / oh * h;
+        });
+        break;
+      }
+      case 'line':
+      case 'arrow': {
+        const old = this.bounds(el);
+        const ow = Math.max(1e-6, old.x1 - old.x0), oh = Math.max(1e-6, old.y1 - old.y0);
+        [['x1','y1'], ['x2','y2']].forEach(([kx, ky]) => {
+          g[kx] = b.x0 + (g[kx] - old.x0) / ow * w;
+          g[ky] = b.y0 + (g[ky] - old.y0) / oh * h;
+        });
+        break;
+      }
+    }
+  },
+
+  // Move an element by a delta. Each kind stores its geometry differently, so
+  // this is the single place that knows how.
+  move(el, dx, dy){
+    if(el.type === 'text'){ el.x += dx; el.y += dy; return; }
+    const g = el.geom || {};
+    switch(el.kind){
+      case 'line':
+      case 'arrow':    g.x1 += dx; g.y1 += dy; g.x2 += dx; g.y2 += dy; break;
+      case 'circle':
+      case 'ellipse':  g.cx += dx; g.cy += dy; break;
+      case 'square':
+      case 'rectangle':g.x += dx; g.y += dy; break;
+      case 'triangle': (g.points || []).forEach(p => { p[0] += dx; p[1] += dy; }); break;
+    }
+  },
+};
 
 // ===== Shape recognition (Phase 2) ===================================
 // Purely geometric and local: no model call, so it cannot add pen latency.
@@ -5459,6 +6338,102 @@ const NoteSearch = {
 };
 
 
+
+// ===== Diagram layout (Phase 3) ======================================
+// The model supplies a graph; this decides where everything goes. Keeping
+// positions out of the model's hands is deliberate — asking a language model
+// for coordinates produces overlapping boxes and crossing arrows, the same way
+// asking one for a colour palette produced a muddy one.
+const Layout = {
+  NODE_H: 56, GAP_X: 34, GAP_Y: 78, MIN_W: 120, MAX_W: 220,
+
+  widthFor(label){
+    const chars = String(label || '').length;
+    return Math.max(this.MIN_W, Math.min(this.MAX_W, chars * 8 + 34));
+  },
+
+  // Rank by longest path from a root, which puts every node below all of its
+  // predecessors. Cycles are broken by refusing to revisit a node on the same
+  // path, so a feedback loop lays out instead of hanging.
+  rank(nodes, edges){
+    const out = {}, incoming = {};
+    nodes.forEach(n => { out[n.id] = []; incoming[n.id] = 0; });
+    edges.forEach(e => {
+      if(out[e.from] && incoming[e.to] !== undefined){ out[e.from].push(e.to); incoming[e.to]++; }
+    });
+    const rank = {};
+    nodes.forEach(n => { rank[n.id] = 0; });
+    const roots = nodes.filter(n => !incoming[n.id]).map(n => n.id);
+    const seeds = roots.length ? roots : [nodes[0].id];
+    const walk = (id, depth, path) => {
+      if(path.has(id)) return;                       // cycle: stop here
+      rank[id] = Math.max(rank[id], depth);
+      path.add(id);
+      out[id].forEach(nx => walk(nx, depth + 1, path));
+      path.delete(id);
+    };
+    seeds.forEach(id => walk(id, 0, new Set()));
+    return rank;
+  },
+
+  // Order within each rank by the average position of a node's parents, which
+  // is a cheap and effective way to reduce crossings.
+  order(nodes, edges, rank){
+    const rows = {};
+    nodes.forEach(n => { (rows[rank[n.id]] = rows[rank[n.id]] || []).push(n.id); });
+    const parents = {};
+    nodes.forEach(n => { parents[n.id] = []; });
+    edges.forEach(e => { if(parents[e.to]) parents[e.to].push(e.from); });
+
+    const ranks = Object.keys(rows).map(Number).sort((a, b) => a - b);
+    const pos = {};
+    ranks.forEach(r => rows[r].forEach((id, i) => { pos[id] = i; }));
+
+    for(let pass = 0; pass < 3; pass++){
+      ranks.slice(1).forEach(r => {
+        rows[r].sort((a, b) => {
+          const bary = id => {
+            const ps = parents[id].filter(p => pos[p] !== undefined);
+            return ps.length ? ps.reduce((s, p) => s + pos[p], 0) / ps.length : pos[id];
+          };
+          return bary(a) - bary(b);
+        });
+        rows[r].forEach((id, i) => { pos[id] = i; });
+      });
+    }
+    return rows;
+  },
+
+  // Place each row centred on a common axis.
+  flow(spec, origin){
+    const nodes = spec.nodes || [], edges = spec.edges || [];
+    if(!nodes.length) return { boxes: [], width: 0, height: 0 };
+    const rank = this.rank(nodes, edges);
+    const rows = this.order(nodes, edges, rank);
+    const ranks = Object.keys(rows).map(Number).sort((a, b) => a - b);
+
+    const widths = {};
+    nodes.forEach(n => { widths[n.id] = this.widthFor(n.label); });
+
+    const rowWidth = r => rows[r].reduce((s, id) => s + widths[id], 0) + (rows[r].length - 1) * this.GAP_X;
+    const widest = Math.max(...ranks.map(rowWidth));
+
+    const ox = (origin && origin.x) || 60, oy = (origin && origin.y) || 60;
+    const boxes = [];
+    ranks.forEach((r, ri) => {
+      let x = ox + (widest - rowWidth(r)) / 2;
+      const y = oy + ri * (this.NODE_H + this.GAP_Y);
+      rows[r].forEach(id => {
+        const n = nodes.find(v => v.id === id);
+        boxes.push({ id, label: n.label, kind: n.kind || 'step',
+                     x, y, w: widths[id], h: this.NODE_H });
+        x += widths[id] + this.GAP_X;
+      });
+    });
+    return { boxes, width: widest, height: ranks.length * (this.NODE_H + this.GAP_Y) };
+  },
+};
+
 // ===== Notebook structure (Phases 6 & 8) =============================
 // The notebook is exposed to TARS as objects, positions and connections —
 // never as a flat image. That is what lets it answer "what does this diagram
@@ -5535,13 +6510,25 @@ const NotePage = {
 
     const edges = [];
     arrows.forEach(a => {
+      // A bound arrow states its connection outright. Proximity is only a
+      // fallback for arrows drawn before bindings existed, and it guesses.
+      if(a.startBinding || a.endBinding){
+        const from = nodes.find(n => n.id === a.startBinding);
+        const to   = nodes.find(n => n.id === a.endBinding);
+        if(from && to && from.id !== to.id){
+          edges.push({ id:a.id, from:from.id, to:to.id,
+                       directed: a.kind === 'arrow', bound:true });
+          return;
+        }
+      }
       const g = a.geom || {};
       const len = Math.hypot((g.x2||0)-(g.x1||0), (g.y2||0)-(g.y1||0));
       const tol = Math.max(28, len * 0.28);
       const from = this.nodeAt([g.x1, g.y1], nodes, tol);
       const to   = this.nodeAt([g.x2, g.y2], nodes, tol);
       if(from && to && from.id !== to.id){
-        edges.push({ id:a.id, from:from.id, to:to.id, directed: a.kind === 'arrow' });
+        edges.push({ id:a.id, from:from.id, to:to.id,
+                     directed: a.kind === 'arrow', bound:false });
       }
     });
     return { nodes, edges };
@@ -5558,7 +6545,8 @@ const NotePage = {
     const lines = [];
     if(edges.length){
       lines.push('Diagram connections:');
-      edges.forEach(e => lines.push(`  ${name(e.from)} ${e.directed ? '->' : '--'} ${name(e.to)}`));
+      edges.forEach(e => lines.push(`  ${name(e.from)} ${e.directed ? '->' : '--'} ${name(e.to)}`
+        + (e.bound ? '' : '  (inferred from position, not certain)')));
     }
     const loose = nodes.filter(n => !edges.some(e => e.from === n.id || e.to === n.id));
     if(loose.length) lines.push('Unconnected: ' + loose.map(n => n.label || n.kind).join(', '));
@@ -5600,14 +6588,28 @@ const NotePage = {
 //   - the browser's own sharing indicator is always visible while it is live
 const Screen_ = {
   stream: null, video: null, keepOpen: true, lastReadAt: 0, lastError: null, lastReason: '',
+  surface: '', surfaceLabel: '',
 
   async open(){
     if(this.stream && this.stream.active) return true;
     if(!navigator.mediaDevices?.getDisplayMedia) return false;
     try{
       this.stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 1 },        // one frame a second is ample
+        video: {
+          frameRate: 1,                 // one frame a second is ample
+          // Prefer a single window. Sharing the whole monitor captures
+          // whatever is on top — which is this app — so the useful choice is
+          // almost always the specific window the user wants read.
+          displaySurface: 'window',
+        },
         audio: false,
+        // Keep this app's own tab out of the picker: capturing ourselves is
+        // never what is wanted and is the commonest way to end up with a
+        // screenshot of the assistant asking what is on the screen.
+        selfBrowserSurface: 'exclude',
+        // Allow switching source mid-share without stopping and restarting.
+        surfaceSwitching: 'include',
+        monitorTypeSurfaces: 'include',
       });
       // If the user stops sharing from the browser's own control, forget it.
       this.stream.getVideoTracks()[0].addEventListener('ended', () => this.close());
@@ -5755,6 +6757,13 @@ const Mail = {
       const h = await window.showDirectoryPicker({ id:'tbird', mode:'read' });
       this.dir = h;
       await idbSet('mailDir', h);
+      // What the user actually picked matters: a monitor share will show this
+      // app whenever it is the foreground window.
+      try{
+        const st = this.stream.getVideoTracks()[0].getSettings?.() || {};
+        this.surface = st.displaySurface || 'unknown';
+        this.surfaceLabel = this.stream.getVideoTracks()[0].label || '';
+      }catch(e){ this.surface = 'unknown'; }
       this.lastReason = '';
       return true;
     }catch(e){
@@ -7163,7 +8172,14 @@ document.getElementById('ai-share')?.addEventListener('click', async () => {
   if(!ok){ addProactiveMessage(Screen_.lastReason || 'Screen sharing did not start.'); return; }
   Screen_.keepOpen = true; settings.screenKeep = true; saveSettings();
   btn?.classList.add('on');
-  addProactiveMessage('Sharing. Ask me what is on your screen and I will read it.');
+  if(Screen_.surface === 'monitor'){
+    addProactiveMessage('Sharing the whole screen. Note that a screen capture shows whatever is in front — '
+      + 'which is this app while you are looking at it. To read another program, stop sharing and pick '
+      + 'its window instead: window capture works even when the window is behind this one.');
+  } else {
+    addProactiveMessage(`Sharing${Screen_.surfaceLabel ? ' "' + Screen_.surfaceLabel + '"' : ''}. `
+      + 'Ask me what is on it and I will read it.');
+  }
 });
 
 document.getElementById('ai-input').addEventListener('keydown', (e) => { if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendAiMessage(); } });
@@ -7287,13 +8303,24 @@ async function runAssistantTurn(text, spoken){
   // block deleted the answer as well, which is why replies collapsed to "Done."
   const rawContent = String(msg.content || '');
   let display = (() => {
+    // A reasoning model may recite the rules it was given before answering.
+    // The server strips this too; this is the backstop for anything that
+    // slips through, and it never blanks a reply that has no recital.
+    const deRecite = s => {
+      let t = String(s || '');
+      t = t.replace(/<\|channel\|>analysis[\s\S]*?<\|channel\|>final/gi, '')
+           .replace(/<\|[a-z_]+\|>/gi, '');
+      const recital = /^\s*(constraints?|constraint check|checklist|plan|analysis|reasoning)\s*:?\s*\n(?:\s*[-*\u2022]\s.*\n?)+/i;
+      while(recital.test(t)) t = t.replace(recital, '').trim();
+      return t.replace(/^(?:\s*[-*\u2022]\s*(?:no |tools?:|bearing|honesty|knowledge|language|written|confidence|time:)[^\n]*\n?)+/i, '').trim();
+    };
     // Order matters: check for a closing tag FIRST. A reply that opens with
     // reasoning and no opening tag would otherwise be returned wholesale.
     if(/<\/think>/i.test(rawContent)){
-      const after = rawContent.split(/<\/think>/i).pop().trim();
+      const after = deRecite(rawContent.split(/<\/think>/i).pop().trim());
       if(after) return after;
     }
-    const closed = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    const closed = deRecite(rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim());
     if(closed && !/<think>/i.test(closed)) return closed;
     // Unclosed block: the whole reply was deliberation. Take the last
     // paragraph, which is usually the conclusion, rather than showing nothing.

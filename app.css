@@ -842,6 +842,8 @@
     font-size:.6rem; color:var(--muted); }
   #ink-canvas{ display:block; width:100%; height:min(52vh, 460px);
     cursor:crosshair; touch-action:none; }
+  #ink-canvas.selecting{ cursor:default; }
+  #ink-canvas.grabbing{ cursor:grabbing; }
   #nb-ink-toggle.active{ color:var(--on-accent); background:var(--amber); border-color:var(--amber); }
   @media (max-width:860px){ #ink-canvas{ height:44vh; } .ink-lab input[type=range]{ width:56px; } }
 
