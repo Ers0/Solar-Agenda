@@ -2887,12 +2887,31 @@ const TOOL_HINTS = {
   set_personality: /\b(humou?r|humor|funny|joke|honest|blunt|settings?|personality|serious|piada|s[eé]rio)\b/i,
   switch_provider: /\b(switch|change|use|running|model|provider|gemini|groq|openai|deepseek|openrouter|reasoning|troca|muda|modelo)\b/i,
 };
+// Tool selection must consider the conversation, not just the latest line.
+// Matching on one message alone meant "create a diagram" offered the tool, and
+// the very next reply — "the first one" — took it away again, so TARS
+// truthfully reported having no tool halfway through the task.
+let recentToolText = [];
+let lastOfferedTools = [];
+function rememberForTools(text){
+  recentToolText.push(String(text || ''));
+  if(recentToolText.length > 3) recentToolText.shift();
+}
+
 function toolsFor(text){
-  const t = String(text || '');
+  // The last few turns count, so a tool stays available while a task is in
+  // progress rather than only on the sentence that first named it.
+  const t = [String(text || ''), ...recentToolText].join(' \n ');
   const picked = AI_TOOLS.filter(x => {
     const re = TOOL_HINTS[x.function.name];
     return !re || re.test(t);
   });
+  // A short follow-up ("yes", "the first one", "try again") carries no
+  // keywords but is nearly always continuing the previous request, so the
+  // previous turn's tools are kept rather than withdrawn mid-task.
+  const brief = String(text || '').trim().split(/\s+/).length <= 6;
+  if(!picked.length && brief && lastOfferedTools.length) return lastOfferedTools;
+  if(picked.length) lastOfferedTools = picked;
   // A bare question needs no tools at all; sending none is the cheapest turn.
   return picked.length ? picked : null;
 }
@@ -3436,7 +3455,12 @@ const TOOLS = [
                + 'Tell the user to press the Share screen button that has just appeared, then ask again. '
                + 'You must NOT describe the screen from app data — you have not seen it.';
         }
-        if(res.error === 'rate_limit') return 'The vision service is rate limited right now. Say so and suggest trying again shortly.';
+        if(res.error === 'cooling')
+          return `The vision model is cooling down after a rate limit — about ${res.detail} left. `
+               + 'Tell the user the number and to ask again then. Do not describe the screen meanwhile.';
+        if(res.error === 'rate_limit')
+          return 'The vision model hit its per-minute limit. It frees up within a minute — say that plainly '
+               + 'and do not guess at what was on the screen.';
         if(res.error === 'no_model')
           return `No vision model is usable on this Groq account. Details: ${res.detail || 'none'}. `
                + 'If it says "needs terms accepted", tell the user to accept the model terms at console.groq.com. '
@@ -7146,7 +7170,15 @@ const Screen_ = {
     return url;
   },
 
+  cooldownUntil: 0,
+
   async ask(question){
+    // Hammering a rate-limited endpoint spends the same quota as a good call
+    // and makes the wait longer, so a refusal starts a local cooldown.
+    if(Date.now() < this.cooldownUntil){
+      const secs = Math.ceil((this.cooldownUntil - Date.now()) / 1000);
+      return { ok:false, error:'cooling', detail:`${secs}s` };
+    }
     const img = await this.grab();
     if(!img){
       // Keep the share open: closing it here is what made a failed first
@@ -7159,8 +7191,16 @@ const Screen_ = {
         body: JSON.stringify({ image: img, question }),
       });
       const out = await readJson(r);
-      if(!out.ok) return { ok:false, error: out.json.code || 'vision failed',
-                            detail: out.json.detail || (out.json.tried || []).join(' | ') };
+      if(!out.ok){
+        const detail = out.json.detail || (out.json.tried || []).join(' | ');
+        // The one vision model on this account is Qwen; when it is limited
+        // there is nothing to fall back to, so wait rather than retry blindly.
+        if(out.json.code === 'rate_limit' || /rate limit/i.test(detail)){
+          this.cooldownUntil = Date.now() + 45000;
+          return { ok:false, error:'rate_limit', detail };
+        }
+        return { ok:false, error: out.json.code || 'vision failed', detail };
+      }
       this.lastReadAt = Date.now();
       // Only a one-shot share is torn down, and only after a successful read.
       if(!this.keepOpen) this.close();
@@ -8681,6 +8721,7 @@ async function runAssistantTurn(text, spoken){
   }
 
   lastUserQuestion = text;
+  rememberForTools(text);
   // One retrieval bundle, owned by this turn. Nothing here is read from a
   // module global, so concurrent or rapid turns cannot cross-contaminate.
   const R = { kb: [], mem: [], rules: [], learnBrief: '', assessment: '' };
@@ -9937,9 +9978,9 @@ async function renderProviderStatus(){
   if(sel){
     const opts = (d.providers || []);
     sel.innerHTML = opts.map(p =>
-      `<option value="${p.id}"${p.id === d.provider ? ' selected' : ''}>${p.label}</option>`).join('')
+      `<option value="${p.id}"${p.id === d.provider ? ' selected' : ''}>${p.label}${p.note ? ' — ' + p.note : ''}</option>`).join('')
       + (d.unconfigured || []).map(p =>
-      `<option value="${p.id}" disabled>${p.label} — set ${p.keyEnv}</option>`).join('');
+      `<option value="${p.id}" disabled>${p.label} — set ${p.keyEnv}${p.note ? ' (' + p.note + ')' : ''}</option>`).join('');
   }
 }
 document.getElementById('reflect-run')?.addEventListener('click', async () => {

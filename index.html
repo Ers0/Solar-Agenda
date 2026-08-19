@@ -244,7 +244,9 @@
         <select class="voice-select" id="prov-select" style="max-width:150px"></select>
         <button class="btn-ghost" id="ai-reset" title="Clear the temporary model blocklist">Reset models</button>
       </div>
-      <p class="hint">Say “TARS, switch to Gemini” to change it by voice. Keys live in Supabase → Edge Functions → Secrets: <b>GEMINI_API_KEY</b>, <b>OPENAI_API_KEY</b>, <b>DEEPSEEK_API_KEY</b>, <b>OPENROUTER_API_KEY</b>. Groq works out of the box.</p>
+      <p class="hint">Say “TARS, switch to Cerebras” to change it by voice. Keys live in Supabase → Edge Functions → Secrets:
+      <b>CEREBRAS_API_KEY</b> (about a million tokens a day, no card — the roomiest free option),
+      <b>NVIDIA_API_KEY</b>, <b>GEMINI_API_KEY</b>, <b>OPENAI_API_KEY</b>, <b>DEEPSEEK_API_KEY</b>, <b>OPENROUTER_API_KEY</b>. Groq works out of the box.</p>
       <div class="set-row">
         <div class="set-info"><b>Service check</b><span id="diag-status">Not run</span></div>
         <button class="btn-ghost" id="diag-run">Run check</button>
