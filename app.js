@@ -2874,7 +2874,7 @@ const TOOL_HINTS = {
   reflect:         /\b(improve|review your|gaps?|reflect|what should we|melhorar|revisar)\b/i,
   get_briefing:    /\b(brief|briefing|plan|good morning|what'?s (up|new|today)|anything I should|resumo|bom dia|novidade)\b/i,
   set_proactivity: /\b(interrupt|proactive|quiet|notify|notifications?|leave me alone|interromp|avisar)\b/i,
-  learn_rule:      /\b(wrong|incorrect|not right|isn'?t right|actually|no,|remember that|note that|keep in mind|bear in mind|always|never|correction|it'?s not|rather than|errado|errada|na verdade|sempre|nunca|lembre|anote que|corrig)\b/i,
+  learn_rule:      /\b(wrong|incorrect|actually|no,|remember that|always|never|correction|errado|na verdade|sempre|nunca)\b/i,
   recall_experience: /\b(before|similar|last time|usually|typically|seen this|j[aá] vi|parecido|normalmente)\b/i,
   record_outcome:  /\b(resolved|fixed|solved|closed|turned out|resolvi|resolvido|foi o)\b/i,
   review_rules:    /\b(rules?|learned|conflict|regras?|aprendeu)\b/i,
@@ -2898,13 +2898,6 @@ function rememberForTools(text){
   if(recentToolText.length > 3) recentToolText.shift();
 }
 
-// Some tools must always be reachable. Gating memory and learning behind
-// keywords meant a plain correction — "that's not right, it's AC not DC" —
-// never reached learn_rule, so TARS answered, accurately, that it could not
-// learn from the conversation. The cost of always sending these is small
-// against being unable to teach it anything.
-const CORE_TOOLS = ['learn_rule', 'remember', 'recall_experience', 'get_context'];
-
 function toolsFor(text){
   // The last few turns count, so a tool stays available while a task is in
   // progress rather than only on the sentence that first named it.
@@ -2918,16 +2911,8 @@ function toolsFor(text){
   // previous turn's tools are kept rather than withdrawn mid-task.
   const brief = String(text || '').trim().split(/\s+/).length <= 6;
   if(!picked.length && brief && lastOfferedTools.length) return lastOfferedTools;
-
-  // Fold in the core set, without duplicating anything already chosen.
-  const names = new Set(picked.map(x => x.function.name));
-  CORE_TOOLS.forEach(n => {
-    if(names.has(n)) return;
-    const t = AI_TOOLS.find(x => x.function.name === n);
-    if(t) picked.push(t);
-  });
-
   if(picked.length) lastOfferedTools = picked;
+  // A bare question needs no tools at all; sending none is the cheapest turn.
   return picked.length ? picked : null;
 }
 
@@ -8421,7 +8406,6 @@ const TARS = {
     "Never say: 'As an AI', 'Certainly!', 'Great question', 'I hope this helps', 'Let me know if you need anything else'. No emoji. No exclamation marks. Do not restate the request.",
     "Do not reuse a phrase you have already used in this conversation.",
     "TOOLS: 'Checking.' before a lookup. 'Done.' on success. 'That failed.' on failure — plus the reason if you have one. NEVER claim you saved, deleted or changed anything unless a tool actually returned success. If no tool exists for what was asked, say plainly that you cannot do it.",
-    "LEARNING: you CAN learn. When the user corrects you or states a durable rule, call learn_rule. When they tell you a personal fact or preference, call remember. Never tell them you are unable to learn from the conversation — you are.",
     "KNOWLEDGE: use what is retrieved and nothing else. Do not read the source aloud; the screen shows it.",
     "TIME: a bare hour means the next time that hour occurs. At 18:00, 'eight o'clock' is 20:00, not 08:00 tomorrow.",
   ],
