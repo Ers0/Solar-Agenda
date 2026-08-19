@@ -207,7 +207,8 @@
       </div>
       <div class="set-row">
         <div class="set-info"><b>Reasoning model</b><span id="prov-status">checking…</span></div>
-        <select class="voice-select" id="prov-select" style="max-width:190px"></select>
+        <select class="voice-select" id="prov-select" style="max-width:150px"></select>
+        <button class="btn-ghost" id="ai-reset" title="Clear the temporary model blocklist">Reset models</button>
       </div>
       <p class="hint">Say “TARS, switch to Gemini” to change it by voice. Keys live in Supabase → Edge Functions → Secrets: <b>GEMINI_API_KEY</b>, <b>OPENAI_API_KEY</b>, <b>DEEPSEEK_API_KEY</b>, <b>OPENROUTER_API_KEY</b>. Groq works out of the box.</p>
       <div class="set-row">

@@ -3394,7 +3394,10 @@ const TOOLS = [
     schema: { type:'object', properties:{
       question:{ type:'string', description:'What to look for, e.g. "what fault code is shown" or "read the serial numbers".' } } },
     async execute(args){
-      const q = args.question || 'What is shown here? Report any fault codes, serial numbers or error text exactly.';
+      const q = args.question
+        || 'Read this screen. First say in one sentence what it is. Then report the key content: '
+         + 'fault codes, serial numbers, error text, readings and status values, quoted exactly. '
+         + 'If it is an article or a document, summarise the substance in three or four sentences.';
       const res = await Screen_.ask(q);
       if(!res.ok){
         if(res.error === 'no screen shared' || res.error === 'no frame'){
@@ -5527,7 +5530,9 @@ const Ink = {
     try{
       const r = await fetch(FN_URL + "/agenda-vision", {
         method:'POST', headers: authHeaders(),
-        body: JSON.stringify({ image: shot.url, mode:'handwriting', context: this.buildContext() }),
+        body: JSON.stringify({ image: shot.url, mode:'handwriting',
+                               context: this.buildContext(),
+                               reference: Handwriting.buildSheet() || undefined }),
       });
       const out = await readJson(r);
       if(!out.ok){
@@ -5582,8 +5587,19 @@ const Ink = {
     el.querySelector('#rev-cancel').addEventListener('click', () => this.hideReview());
     el.querySelector('#rev-retry').addEventListener('click', () => { this.hideReview(); this.recogniseHandwriting(); });
     el.querySelector('#rev-commit').addEventListener('click', () => {
-      // What is committed is what the user sees, corrections included.
-      this.commitText(ta.value, el.querySelector('#rev-keep-ink').checked);
+      // A correction here is the most valuable teaching signal available, so
+      // it is offered for saving rather than discarded.
+      const original = this.review.text, edited = ta.value;
+      const ids = this.review.strokeIds.slice();
+      this.commitText(edited, el.querySelector('#rev-keep-ink').checked);
+      if(original.trim() !== edited.trim() && edited.trim()){
+        setTimeout(() => {
+          if(confirm('You corrected the transcription.\n\nTeach TARS this handwriting so it reads better next time?'))
+            Handwriting.learnCorrection(original, edited, ids).then(ok => {
+              if(ok) addProactiveMessage('Learned that handwriting. Future readings will use it as a reference.');
+            });
+        }, 120);
+      }
     });
   },
   hideReview(){
@@ -6639,6 +6655,152 @@ const NotePage = {
   },
 };
 
+
+// ===== Handwriting training ==========================================
+// Teaches the reader this hand by example. Two mechanisms:
+//   1. a reference chart of labelled samples, sent alongside the page
+//   2. corrections, which are the most valuable samples because they record
+//      exactly where the reader went wrong
+// This is few-shot conditioning, not training: it biases recognition toward
+// your letterforms, it does not retrain the model, and it cannot rescue
+// genuinely ambiguous writing.
+const Handwriting = {
+  samples: [], loaded: false, sheet: null, sheetAt: 0,
+
+  // A short drill: single letters, then digits, then the words this job
+  // actually uses. Ordered so the alphabet is covered before vocabulary.
+  DRILL: [
+    'a b c d e f g', 'h i j k l m n', 'o p q r s t u', 'v w x y z',
+    'A B C D E F G', 'H I J K L M N', 'O P Q R S T U', 'V W X Y Z',
+    '0 1 2 3 4 5 6 7 8 9',
+    'Deye Growatt Foxess', 'Solis Hoymiles Huawei',
+    'inversor garantia', 'sobretensão firmware',
+    'PAC-18372  SN 1234', 'F35 OV-G-V 409',
+  ],
+
+  async load(force){
+    if(this.loaded && !force) return;
+    try{
+      const r = await fetch(FN_URL + "/agenda-handwriting", { headers: authHeaders() });
+      const out = await readJson(r);
+      if(!out.ok) return;
+      this.samples = await Promise.all((out.json.samples || []).map(async s => ({
+        ...s,
+        label: await decStr(s.label),
+        ink: await decStr(s.ink),
+        wrong: s.wrong ? await decStr(s.wrong) : null,
+      })));
+      this.loaded = true;
+      this.sheet = null;                 // samples changed, chart is stale
+      renderHandwritingStatus();
+    }catch(e){}
+  },
+
+  async add(label, strokes, kind, wrong){
+    if(!label || !strokes || !strokes.length) return false;
+    const r = await fetch(FN_URL + "/agenda-handwriting", {
+      method:'POST', headers: authHeaders(),
+      body: JSON.stringify({
+        kind: kind || 'word',
+        label: await encStr(label),
+        ink: await encStr(JSON.stringify(strokes)),
+        wrong: wrong ? await encStr(wrong) : null,
+      }),
+    });
+    if(!r.ok) return false;
+    await this.load(true);
+    return true;
+  },
+
+  async remove(id){
+    const r = await fetch(FN_URL + "/agenda-handwriting", {
+      method:'DELETE', headers: authHeaders(), body: JSON.stringify(id ? { id } : { all:true }) });
+    if(r.ok) await this.load(true);
+    return r.ok;
+  },
+
+  // Render stored samples into one chart: the writing on top, what it means
+  // printed underneath. Capped, because a huge image costs tokens and the
+  // model stops attending to it.
+  buildSheet(max){
+    const picks = this.samples
+      .filter(s => s.ink)
+      .sort((a, b) => (a.kind === 'correction' ? -1 : 0) - (b.kind === 'correction' ? -1 : 0))
+      .slice(0, max || 14);
+    if(!picks.length) return null;
+    if(this.sheet && Date.now() - this.sheetAt < 120000) return this.sheet;
+
+    const rows = [];
+    picks.forEach(s => {
+      let strokes;
+      try{ strokes = JSON.parse(s.ink); }catch(e){ return; }
+      if(!strokes || !strokes.length) return;
+      const pts = strokes.flatMap(k => k.points || []);
+      if(!pts.length) return;
+      const b = ShapeRec.bbox(pts);
+      rows.push({ strokes, b, label: s.label });
+    });
+    if(!rows.length) return null;
+
+    const PAD = 14, LABEL_H = 22, MAXW = 520;
+    const scaleFor = r => Math.min(2.2, MAXW / Math.max(40, r.b.w));
+    const heights = rows.map(r => Math.max(30, r.b.h * scaleFor(r)) + LABEL_H + PAD);
+    const cw = MAXW + PAD * 2;
+    const ch = heights.reduce((a, b2) => a + b2, 0) + PAD;
+
+    const cv = document.createElement('canvas');
+    cv.width = cw; cv.height = ch;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, cw, ch);
+    g.lineCap = 'round'; g.lineJoin = 'round';
+
+    let y = PAD;
+    rows.forEach((r, i) => {
+      const sc = scaleFor(r);
+      g.strokeStyle = '#111111';
+      r.strokes.forEach(k => {
+        const p = k.points || [];
+        for(let j = 1; j < p.length; j++){
+          g.lineWidth = Math.max(1.6, (k.width || 2) * sc * 0.9);
+          g.beginPath();
+          g.moveTo(PAD + (p[j-1][0] - r.b.x0) * sc, y + (p[j-1][1] - r.b.y0) * sc);
+          g.lineTo(PAD + (p[j][0] - r.b.x0) * sc, y + (p[j][1] - r.b.y0) * sc);
+          g.stroke();
+        }
+      });
+      const bandY = y + Math.max(30, r.b.h * sc) + 4;
+      g.fillStyle = '#666666';
+      g.font = '13px ui-sans-serif, system-ui, sans-serif';
+      g.fillText('= ' + String(r.label).replace(/\n/g, ' / ').slice(0, 70), PAD, bandY + 12);
+      g.strokeStyle = '#dddddd'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(PAD, bandY + 18); g.lineTo(cw - PAD, bandY + 18); g.stroke();
+      y += heights[i];
+    });
+
+    this.sheet = cv.toDataURL('image/png');
+    this.sheetAt = Date.now();
+    cv.width = cv.height = 0;
+    return this.sheet;
+  },
+
+  // A misread word is the single most useful sample there is.
+  async learnCorrection(originalText, correctedText, strokeIds){
+    if(!originalText || !correctedText || originalText.trim() === correctedText.trim()) return false;
+    const strokes = (Ink.doc.strokes || []).filter(s => strokeIds.includes(s.id));
+    if(!strokes.length) return false;
+    return this.add(correctedText.trim(), strokes, 'correction', originalText.trim());
+  },
+};
+
+function renderHandwritingStatus(){
+  const el = document.getElementById('hw-status');
+  if(!el) return;
+  const n = Handwriting.samples.length;
+  const corr = Handwriting.samples.filter(s => s.kind === 'correction').length;
+  el.textContent = n ? `${n} samples${corr ? `, ${corr} from corrections` : ''}` : 'nothing taught yet';
+  el.className = n ? 'ok' : '';
+}
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -6658,10 +6820,10 @@ const Screen_ = {
       this.stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           frameRate: 1,                 // one frame a second is ample
-          // Prefer a single window. Sharing the whole monitor captures
-          // whatever is on top — which is this app — so the useful choice is
-          // almost always the specific window the user wants read.
-          displaySurface: 'window',
+          // No forced preference: the picker offers screens, windows and tabs
+          // and the user chooses. A whole-monitor share is legitimate when the
+          // app is not the front window — e.g. reading a portal on a second
+          // monitor while this sits on the first.
         },
         audio: false,
         // Keep this app's own tab out of the picker: capturing ourselves is
@@ -6736,13 +6898,15 @@ const Screen_ = {
 
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if(!vw) return null;
-    const maxW = 1280;
+    // Smaller frames are markedly faster through a vision model and still
+    // legible for fault codes and dialogue text.
+    const maxW = 1100;
     const scale = Math.min(1, maxW / vw);
     const cv = document.createElement('canvas');
     cv.width = Math.round(vw * scale);
     cv.height = Math.round(vh * scale);
     cv.getContext('2d').drawImage(this.video, 0, 0, cv.width, cv.height);
-    const url = cv.toDataURL('image/jpeg', 0.72);
+    const url = cv.toDataURL('image/jpeg', 0.62);
     cv.width = cv.height = 0;              // release the backing bitmap
     return url;
   },
@@ -9997,6 +10161,7 @@ document.getElementById('diag-run')?.addEventListener('click', async () => {
         + ` / chat ${d.model || '?'}`
         + (d.toolModel && d.toolModel !== d.model ? ` / tools ${d.toolModel}` : '')
         + ((d.available || []).length ? ` (${(d.available || []).length} models)` : '')
+        + ((d.blocked || []).length ? ` — ${d.blocked.length} model(s) temporarily blocked` : '')
         + (d.error ? ` — ${d.error}` : ''));
       if(name === 'search'){
         const keyed = [d.serper && 'Serper', d.tavily && 'Tavily', d.exa && 'Exa',
@@ -10096,6 +10261,14 @@ bindSetting('tts-model', 'ttsModelId');
 });
 // last resort: flush anything typed but not yet committed
 window.addEventListener('beforeunload', () => { try{ saveSettings(); }catch(e){} });
+document.getElementById('ai-reset')?.addEventListener('click', async () => {
+  try{
+    await fetch(FN_URL + "/agenda-ai", { method:'POST', headers: authHeaders(), body: JSON.stringify({ reset:true }) });
+    providerCache = null;
+    await renderProviderStatus();
+    alert('Model blocklist cleared. If TARS said it had no tools, try again now.');
+  }catch(e){ alert('Could not reach the assistant service.'); }
+});
 document.getElementById('tts-diag')?.addEventListener('click', async () => {
   const btn = document.getElementById('tts-diag');
   btn.disabled = true; btn.textContent = 'Checking…';
@@ -10789,6 +10962,7 @@ async function bootApp(){
   }, 4000);
   pullSettings();
   Learn.load();
+  Handwriting.load();
   Proactive.start();
   DueWatch.start();
   // Anything the scheduled scan found while the app was shut.
