@@ -10175,24 +10175,31 @@ function hsl2hex(h, s, l){
 
 function buildPalette(p){
   const baseH = p.baseHue, baseS = p.baseSat, dark = p.darkness;   // 0-100
-  // Backgrounds and panels share the base hue with a rising lightness ramp,
-  // so the surfaces read as one family rather than unrelated colours.
-  const L = v => Math.max(3, Math.min(96, v));
-  const bgL    = L(4 + (100 - dark) * 0.06);
-  const panelL = L(bgL + 5);
+  // The previous ramp put every surface between 4% and 7% lightness, so every
+  // theme came out near-black and only the accent differed. Darkness now
+  // spans a real range, and each surface is a clear step above the last.
+  const L = v => Math.max(4, Math.min(96, v));
+  const bgL    = L(20 - (dark - 60) * 0.22);        // dark 60 -> 20%, 92 -> 13%
+  const panelL = L(bgL * 1.42 + 3);
+  const p2L    = L(panelL * 1.30 + 2);
+  const lineL  = L(p2L * 1.55 + 4);
+
+  // Surfaces keep enough saturation for the hue to actually read. Muting them
+  // to a third of the base is what made every theme look like the same grey.
+  const surfS = Math.max(8, Math.min(38, baseS * 0.9));
   return {
     name: 'Custom',
-    bg:     hsl2hex(baseH, baseS * 0.55, bgL),
-    bg2:    hsl2hex(baseH, baseS * 0.65, L(bgL - 2)),
-    panel:  hsl2hex(baseH, baseS * 0.45, panelL),
-    panel2: hsl2hex(baseH, baseS * 0.40, L(panelL + 5)),
-    line:   hsl2hex(baseH, baseS * 0.35, L(panelL + 14)),
-    text:   hsl2hex(baseH, Math.min(18, baseS * 0.25), 94),
-    muted:  hsl2hex(baseH, Math.min(22, baseS * 0.3), 62),
-    amber:  hsl2hex(p.accentHue,  Math.max(45, p.accentSat), 58),
-    accent2:hsl2hex(p.accent2Hue, Math.max(40, p.accentSat * 0.9), 60),
-    accent3:hsl2hex(p.accent3Hue, Math.max(35, p.accentSat * 0.8), 62),
-    dusk:   hsl2hex(p.accent2Hue, Math.max(30, p.accentSat * 0.6), 40),
+    bg:     hsl2hex(baseH, surfS, bgL),
+    bg2:    hsl2hex(baseH, surfS * 1.1, L(bgL * 0.7)),
+    panel:  hsl2hex(baseH, surfS * 0.9, panelL),
+    panel2: hsl2hex(baseH, surfS * 0.8, p2L),
+    line:   hsl2hex(baseH, surfS * 0.7, lineL),
+    text:   hsl2hex(baseH, Math.min(14, baseS * 0.2), 95),
+    muted:  hsl2hex(baseH, Math.min(20, baseS * 0.3), 66),
+    amber:  hsl2hex(p.accentHue,  Math.max(55, p.accentSat), 62),
+    accent2:hsl2hex(p.accent2Hue, Math.max(48, p.accentSat * 0.92), 63),
+    accent3:hsl2hex(p.accent3Hue, Math.max(42, p.accentSat * 0.85), 65),
+    dusk:   hsl2hex(p.accent2Hue, Math.max(34, p.accentSat * 0.6), 42),
   };
 }
 
@@ -10214,6 +10221,45 @@ function paletteFromWords(prompt){
   const hit = HUE_WORDS.find(([re]) => re.test(prompt));
   return hit ? { ...hit[1] } : null;
 }
+
+
+// "Improve prompt": a short idea like "ocean" gives the model almost nothing
+// to work with. This expands it into the vocabulary a palette actually needs —
+// light, materials, time of day, mood — before any colour is chosen.
+async function improveThemePrompt(){
+  const box = document.getElementById('ct-prompt');
+  const status = document.getElementById('ct-status');
+  const btn = document.getElementById('ct-improve');
+  if(!box) return;
+  const raw = box.value.trim();
+  if(!raw){ alert('Write a rough idea first — even one word.'); return; }
+
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = 'Thinking…';
+  status.textContent = 'Expanding the idea…';
+  try{
+    const sys = [
+      'You expand a short theme idea into a vivid description for a DARK interface palette.',
+      'Reply with ONE sentence of 20 to 35 words. No preamble, no quotes, no list.',
+      'Name: the dominant colour family, the quality of light, one or two accent colours, and the mood.',
+      'Stay faithful to the original idea — enrich it, never replace it.',
+      'Do not mention hex codes, RGB values or user interface parts.',
+      'Example — "ocean" becomes: "Deep cold ocean at dusk, slate blue depths under fading light, with pale cyan foam and a distant amber buoy, calm and a little severe."',
+    ].join('\n');
+    const better = await callAi(raw, sys);
+    const clean = String(better || '').replace(/^["'\s]+|["'\s]+$/g, '').split('\n')[0];
+    if(!clean){ status.textContent = 'Nothing came back — the original is unchanged.'; return; }
+    box.value = clean;
+    status.textContent = 'Expanded. Edit it if you like, then Generate.';
+  }catch(err){
+    status.textContent = 'Could not expand that: ' + errText(err);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = was;
+  }
+}
+document.getElementById('ct-improve')?.addEventListener('click', improveThemePrompt);
 
 async function generateTheme(prompt){
   const status = document.getElementById('ct-status');
