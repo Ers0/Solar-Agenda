@@ -10174,19 +10174,43 @@ function hsl2hex(h, s, l){
 }
 
 function buildPalette(p){
-  const baseH = p.baseHue, baseS = p.baseSat, dark = p.darkness;   // 0-100
-  // The previous ramp put every surface between 4% and 7% lightness, so every
-  // theme came out near-black and only the accent differed. Darkness now
-  // spans a real range, and each surface is a clear step above the last.
-  const L = v => Math.max(4, Math.min(96, v));
-  const bgL    = L(20 - (dark - 60) * 0.22);        // dark 60 -> 20%, 92 -> 13%
+  const baseH = p.baseHue, baseS = p.baseSat;
+  const light = p.mode === 'light';
+  const L = v => Math.max(3, Math.min(98, v));
+
+  // Surfaces keep enough saturation for the hue to read, but a near-white or
+  // near-black request must actually come out near-white or near-black, so
+  // very low saturation is honoured rather than floored.
+  const surfS = Math.max(0, Math.min(38, baseS * 0.9));
+
+  if(light){
+    // Light mode is not the dark ramp inverted arithmetically: paper wants a
+    // very high, very close set of surfaces, with contrast carried by text.
+    const bgL    = L(99 - (p.darkness - 60) * 0.28);   // 60 -> 99%, 92 -> 90%
+    const panelL = L(bgL - 3);
+    const p2L    = L(bgL - 6);
+    const lineL  = L(bgL - 18);
+    return {
+      name: 'Custom',
+      bg:     hsl2hex(baseH, surfS * 0.30, bgL),
+      bg2:    hsl2hex(baseH, surfS * 0.40, L(bgL - 1.5)),
+      panel:  hsl2hex(baseH, surfS * 0.35, panelL),
+      panel2: hsl2hex(baseH, surfS * 0.45, p2L),
+      line:   hsl2hex(baseH, surfS * 0.55, lineL),
+      // Dark text on light paper, and accents darkened so they stay legible.
+      text:   hsl2hex(baseH, Math.min(30, baseS * 0.5), 12),
+      muted:  hsl2hex(baseH, Math.min(26, baseS * 0.45), 40),
+      amber:  hsl2hex(p.accentHue,  Math.max(55, p.accentSat), 38),
+      accent2:hsl2hex(p.accent2Hue, Math.max(48, p.accentSat * 0.92), 40),
+      accent3:hsl2hex(p.accent3Hue, Math.max(42, p.accentSat * 0.85), 42),
+      dusk:   hsl2hex(p.accent2Hue, Math.max(34, p.accentSat * 0.6), 62),
+    };
+  }
+
+  const bgL    = L(20 - (p.darkness - 60) * 0.22);
   const panelL = L(bgL * 1.42 + 3);
   const p2L    = L(panelL * 1.30 + 2);
   const lineL  = L(p2L * 1.55 + 4);
-
-  // Surfaces keep enough saturation for the hue to actually read. Muting them
-  // to a third of the base is what made every theme look like the same grey.
-  const surfS = Math.max(8, Math.min(38, baseS * 0.9));
   return {
     name: 'Custom',
     bg:     hsl2hex(baseH, surfS, bgL),
@@ -10203,6 +10227,16 @@ function buildPalette(p){
   };
 }
 
+// Light or dark is stated far more often than it is implied, and getting it
+// wrong is the most obvious failure a theme can have — so the words decide,
+// not the model.
+function modeFromWords(prompt){
+  const t = String(prompt || '');
+  if(/\b(light|white|bright|pale|day ?light|daytime|paper|snow|ivory|cream|paper ?white|claro|branco|clarinho|dia)\b/i.test(t)) return 'light';
+  if(/\b(dark|night|black|midnight|dim|escuro|preto|noite)\b/i.test(t)) return 'dark';
+  return null;
+}
+
 // Keyword fallback, so a described mood still produces something recognisable
 // when the model is unreachable or replies with nonsense.
 const HUE_WORDS = [
@@ -10216,6 +10250,10 @@ const HUE_WORDS = [
   [/storm|rain|grey|gray|slate|cinza|fog/i,               { baseHue:215, accentHue:200, accent2Hue:235, accent3Hue:185, baseSat:18, accentSat:42, darkness:78 }],
   [/rose|pink|blossom|sakura|rosa/i,                      { baseHue:335, accentHue:345, accent2Hue:300, accent3Hue:20,  baseSat:30, accentSat:62, darkness:72 }],
   [/gold|amber|honey|brass|dourado/i,                     { baseHue:38,  accentHue:42,  accent2Hue:25,  accent3Hue:55,  baseSat:30, accentSat:74, darkness:76 }],
+  // Achromatic requests: almost no colour in the surfaces, so "all white"
+  // gives white and "pure black" gives black rather than a tinted guess.
+  [/all white|pure white|paper|snow|ivory|cream|branco/i,  { baseHue:210, accentHue:210, accent2Hue:190, accent3Hue:250, baseSat:4,  accentSat:52, darkness:60, mode:'light' }],
+  [/all black|pure black|monochrome|greyscale|grayscale/i, { baseHue:220, accentHue:220, accent2Hue:200, accent3Hue:260, baseSat:3,  accentSat:40, darkness:92 }],
 ];
 function paletteFromWords(prompt){
   const hit = HUE_WORDS.find(([re]) => re.test(prompt));
@@ -10270,7 +10308,9 @@ async function generateTheme(prompt){
   // The model returns a handful of constrained numbers, not colours.
   const sys = [
     "You translate a described mood into colour-wheel values for a dark interface. Reply with ONE JSON object and nothing else — no prose, no markdown fences.",
-    'Exact shape: {"baseHue":0-360,"baseSat":0-60,"accentHue":0-360,"accent2Hue":0-360,"accent3Hue":0-360,"accentSat":40-95,"darkness":60-92}',
+    'Exact shape: {"mode":"light"|"dark","baseHue":0-360,"baseSat":0-60,"accentHue":0-360,"accent2Hue":0-360,"accent3Hue":0-360,"accentSat":40-95,"darkness":60-92}',
+    'mode: "light" for anything white, pale, paper or daytime; "dark" otherwise.',
+    'baseSat under 8 for anything described as white, grey, black or monochrome.',
     "baseHue tints every background and panel — pick the dominant hue of the mood.",
     "accentHue is the primary highlight. accent2Hue and accent3Hue must be clearly different hues; 30-180 degrees away usually works.",
     "baseSat low (10-25) for muted or foggy moods, higher (35-55) for vivid ones.",
@@ -10290,6 +10330,7 @@ async function generateTheme(prompt){
         return isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d;
       };
       spec = {
+        mode:       j.mode === 'light' ? 'light' : 'dark',
         baseHue:    num(j.baseHue, 0, 360, 215),
         baseSat:    num(j.baseSat, 0, 60, 28),
         accentHue:  num(j.accentHue, 0, 360, 40),
@@ -10304,6 +10345,13 @@ async function generateTheme(prompt){
   if(!spec){
     spec = paletteFromWords(prompt);
     source = spec ? 'keywords' : null;
+  }
+  if(spec){
+    // An explicit "white" or "dark" in the prompt overrides whatever the model
+    // decided: this is the one property a user always notices immediately.
+    const asked = modeFromWords(prompt);
+    if(asked) spec.mode = asked;
+    else if(!spec.mode) spec.mode = 'dark';
   }
   if(!spec){
     status.textContent = "Couldn't read that mood — try naming a colour or a scene.";
@@ -10320,17 +10368,21 @@ async function generateTheme(prompt){
 
   const out = buildPalette(spec);
   // Readability is enforced after construction, not hoped for.
+  // Readability is enforced after construction, in whichever direction the
+  // theme runs.
   out.text  = fixContrast(out.text,  out.panel, 7);
   out.muted = fixContrast(out.muted, out.panel, 3.6);
   out.amber = fixContrast(out.amber, out.panel, 3);
+  out.mode  = spec.mode;
 
   settings.customTheme = out; saveSettings();
   THEMES.custom = out;
   applyTheme('custom');
   renderCustomTheme();
   SFX.open();
-  status.textContent = `Applied${source === 'keywords' ? ' from keywords' : ''} — base hue ${Math.round(spec.baseHue)}°, `
-    + `text contrast ${contrast(out.text, out.panel).toFixed(1)}:1.`;
+  status.textContent = `Applied — ${spec.mode} theme, base hue ${Math.round(spec.baseHue)}°, `
+    + `text contrast ${contrast(out.text, out.panel).toFixed(1)}:1`
+    + `${source === 'keywords' ? ' (from keywords)' : ''}.`;
   btn.disabled = false;
 }
 
@@ -10840,6 +10892,12 @@ function readableOn(hex){
 }
 
 function applyTheme(key){
+  // Marks the document so the light-specific overrides above can apply.
+  try{
+    const t = (typeof THEMES !== 'undefined' && THEMES[key]) || null;
+    document.documentElement.setAttribute('data-mode', t && t.mode === 'light' ? 'light' : 'dark');
+  }catch(e){}
+
   const t = THEMES[key] || THEMES.slate;
   const root = document.documentElement.style;
   root.setProperty('--bg', t.bg);
