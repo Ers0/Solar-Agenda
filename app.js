@@ -10288,13 +10288,25 @@ async function improveThemePrompt(){
   btn.textContent = 'Thinking…';
   status.textContent = 'Expanding the idea…';
   try{
+    // The instruction used to say "for a DARK palette", so every expansion came
+    // back at dusk whatever the user asked for. Brightness now follows the
+    // idea, and a stated light or dark intent is carried through verbatim.
+    const asked = modeFromWords(raw);
     const sys = [
-      'You expand a short theme idea into a vivid description for a DARK interface palette.',
+      'You expand a short theme idea into a vivid description for an interface palette.',
       'Reply with ONE sentence of 20 to 35 words. No preamble, no quotes, no list.',
       'Name: the dominant colour family, the quality of light, one or two accent colours, and the mood.',
       'Stay faithful to the original idea — enrich it, never replace it.',
+      'Do NOT make the scene darker or brighter than the idea implies. If no time of day is given, do not add one.',
+      asked === 'light'
+        ? 'The user has asked for a LIGHT interface. Keep the description bright and say so plainly.'
+        : asked === 'dark'
+        ? 'The user has asked for a DARK interface. Keep the description low-lit and say so plainly.'
+        : 'Do not state light or dark unless the idea already implies it.',
       'Do not mention hex codes, RGB values or user interface parts.',
-      'Example — "ocean" becomes: "Deep cold ocean at dusk, slate blue depths under fading light, with pale cyan foam and a distant amber buoy, calm and a little severe."',
+      asked === 'light'
+        ? 'Example — "ocean" becomes: "Bright coastal morning on a white interface, sunlit pale aqua shallows, crisp sand tones with a clear turquoise accent, open and unhurried."'
+        : 'Example — "ocean" becomes: "Cold open ocean, slate blue depths and grey-green swell, with pale cyan foam and a single amber buoy, calm and a little severe."',
     ].join('\n');
     const better = await callAi(raw, sys);
     const clean = String(better || '').replace(/^["'\s]+|["'\s]+$/g, '').split('\n')[0];
