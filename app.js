@@ -10231,9 +10231,20 @@ function buildPalette(p){
 // wrong is the most obvious failure a theme can have — so the words decide,
 // not the model.
 function modeFromWords(prompt){
-  const t = String(prompt || '');
-  if(/\b(light|white|bright|pale|day ?light|daytime|paper|snow|ivory|cream|paper ?white|claro|branco|clarinho|dia)\b/i.test(t)) return 'light';
-  if(/\b(dark|night|black|midnight|dim|escuro|preto|noite)\b/i.test(t)) return 'dark';
+  const t = String(prompt || '').toLowerCase();
+
+  // Only an explicit statement about the INTERFACE decides. "icy white
+  // auroras" describes a scene, not a request for a white background, and
+  // matching it turned a midnight tundra into a white page.
+  if(/\b(light (theme|mode|interface)|white (background|theme|interface|ui)|all white|pure white|paper ?white|on white|light background|tema claro|fundo branco)\b/.test(t)) return 'light';
+  if(/\b(dark (theme|mode|interface)|black (background|theme|interface|ui)|all black|pure black|tema escuro|fundo preto)\b/.test(t)) return 'dark';
+
+  // Otherwise weigh the scene. Anything set at night wins over pale colours
+  // mentioned within it, because those are objects lit by a dark environment.
+  const dark  = (t.match(/\b(midnight|night|nocturnal|dusk|twilight|dark|deep|space|nebula|shadow|noir|storm|cave|abyss|noite|escuro|crepúsculo|penumbra)\b/g) || []).length;
+  const lightWords = (t.match(/\b(daylight|daytime|bright|sunlit|noon|morning|paper|snowfield|blank|minimal|airy|clean|claro|clarinho|dia)\b/g) || []).length;
+  if(dark > 0) return 'dark';
+  if(lightWords >= 2) return 'light';
   return null;
 }
 
@@ -10252,7 +10263,7 @@ const HUE_WORDS = [
   [/gold|amber|honey|brass|dourado/i,                     { baseHue:38,  accentHue:42,  accent2Hue:25,  accent3Hue:55,  baseSat:30, accentSat:74, darkness:76 }],
   // Achromatic requests: almost no colour in the surfaces, so "all white"
   // gives white and "pure black" gives black rather than a tinted guess.
-  [/all white|pure white|paper|snow|ivory|cream|branco/i,  { baseHue:210, accentHue:210, accent2Hue:190, accent3Hue:250, baseSat:4,  accentSat:52, darkness:60, mode:'light' }],
+  [/\ball white\b|\bpure white\b|paper ?white|white background/i, { baseHue:210, accentHue:210, accent2Hue:190, accent3Hue:250, baseSat:4,  accentSat:52, darkness:60, mode:'light' }],
   [/all black|pure black|monochrome|greyscale|grayscale/i, { baseHue:220, accentHue:220, accent2Hue:200, accent3Hue:260, baseSat:3,  accentSat:40, darkness:92 }],
 ];
 function paletteFromWords(prompt){
@@ -10332,6 +10343,7 @@ async function generateTheme(prompt){
       spec = {
         mode:       j.mode === 'light' ? 'light' : 'dark',
         baseHue:    num(j.baseHue, 0, 360, 215),
+        _wantsContrast: /\b(contrast|complementary|opposite|clash|neon|vivid|vibrant|contraste|vibrante)\b/i.test(prompt),
         baseSat:    num(j.baseSat, 0, 60, 28),
         accentHue:  num(j.accentHue, 0, 360, 40),
         accent2Hue: num(j.accent2Hue, 0, 360, 200),
@@ -10366,6 +10378,17 @@ async function generateTheme(prompt){
   if(sep(spec.accentHue, spec.accent3Hue) < 25) spec.accent3Hue = (spec.accent3Hue + 300) % 360;
   if(sep(spec.accent2Hue, spec.accent3Hue) < 25) spec.accent3Hue = (spec.accent3Hue + 45) % 360;
 
+  // A crimson accent on a cobalt-and-violet brief reads as a mistake. Unless
+  // the prompt asks for contrast, keep the third accent near the others.
+  if(spec && !spec._wantsContrast){
+    const near = (h, ref, span) => {
+      let d = ((h - ref + 540) % 360) - 180;
+      if(Math.abs(d) <= span) return h;
+      return (ref + Math.sign(d) * span + 360) % 360;
+    };
+    spec.accent2Hue = near(spec.accent2Hue, spec.accentHue, 70);
+    spec.accent3Hue = near(spec.accent3Hue, spec.accentHue, 95);
+  }
   const out = buildPalette(spec);
   // Readability is enforced after construction, not hoped for.
   // Readability is enforced after construction, in whichever direction the
