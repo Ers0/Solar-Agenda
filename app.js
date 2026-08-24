@@ -8216,6 +8216,7 @@ const Galaxy = {
     const amber = css.getPropertyValue('--amber').trim() || '#f2a71b';
     const line = css.getPropertyValue('--line').trim() || '#2b3d4f';
     const urg = css.getPropertyValue('--urgente').trim() || '#e15b4c';
+    const mut = css.getPropertyValue('--muted').trim() || '#7d8e9e';
     const txt = css.getPropertyValue('--text').trim() || '#eaf1f8';
 
     // time window
@@ -8263,7 +8264,8 @@ const Galaxy = {
       // heat carries attention, so the two read as different things.
       const heat = (typeof GalaxyLife !== 'undefined') ? GalaxyLife.heatFor(n) : 0;
       const r = ((n.isHub ? 4.2 : 2.0) + Math.min(7, n.deg) * 0.45) * (1 + heat * 0.45) * p.s;
-      const col = warn ? urg : isMatch ? amber : n.used ? amber : orphan ? urg : pal[n.hue % pal.length];
+      const col = warn ? urg : isMatch ? amber : n.used ? amber
+                : orphan ? mut : pal[n.hue % pal.length];
       // depth fade doubles as the fog cue
       ctx.globalAlpha = Math.max(0.18, Math.min(1, (p.s - 0.35) * 1.25 + heat * 0.25));
       if(n.used || isMatch || n === this.hover || n === this.focus){
@@ -8281,7 +8283,9 @@ const Galaxy = {
       ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
       ctx.fillStyle = col; ctx.fill();
       if(orphan){                                    // hollow ring = nothing links here
-        ctx.strokeStyle = urg; ctx.lineWidth = 1; ctx.globalAlpha *= 0.8;
+        // Muted, not urgent: an unlinked entry is a gap to fill, and 43 red
+        // rings made an ordinary map look like a wall of alarms.
+        ctx.strokeStyle = mut; ctx.lineWidth = 1; ctx.globalAlpha *= 0.45;
         ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 1.9, 0, Math.PI * 2); ctx.stroke();
       }
       if(p.s > 0.75 && (n.isHub || this.zoom > 1.4 || isMatch || n.used || n === this.hover || n === this.focus))
@@ -8328,8 +8332,16 @@ const Galaxy = {
 };
 
 (function wireGalaxy(){
-  // The side panels are part of the map, so they refresh with it.
+  // The panels are part of the map. They are refreshed on a slow timer while
+  // it is visible: rendering them once at wire-up left them empty, because no
+  // data had loaded yet.
   try{ renderGalaxyPulse(); GalaxyFeed.render(); }catch(e){}
+  clearInterval(window._galaxyPanelTimer);
+  window._galaxyPanelTimer = setInterval(() => {
+    const wrap = document.getElementById('galaxy-wrap');
+    if(!wrap || !wrap.offsetParent) return;         // not on screen
+    try{ renderGalaxyPulse(); GalaxyFeed.render(); }catch(e){}
+  }, 4000);
 
   const cv = document.getElementById('kb-map');
   if(!cv) return;

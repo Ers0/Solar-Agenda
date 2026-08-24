@@ -291,14 +291,15 @@
         <div class="set-info"><b>Status</b><span id="set-kb-status">No entries yet</span></div>
         <button class="btn-ghost" id="kb-template">Copy template</button>
       </div>
-      <aside class="galaxy-side">
+      
+      <div class="galaxy-wrap" id="galaxy-wrap">
+        <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
+        <aside class="galaxy-side">
         <div class="gs-card"><div class="gs-title">This week</div>
           <div class="galaxy-pulse" id="galaxy-pulse"></div></div>
         <div class="gs-card"><div class="gs-title"><span class="gs-live"></span>Live</div>
           <div class="galaxy-feed" id="galaxy-feed"></div></div>
       </aside>
-      <div class="galaxy-wrap" id="galaxy-wrap">
-        <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
         <div class="kb-map-empty" id="kb-map-empty">Nothing mapped yet — scan a folder of markdown notes to build the galaxy.</div>
         <div class="kb-map-tip" id="kb-map-tip"></div>
         <div class="galaxy-hud" id="galaxy-hud"></div>

@@ -926,6 +926,7 @@
   html[data-mode="light"] .ink-swatch.auto{ background: linear-gradient(135deg, #222 50%, #777 50%); }
 
 
+  .galaxy-wrap{ position:relative; }
   .galaxy-side{ position:absolute; right:14px; top:14px; width:236px; display:flex;
     flex-direction:column; gap:10px; z-index:4; pointer-events:none; }
   .gs-card{ background:color-mix(in srgb, var(--panel) 88%, transparent);
