@@ -3916,6 +3916,8 @@ const TOOLS = [
           tags: ['cleaned'],
         });
         notes.unshift(made);
+  GalaxyLife.touch(made.title);
+  GalaxyFeed.push('kb', 'note — ' + (made.title || 'untitled'));
         renderNotebooksGrid();
         return `Created "${made.title}" as a separate note. The original page is untouched — say so.`;
       }catch(err){ return `Could NOT save the tidied note: ${errText(err)}.`; }
@@ -7075,6 +7077,163 @@ function renderHandwritingStatus(){
   el.className = n ? 'ok' : '';
 }
 
+
+// ===== Session capture =================================================
+// Not every exchange is worth keeping. "How's the weather" and "create a case
+// for XYZ" are routine — the first is trivia, the second already produced a
+// record. What earns a place is the reasoning: a fault traced, a correction
+// made, an outcome reached. Those are summarised once, when the thread ends.
+const Session = {
+  turns: [], startedAt: 0, idleTimer: null, lastCase: null,
+  IDLE_MS: 8 * 60 * 1000,
+
+  // Local scoring, so nothing is spent deciding whether to spend anything.
+  TRIVIAL: /^(hi|hey|hello|thanks|thank you|ok|okay|yes|no|sure|oi|olá|obrigad\w*|beleza|valeu)\b/i,
+  ROUTINE: /\b(weather|clima|tempo|what time|que horas|navigate|open the|abre? a|switch to|mute|unmute|volume|theme|tema)\b/i,
+  // Global flag matters: without it .match returns capture groups, not a count,
+  // so a genuinely substantial conversation scored the same as a trivial one.
+  MEANINGFUL: /\b(fault|error|erro|falha|code|código|F\d{2}|OV-G-V|overvoltage|sobretens\w*|because|porque|caused|causou|fixed|resolved|resolvido|replaced|trocad\w*|firmware|warranty|garantia|inverter|inversor|diagnos|root cause|causa raiz|turned out|na verdade|actually|wrong|errado|measured|medi\w*)\b/gi,
+
+  note(role, text){
+    if(!text) return;
+    this.startedAt = this.startedAt || Date.now();
+    this.turns.push({ role, text: String(text).slice(0, 900), t: Date.now() });
+    if(this.turns.length > 40) this.turns.shift();
+    if(TarsContext.selectedCaseId) this.lastCase = TarsContext.selectedCaseId;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => this.close('idle'), this.IDLE_MS);
+  },
+
+  // Worth keeping only if there is substance and it is not routine chatter.
+  score(turns){
+    const user = turns.filter(t => t.role === 'user').map(t => t.text).join(' ');
+    const all = turns.map(t => t.text).join(' ');
+    if(turns.length < 4) return 0;
+    if(Session.TRIVIAL.test(user.trim()) && turns.length < 6) return 0;
+
+    let s = 0;
+    Session.MEANINGFUL.lastIndex = 0;   // a /g regex keeps state between calls
+    const hits = (all.match(Session.MEANINGFUL) || []).length;
+    s += Math.min(3, hits);
+    if(Session.lastCase) s += 2;                     // tied to real work
+    if(turns.length >= 10) s += 1;                   // a sustained thread
+    // A conversation that was only routine commands has produced its records
+    // already; there is nothing left to learn from it.
+    if(Session.ROUTINE.test(user) && hits === 0) s -= 2;
+    return s;
+  },
+
+  async close(reason){
+    clearTimeout(this.idleTimer);
+    const turns = this.turns.slice();
+    this.turns = []; this.startedAt = 0;
+    if(turns.length < 4) return;
+
+    const worth = this.score(turns);
+    if(worth < 3) return;                            // routine: nothing filed
+
+    const transcript = turns.map(t => `${t.role === 'user' ? 'Q' : 'A'}: ${t.text}`).join('\n').slice(0, 4000);
+    const sys = [
+      'Summarise this support conversation for a technician\'s own records.',
+      'Reply as JSON only: {"summary":"…","outcome":"…","keywords":"…","worth_keeping":true|false}',
+      'summary: two sentences on what was actually worked out. No pleasantries.',
+      'outcome: what was concluded or decided. Empty string if nothing was.',
+      'keywords: 4 to 8 lowercase terms, comma separated — manufacturers, fault codes, parts.',
+      'worth_keeping: false if this was small talk, a simple lookup, or produced no insight.',
+      'Record only what was said. Never add a diagnosis nobody reached.',
+    ].join('\n');
+
+    let parsed = null;
+    try{
+      const raw = await callAi(transcript, sys);
+      parsed = JSON.parse(String(raw).replace(/```json?|```/g, '').trim());
+    }catch(e){ return; }                             // a failed summary files nothing
+    if(!parsed || parsed.worth_keeping === false || !parsed.summary) return;
+
+    try{
+      await Learn.addEpisode({
+        case_id: this.lastCase || null,
+        kind: 'conversation',
+        summary: String(parsed.summary).slice(0, 600),
+        outcome: String(parsed.outcome || '').slice(0, 300),
+        keywords: String(parsed.keywords || '').slice(0, 200),
+        detail: { turns: turns.length, reason },
+      });
+      if(typeof GalaxyFeed !== 'undefined') GalaxyFeed.push('tars', parsed.summary.slice(0, 70));
+    }catch(e){}
+    this.lastCase = null;
+  },
+};
+
+
+// ===== Galaxy life =====================================================
+// The map was accurate but inert. These four things make it show where the
+// work IS, not merely what exists: a running feed, motion that decays with
+// attention, a weekly pulse, and hubs that look like hubs.
+const GalaxyFeed = {
+  items: [], MAX: 40,
+  push(kind, text){
+    if(!text) return;
+    this.items.unshift({ kind, text: String(text).slice(0, 90), t: Date.now() });
+    if(this.items.length > this.MAX) this.items.pop();
+    this.render();
+    // A freshly touched subject glows and drifts for a while.
+    GalaxyLife.touch(text);
+  },
+  render(){
+    const el = document.getElementById('galaxy-feed');
+    if(!el) return;
+    const colour = { tars:'var(--accent3)', case:'var(--amber)', kb:'var(--accent2)',
+                     rule:'var(--ok)', close:'var(--muted)' };
+    el.innerHTML = this.items.slice(0, 12).map(i => {
+      const mins = Math.round((Date.now() - i.t) / 60000);
+      const when = mins < 1 ? 'now' : mins < 60 ? mins + 'm' : Math.round(mins / 60) + 'h';
+      return `<div class="gf-row"><span class="gf-dot" style="background:${colour[i.kind] || 'var(--muted)'}"></span>`
+        + `<span class="gf-text">${escapeHtml(i.text)}</span><span class="gf-when">${when}</span></div>`;
+    }).join('') || '<div class="gf-empty">Nothing yet today.</div>';
+  },
+};
+
+// Recency as a visible property. A star touched in the last hour burns; one
+// untouched for a month settles and dims — so the eye lands on live work.
+const GalaxyLife = {
+  heat: {},                       // node id or label -> last touched
+  touch(key){
+    if(!key) return;
+    this.heat[String(key).toLowerCase().slice(0, 40)] = Date.now();
+  },
+  heatFor(node){
+    const k = String(node.label || node.id || '').toLowerCase().slice(0, 40);
+    const t = this.heat[k] || node.updated || node.t || 0;
+    if(!t) return 0;
+    const age = Date.now() - t;
+    const DAY = 86400000;
+    if(age < 3600000) return 1;                 // within the hour
+    if(age > 30 * DAY) return 0;
+    return Math.max(0, 1 - age / (30 * DAY));
+  },
+};
+
+// The week at a glance, from records already held — no extra queries.
+function galaxyPulse(){
+  const now = Date.now(), WEEK = 7 * 86400000;
+  const recent = (cases || []).filter(x => Date.parse(x.created_at || 0) > now - WEEK);
+  return {
+    urgent: (cases || []).filter(x => x.prioridade === 'urgente' && x.status !== 'resolvido').length,
+    fresh:  recent.length,
+    closed: (cases || []).filter(x => x.status === 'resolvido'
+             && Date.parse(x.updated_at || 0) > now - WEEK).length,
+  };
+}
+function renderGalaxyPulse(){
+  const el = document.getElementById('galaxy-pulse');
+  if(!el) return;
+  const p = galaxyPulse();
+  el.innerHTML = `<div class="gp-num" style="color:var(--urgente)">${p.urgent}<span>urgent</span></div>`
+    + `<div class="gp-num" style="color:var(--ok)">+${p.fresh}<span>new</span></div>`
+    + `<div class="gp-num" style="color:var(--accent2)">${p.closed}<span>closed</span></div>`;
+}
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -8091,6 +8250,7 @@ const Galaxy = {
 
     const order = this.nodes.filter(n => P[n.id]).sort((a, b) => P[a.id].z - P[b.id].z);
     const labels = [];
+    const now = Date.now();
     order.forEach(n => {
       const p = P[n.id];
       const foc = this.inFocus(n);
@@ -8098,13 +8258,25 @@ const Galaxy = {
       const isMatch = this.matches && this.matches.has(n.id);
       const orphan = n.deg === 0;
       const warn = !!n.conflicted;
-      const r = ((n.isHub ? 4.2 : 2.0) + Math.min(7, n.deg) * 0.45) * p.s;
+      // Heat is recency: a subject touched today swells and burns, one left
+      // for a month settles back. Size still carries importance (hub, degree);
+      // heat carries attention, so the two read as different things.
+      const heat = (typeof GalaxyLife !== 'undefined') ? GalaxyLife.heatFor(n) : 0;
+      const r = ((n.isHub ? 4.2 : 2.0) + Math.min(7, n.deg) * 0.45) * (1 + heat * 0.45) * p.s;
       const col = warn ? urg : isMatch ? amber : n.used ? amber : orphan ? urg : pal[n.hue % pal.length];
       // depth fade doubles as the fog cue
-      ctx.globalAlpha = Math.max(0.18, Math.min(1, (p.s - 0.35) * 1.25));
+      ctx.globalAlpha = Math.max(0.18, Math.min(1, (p.s - 0.35) * 1.25 + heat * 0.25));
       if(n.used || isMatch || n === this.hover || n === this.focus){
         ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 3.4, 0, Math.PI * 2);
         ctx.fillStyle = col + '2b'; ctx.fill();
+      }
+      // Recently touched subjects breathe. Only the hot ones, and slowly —
+      // a map where everything moves shows nothing.
+      if(heat > 0.15){
+        const breath = 1 + Math.sin(now / 900 + (n.hue || 0)) * 0.16 * heat;
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, r * 2.6 * breath, 0, Math.PI * 2);
+        ctx.fillStyle = col + (heat > 0.6 ? '30' : '1c');
+        ctx.fill();
       }
       ctx.beginPath(); ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2);
       ctx.fillStyle = col; ctx.fill();
@@ -8156,6 +8328,9 @@ const Galaxy = {
 };
 
 (function wireGalaxy(){
+  // The side panels are part of the map, so they refresh with it.
+  try{ renderGalaxyPulse(); GalaxyFeed.render(); }catch(e){}
+
   const cv = document.getElementById('kb-map');
   if(!cv) return;
   cv.addEventListener('pointerdown', e => {
@@ -8738,6 +8913,7 @@ async function runAssistantTurn(text, spoken){
 
   lastUserQuestion = text;
   rememberForTools(text);
+  Session.note('user', text);
   // One retrieval bundle, owned by this turn. Nothing here is read from a
   // module global, so concurrent or rapid turns cannot cross-contaminate.
   const R = { kb: [], mem: [], rules: [], learnBrief: '', assessment: '' };

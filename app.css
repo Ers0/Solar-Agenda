@@ -925,6 +925,29 @@
   html[data-mode="light"] .shadow-soft{ box-shadow: 0 2px 10px rgba(0,0,0,0.10); }
   html[data-mode="light"] .ink-swatch.auto{ background: linear-gradient(135deg, #222 50%, #777 50%); }
 
+
+  .galaxy-side{ position:absolute; right:14px; top:14px; width:236px; display:flex;
+    flex-direction:column; gap:10px; z-index:4; pointer-events:none; }
+  .gs-card{ background:color-mix(in srgb, var(--panel) 88%, transparent);
+    border:1px solid var(--line); border-radius:12px; padding:11px 12px;
+    backdrop-filter: blur(7px); pointer-events:auto; }
+  .gs-title{ font-size:.6rem; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--muted); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .gs-live{ width:6px; height:6px; border-radius:50%; background:var(--ok);
+    animation: gsPulse 2s ease-in-out infinite; }
+  @keyframes gsPulse{ 0%,100%{ opacity:1 } 50%{ opacity:.25 } }
+  .galaxy-pulse{ display:flex; gap:14px; }
+  .gp-num{ font-size:1.35rem; font-weight:700; line-height:1; font-family:"JetBrains Mono",monospace; }
+  .gp-num span{ display:block; font-size:.56rem; font-weight:500; color:var(--muted);
+    letter-spacing:.08em; margin-top:3px; text-transform:uppercase; }
+  .galaxy-feed{ max-height:230px; overflow:auto; }
+  .gf-row{ display:flex; align-items:baseline; gap:7px; padding:4px 0; font-size:.68rem; }
+  .gf-dot{ width:5px; height:5px; border-radius:50%; flex:none; transform:translateY(-1px); }
+  .gf-text{ flex:1; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .gf-when{ color:var(--muted); font-size:.58rem; font-family:"JetBrains Mono",monospace; }
+  .gf-empty{ color:var(--muted); font-size:.68rem; }
+  @media (max-width: 900px){ .galaxy-side{ display:none } }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;
