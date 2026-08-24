@@ -8237,10 +8237,21 @@ const Galaxy = {
       const foc = this.inFocus(A) && this.inFocus(B);
       if(this.focus && !foc) return;
       const lit = A.used && B.used;
-      ctx.strokeStyle = lit ? amber + 'aa' : line;
-      const depth = Math.max(0.12, Math.min(1, (pa.s + pb.s) / 2 - 0.15));
-      ctx.globalAlpha = (lit ? 0.95 : kind === 'parent' ? 0.7 : kind === 'link' ? 0.5 : 0.16) * depth;
-      ctx.lineWidth = Math.min(3.4, (kind === 'parent' ? 1.8 : kind === 'link' ? 1.1 : 0.5) + (wt - 1) * 0.3);
+      // Tag links were drawn in the border colour at 0.16 alpha, which after
+      // depth fade came out around 0.08 — present in the data, invisible on
+      // screen. They now take the cluster's own colour, so the web reads as
+      // structure rather than decoration.
+      const sameCluster = A.hue === B.hue;
+      const linkCol = lit ? amber
+        : sameCluster ? pal[A.hue % pal.length]
+        : line;
+      ctx.strokeStyle = linkCol;
+      const depth = Math.max(0.2, Math.min(1, (pa.s + pb.s) / 2 - 0.15));
+      ctx.globalAlpha = (lit ? 0.95
+        : kind === 'parent' ? 0.8
+        : kind === 'link' ? 0.62
+        : sameCluster ? 0.42 : 0.22) * depth;
+      ctx.lineWidth = Math.min(3.4, (kind === 'parent' ? 2.0 : kind === 'link' ? 1.3 : 0.85) + (wt - 1) * 0.3);
       const mx = (pa.sx + pb.sx) / 2, my = (pa.sy + pb.sy) / 2;
       const dx = pb.sx - pa.sx, dy = pb.sy - pa.sy;
       ctx.beginPath(); ctx.moveTo(pa.sx, pa.sy);
@@ -8252,6 +8263,7 @@ const Galaxy = {
     const order = this.nodes.filter(n => P[n.id]).sort((a, b) => P[a.id].z - P[b.id].z);
     const labels = [];
     const now = Date.now();
+    const clusterAt = {};
     order.forEach(n => {
       const p = P[n.id];
       const foc = this.inFocus(n);
@@ -8264,8 +8276,11 @@ const Galaxy = {
       // heat carries attention, so the two read as different things.
       const heat = (typeof GalaxyLife !== 'undefined') ? GalaxyLife.heatFor(n) : 0;
       const r = ((n.isHub ? 4.2 : 2.0) + Math.min(7, n.deg) * 0.45) * (1 + heat * 0.45) * p.s;
+      // Cluster colour is the primary cue. Orphans keep the cluster hue but
+      // muted, so they still read as belonging somewhere.
+      const clusterCol = pal[((n.hue % pal.length) + pal.length) % pal.length];
       const col = warn ? urg : isMatch ? amber : n.used ? amber
-                : orphan ? mut : pal[n.hue % pal.length];
+                : orphan ? mut : clusterCol;
       // depth fade doubles as the fog cue
       ctx.globalAlpha = Math.max(0.18, Math.min(1, (p.s - 0.35) * 1.25 + heat * 0.25));
       if(n.used || isMatch || n === this.hover || n === this.focus){
@@ -8290,8 +8305,31 @@ const Galaxy = {
       }
       if(p.s > 0.75 && (n.isHub || this.zoom > 1.4 || isMatch || n.used || n === this.hover || n === this.focus))
         labels.push({ n, p, r, col });
+      // Track each cluster's centre and size so it can be titled once, rather
+      // than every node shouting its own name.
+      if(!clusterAt[n.hue]) clusterAt[n.hue] = { x:0, y:0, n:0, col: clusterCol, folder: n.folder };
+      const ca = clusterAt[n.hue];
+      ca.x += p.sx; ca.y += p.sy; ca.n++;
       n._p = p;
     });
+
+    // Cluster titles: name and count, at the centre of mass, in the cluster's
+    // own colour. Only for clusters big enough to be worth naming — this is
+    // what turns a scatter of dots into named neighbourhoods.
+    ctx.textAlign = 'center';
+    Object.values(clusterAt).forEach(ca => {
+      if(ca.n < 3 || !ca.folder) return;
+      const x = ca.x / ca.n, y = ca.y / ca.n;
+      ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = ca.col;
+      ctx.globalAlpha = 0.92;
+      ctx.fillText(String(ca.folder).slice(0, 22), x, y - 6);
+      ctx.font = '500 10px ui-sans-serif, system-ui, sans-serif';
+      ctx.globalAlpha = 0.55;
+      ctx.fillText(ca.n + (ca.n === 1 ? ' entry' : ' entries'), x, y + 9);
+    });
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
 
     // labels last, nearest first, skipping any that would overlap
     ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
