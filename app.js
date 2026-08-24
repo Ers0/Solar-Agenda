@@ -10233,18 +10233,21 @@ function buildPalette(p){
 function modeFromWords(prompt){
   const t = String(prompt || '').toLowerCase();
 
-  // Only an explicit statement about the INTERFACE decides. "icy white
-  // auroras" describes a scene, not a request for a white background, and
-  // matching it turned a midnight tundra into a white page.
+  // 1. An explicit statement about the INTERFACE settles it outright.
   if(/\b(light (theme|mode|interface)|white (background|theme|interface|ui)|all white|pure white|paper ?white|on white|light background|tema claro|fundo branco)\b/.test(t)) return 'light';
   if(/\b(dark (theme|mode|interface)|black (background|theme|interface|ui)|all black|pure black|tema escuro|fundo preto)\b/.test(t)) return 'dark';
 
-  // Otherwise weigh the scene. Anything set at night wins over pale colours
-  // mentioned within it, because those are objects lit by a dark environment.
-  const dark  = (t.match(/\b(midnight|night|nocturnal|dusk|twilight|dark|deep|space|nebula|shadow|noir|storm|cave|abyss|noite|escuro|crepúsculo|penumbra)\b/g) || []).length;
-  const lightWords = (t.match(/\b(daylight|daytime|bright|sunlit|noon|morning|paper|snowfield|blank|minimal|airy|clean|claro|clarinho|dia)\b/g) || []).length;
+  // 2. Otherwise weigh the scene. A night setting still wins outright, because
+  // pale things described within it are objects lit by a dark environment —
+  // "icy white auroras" over a midnight tundra is not a white interface.
+  const dark = (t.match(/\b(midnight|night|nocturnal|dusk|twilight|dark|deep|space|nebula|shadow|noir|storm|cave|abyss|moonlit|starlit|noite|escuro|crepúsculo|penumbra)\b/g) || []).length;
   if(dark > 0) return 'dark';
-  if(lightWords >= 2) return 'light';
+
+  // 3. With no night words at all, a single clear brightness cue is enough.
+  // Requiring two meant "bright, crystalline white dominates" still came back
+  // dark, which is the opposite of what was asked for.
+  const light = (t.match(/\b(white|bright|brilliant|crystalline|luminous|glowing|crisp|daylight|daytime|sunlit|sunny|noon|morning|dawn|paper|snow|snowy|pearl|ivory|cream|porcelain|airy|clean|minimal|pale|light|claro|clarinho|dia|branco|luminoso)\b/g) || []).length;
+  if(light >= 1) return 'light';
   return null;
 }
 
@@ -10400,6 +10403,11 @@ async function generateTheme(prompt){
     };
     spec.accent2Hue = near(spec.accent2Hue, spec.accentHue, 70);
     spec.accent3Hue = near(spec.accent3Hue, spec.accentHue, 95);
+  }
+  // "Bright" and "white" should land near the top of the light range, not the
+  // dim end of it. Darkness is the wrong dial for this, so it is clamped.
+  if(spec.mode === 'light' && /\b(white|bright|brilliant|crystalline|luminous|snow|paper|porcelain|branco)\b/i.test(prompt)){
+    spec.darkness = Math.min(spec.darkness, 66);
   }
   const out = buildPalette(spec);
   // Readability is enforced after construction, not hoped for.
