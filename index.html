@@ -273,6 +273,15 @@
         <button class="btn-ghost" id="tts-test">Test voice</button>
         <button class="btn-ghost" id="tts-diag">Voice check</button>
       </div>
+      <div class="set-row" style="display:block">
+        <div class="set-info" style="margin-bottom:7px"><b>Spoken vocabulary</b><span id="vocab-count"></span></div>
+        <p class="hint" style="margin:0 0 8px">Words that get misheard — "Deye" arriving as "D-E", for instance. These are handed to the recogniser before it listens, which is what stops it guessing. Terms from your knowledge base and cases are included automatically.</p>
+        <div class="vocab-add">
+          <input id="vocab-input" placeholder="Add a word or model name">
+          <button class="btn-ghost" id="vocab-save">Add</button>
+        </div>
+        <div class="vocab-list" id="vocab-list"></div>
+      </div>
       <div class="field"><label>ElevenLabs voice ID</label><input type="text" id="tts-voice" placeholder="Leave blank for the server default"></div>
       <div class="field"><label>ElevenLabs model ID</label><input type="text" id="tts-model" placeholder="eleven_turbo_v2_5"></div>
       <p class="hint compose-warn" id="tts-warn" style="display:none"></p>
@@ -292,8 +301,15 @@
         <button class="btn-ghost" id="kb-template">Copy template</button>
       </div>
       
+      <aside class="galaxy-left" id="galaxy-left">
+        <div class="gs-card"><div class="gs-title">Status</div>
+          <div id="gl-status"></div></div>
+        <div class="gs-card"><div class="gs-title">Clusters</div>
+          <div id="gl-clusters"></div></div>
+      </aside>
       <div class="galaxy-wrap" id="galaxy-wrap">
         <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
+        <div class="galaxy-hint">drag · zoom · click to focus</div>
         <aside class="galaxy-side">
         <div class="gs-card"><div class="gs-title">This week</div>
           <div class="galaxy-pulse" id="galaxy-pulse"></div></div>
@@ -799,7 +815,9 @@
   <div class="ai-messages" id="ai-messages">
     <div class="ai-msg hint">Ask about today's agenda, or say what to create — e.g. "add an urgent case for Integrator XPTO at 14:00".</div>
   </div>
-  <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button class="ai-share" id="ai-share" title="Share a window so TARS can read it">⧉</button><button id="ai-send">Send</button></div>
+  <div class="suggest-wrap"><div class="sg-title">TARS suggests</div>
+        <div id="suggest-box"></div></div>
+      <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button class="ai-share" id="ai-share" title="Share a window so TARS can read it">⧉</button><button id="ai-send">Send</button></div>
 </div>
 
 <script src="/app.js"></script>

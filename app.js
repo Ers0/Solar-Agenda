@@ -2552,7 +2552,13 @@ function sttHint(){
   const names = [...new Set(cases.slice(-20).map(x => x.titulo || '').filter(Boolean))].slice(0, 12);
   // Whisper leans on the prompt for proper nouns, so it carries the terms in
   // both languages the user actually mixes.
-  const base = 'Hey TARS. Suporte técnico de energia solar. Falamos de inversores Deye, Foxess, '
+  // Whisper hears "Deye" as "D-E" unless the word is in its prompt. The list
+  // below is built from what this account actually works with — knowledge base
+  // tags, case titles, and anything the user has added by hand — so it grows
+  // with the vocabulary rather than being a fixed guess.
+  const learned = Vocab.line();
+  const base = (learned ? learned + ' ' : '')
+    + 'Hey TARS. Suporte técnico de energia solar. Falamos de inversores Deye, Foxess, '
     + 'Growatt, Solis, Hoymiles e Huawei, chamados PAC, garantia, RMA, strings, alarmes, '
     + 'sobretensão, datalogger e monitoramento. Support call about solar inverters, warranty and tickets.';
   return names.length ? base + ' Clients mentioned include ' + names.join(', ') + '.' : base;
@@ -6124,6 +6130,7 @@ function applyInkSettings(){
   Ink.smartInk = settings.smartInk !== false;
   Ink.contextOn = settings.inkContext !== false;
   Ink.colour = settings.inkColour || null;
+  Vocab.load();
   const cb = document.getElementById('hand-ctx');
   if(cb){ cb.textContent = 'Context: ' + (Ink.contextOn ? 'on' : 'off');
           cb.classList.toggle('active', Ink.contextOn); }
@@ -7234,6 +7241,234 @@ function renderGalaxyPulse(){
     + `<div class="gp-num" style="color:var(--accent2)">${p.closed}<span>closed</span></div>`;
 }
 
+
+// The left rail: what is in the map, and a way into it. Counts come from the
+// same nodes the canvas draws, so the two can never disagree.
+function renderGalaxySide(){
+  const st = document.getElementById('gl-status');
+  const cl = document.getElementById('gl-clusters');
+  if(!st || !cl || !Galaxy.ready) return;
+
+  const css = getComputedStyle(document.documentElement);
+  const pal = ['--accent2','--accent3','--dusk','--amber'].map(v => css.getPropertyValue(v).trim() || '#4f9fd8');
+  const row = (colour, label, n, click) =>
+    `<button class="gl-row"${click ? ` data-focus="${escapeHtml(label)}"` : ''}>`
+    + `<span class="gl-dot" style="background:${colour}"></span>`
+    + `<span class="gl-name">${escapeHtml(label)}</span><span class="gl-n">${n}</span></button>`;
+
+  const open = (cases || []).filter(x => x.status !== 'resolvido');
+  const by = p => open.filter(x => x.prioridade === p).length;
+  st.innerHTML =
+      row(css.getPropertyValue('--urgente').trim() || '#e15b4c', 'Urgent', by('urgente'))
+    + row(css.getPropertyValue('--alta').trim() || '#e59a3c', 'High', by('alta'))
+    + row(css.getPropertyValue('--media').trim() || '#4fd6b8', 'Medium', by('media'))
+    + row(css.getPropertyValue('--ok').trim() || '#54c98a', 'Resolved',
+          (cases || []).filter(x => x.status === 'resolvido').length);
+
+  const counts = {};
+  (Galaxy.nodes || []).forEach(n => { if(n.folder) counts[n.folder] = (counts[n.folder] || 0) + 1; });
+  const folders = (Galaxy.folders || []).filter(f => counts[f]);
+  cl.innerHTML = folders
+    .sort((a, b) => counts[b] - counts[a])
+    .slice(0, 12)
+    .map(f => row(pal[folders.indexOf(f) % pal.length], f, counts[f], true))
+    .join('') || '<div class="gf-empty">No clusters yet.</div>';
+
+  cl.querySelectorAll('[data-focus]').forEach(b => {
+    b.addEventListener('click', () => {
+      // Clicking a cluster focuses its hub, which is the entry the rest hang
+      // off — more useful than focusing an arbitrary member.
+      const name = b.dataset.focus;
+      const inF = (Galaxy.nodes || []).filter(n => n.folder === name);
+      if(!inF.length) return;
+      const hub = inF.find(n => n.isHub) || inF.reduce((a, x) => (x.deg > a.deg ? x : a), inF[0]);
+      Galaxy.focus = Galaxy.focus === hub ? null : hub;
+      Galaxy.dirty = true;
+      cl.querySelectorAll('[data-focus]').forEach(x => x.classList.toggle('on', x === b && Galaxy.focus));
+      SFX.tick();
+    });
+  });
+}
+
+
+// ===== Spoken vocabulary ==============================================
+// Speech recognition guesses proper nouns badly unless it is told them in
+// advance: "Deye" comes back as "D-E", "Foxess" as "fox s". Whisper accepts a
+// prompt that biases exactly this, so the terms this account uses are gathered
+// and handed over on every transcription.
+const Vocab = {
+  manual: [],                 // typed by the user
+  MAX: 60,
+
+  load(){
+    this.manual = Array.isArray(settings.vocab) ? settings.vocab.slice(0, this.MAX) : [];
+  },
+  save(){
+    settings.vocab = this.manual.slice(0, this.MAX);
+    saveSettings();
+    renderVocab();
+  },
+  add(word){
+    const w = String(word || '').trim();
+    if(!w || w.length > 40) return false;
+    if(this.manual.some(x => x.toLowerCase() === w.toLowerCase())) return false;
+    this.manual.unshift(w);
+    this.save();
+    return true;
+  },
+  remove(word){
+    this.manual = this.manual.filter(x => x !== word);
+    this.save();
+  },
+
+  // Everything worth biasing towards: typed terms first, then what the
+  // knowledge base and open cases actually contain.
+  terms(){
+    const out = [];
+    const seen = new Set();
+    const push = w => {
+      const k = String(w || '').trim();
+      if(!k || k.length < 3 || k.length > 32) return;
+      const low = k.toLowerCase();
+      if(seen.has(low)) return;
+      seen.add(low); out.push(k);
+    };
+    this.manual.forEach(push);
+    (KB || []).forEach(e => (e.tags || []).forEach(push));
+    (cases || []).slice(0, 40).forEach(cs => {
+      String(cs.titulo || '').split(/[^\p{L}\p{N}.-]+/u)
+        .filter(w => /^[A-ZÁÉÍÓÚ]/.test(w) || /\d/.test(w)).forEach(push);
+    });
+    return out.slice(0, this.MAX);
+  },
+
+  // Whisper takes a prose prompt, not a list, so the terms are given as a
+  // sentence — which is also what biases it most reliably.
+  line(){
+    const t = this.terms();
+    if(!t.length) return '';
+    return 'Termos usados aqui: ' + t.join(', ') + '.';
+  },
+};
+
+function renderVocab(){
+  const box = document.getElementById('vocab-list');
+  if(!box) return;
+  const auto = Vocab.terms().filter(t => !Vocab.manual.includes(t));
+  box.innerHTML =
+      Vocab.manual.map(w =>
+        `<span class="vb vb-own">${escapeHtml(w)}<button data-vb="${escapeHtml(w)}">×</button></span>`).join('')
+    + auto.slice(0, 30).map(w => `<span class="vb">${escapeHtml(w)}</span>`).join('')
+    || '<span class="gf-empty">Nothing yet — add the words that get misheard.</span>';
+  box.querySelectorAll('[data-vb]').forEach(b =>
+    b.addEventListener('click', () => Vocab.remove(b.dataset.vb)));
+  const n = document.getElementById('vocab-count');
+  if(n) n.textContent = `${Vocab.manual.length} added · ${auto.length} from your records`;
+}
+
+
+// ===== TARS suggests ==================================================
+// Reads the agenda and calendar and proposes what to do next. Deliberately
+// computed locally: suggestions that cost an API call would either be stale or
+// exhaust the rate limit, and every rule here is one a technician would apply
+// anyway — the value is that nobody has to scan the list to spot them.
+const Suggest = {
+  build(){
+    const out = [];
+    const now = new Date();
+    const today = dateStr(now);
+    const mins = now.getHours() * 60 + now.getMinutes();
+    const open = (cases || []).filter(x => x.status !== 'resolvido');
+    const todays = open.filter(x => x.case_date === today);
+
+    // 1. Anything urgent that is not yet scheduled today.
+    const urgentUnscheduled = open.filter(x =>
+      x.prioridade === 'urgente' && x.case_date !== today);
+    if(urgentUnscheduled.length){
+      out.push({ kind:'urgent',
+        text: `${urgentUnscheduled.length} urgent case${urgentUnscheduled.length > 1 ? 's' : ''} not on today's list`,
+        why: urgentUnscheduled.slice(0, 2).map(x => x.titulo).join(', '),
+        act: 'Schedule the oldest first' });
+    }
+
+    // 2. A free stretch before the end of the day.
+    const later = todays.filter(x => toMin(x.horario) > mins).sort((a, b) => toMin(a.horario) - toMin(b.horario));
+    // Only inside working hours, and capped at the end of the day — otherwise
+    // an empty evening reported "1380 minutes free", which is true and useless.
+    const DAY_END = 18 * 60;
+    const rawNext = later.length ? toMin(later[0].horario) : DAY_END;
+    const nextAt = Math.min(rawNext, DAY_END);
+    const gap = nextAt - mins;
+    if(gap >= 45 && mins >= 7 * 60 && mins < 17 * 60){
+      const span = gap >= 90
+        ? `${(gap / 60).toFixed(gap % 60 ? 1 : 0)} hours`
+        : `${Math.round(gap / 15) * 15} minutes`;
+      out.push({ kind:'gap',
+        text: `${span} free before your next case`,
+        why: later.length && rawNext <= DAY_END
+          ? `next is ${later[0].titulo} at ${later[0].horario}`
+          : 'nothing else booked today',
+        act: 'Good window for a stalled case' });
+    }
+
+    // 3. The same client appearing repeatedly — usually one fault, not three.
+    const byClient = {};
+    open.forEach(x => {
+      const k = String(x.titulo || '').toLowerCase().slice(0, 22);
+      (byClient[k] = byClient[k] || []).push(x);
+    });
+    const repeat = Object.values(byClient).find(g => g.length >= 3);
+    if(repeat){
+      out.push({ kind:'repeat',
+        text: `${repeat.length} open cases look like the same client`,
+        why: repeat[0].titulo,
+        act: 'Worth treating as one fault' });
+    }
+
+    // 4. Cases sitting untouched for a week.
+    const stale = open.filter(x => {
+      const t = Date.parse(x.updated_at || x.created_at || 0);
+      return t && (Date.now() - t) > 7 * 86400000;
+    });
+    if(stale.length){
+      out.push({ kind:'stale',
+        text: `${stale.length} case${stale.length > 1 ? 's have' : ' has'} had no movement in a week`,
+        why: stale.slice(0, 2).map(x => x.titulo).join(', '),
+        act: 'Close them or chase the integrator' });
+    }
+
+    // 5. A heavy day worth reordering.
+    if(todays.length >= 6){
+      out.push({ kind:'load',
+        text: `${todays.length} cases today — a full list`,
+        why: 'the first hour is meant for urgent work',
+        act: 'Move anything non-urgent to tomorrow' });
+    }
+    return out.slice(0, 4);
+  },
+
+  render(){
+    const box = document.getElementById('suggest-box');
+    if(!box) return;
+    const items = this.build();
+    if(!items.length){
+      box.innerHTML = '<div class="sg-clear">Nothing needs attention. The list is in order.</div>';
+      return;
+    }
+    const tone = { urgent:'var(--urgente)', stale:'var(--alta)', repeat:'var(--accent3)',
+                   gap:'var(--ok)', load:'var(--amber)' };
+    box.innerHTML = items.map(i =>
+      `<div class="sg-row" style="border-left-color:${tone[i.kind] || 'var(--line)'}">`
+      + `<div class="sg-text">${escapeHtml(i.text)}</div>`
+      + `<div class="sg-why">${escapeHtml(i.why)}</div>`
+      + `<div class="sg-act">${escapeHtml(i.act)}</div></div>`).join('');
+  },
+};
+function toMin(hhmm){
+  const m = String(hhmm || '').match(/(\d{1,2}):(\d{2})/);
+  return m ? (+m[1]) * 60 + (+m[2]) : 0;
+}
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -7999,9 +8234,13 @@ const Galaxy = {
     folders.forEach((f, i) => {
       const t = (i + 0.5) / folders.length;
       const incl = Math.acos(1 - 2 * t), az = gold * i * 2.4;
-      anchors[f] = { x: Math.sin(incl) * Math.cos(az) * 1.25,
-                     y: Math.cos(incl) * 0.95,
-                     z: Math.sin(incl) * Math.sin(az) * 1.25 };
+      // Anchors were at radius 1.25 while nodes seeded 0.34 around them, so
+      // neighbouring clusters overlapped and the whole map bunched. Pushing
+      // the anchors out — and scaling with cluster count — separates them.
+      const spread = 1.9 + Math.min(1.5, folders.length * 0.14);
+      anchors[f] = { x: Math.sin(incl) * Math.cos(az) * spread,
+                     y: Math.cos(incl) * spread * 0.62,
+                     z: Math.sin(incl) * Math.sin(az) * spread };
     });
 
     // Seed on a Fibonacci sphere around the cluster anchor. The old seed was a
@@ -8022,12 +8261,22 @@ const Galaxy = {
       const cool = 1 - it / iters;
       for(let i = 0; i < N; i++){
         const a = this.nodes[i];
+        // A gentle pull home. Without it repulsion eventually smears every
+        // cluster back into one cloud, which is what the map was doing.
+        const home = anchors[a.folder];
+        if(home){
+          a.vx += (home.x - a.x) * 0.010;
+          a.vy += (home.y - a.y) * 0.010;
+          a.vz += (home.z - a.z) * 0.010;
+        }
         for(let s2 = 0; s2 < SAMPLE; s2++){
           const b = this.nodes[(i + 1 + Math.floor(Math.random() * (N - 1))) % N];
           const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
           const d2 = dx*dx + dy*dy + dz*dz + 0.002;
           // Nodes in different clusters push apart harder.
-          const f = (a.folder === b.folder ? 0.0014 : 0.0038) / d2;
+          // Cross-cluster repulsion raised: this is what carves the gaps
+          // between neighbourhoods rather than leaving one continuous cloud.
+          const f = (a.folder === b.folder ? 0.0012 : 0.0072) / d2;
           a.vx += dx * f; a.vy += dy * f; a.vz += dz * f;
         }
       }
@@ -8378,7 +8627,7 @@ const Galaxy = {
   window._galaxyPanelTimer = setInterval(() => {
     const wrap = document.getElementById('galaxy-wrap');
     if(!wrap || !wrap.offsetParent) return;         // not on screen
-    try{ renderGalaxyPulse(); GalaxyFeed.render(); }catch(e){}
+    try{ renderGalaxyPulse(); GalaxyFeed.render(); renderGalaxySide(); }catch(e){}
   }, 4000);
 
   const cv = document.getElementById('kb-map');
@@ -10774,6 +11023,7 @@ function renderSettings(){
     if(el && settings[key] != null) el.value = settings[key];
   });
   organiseSettings();
+  renderVocab();
   Handwriting.load().then(renderHandwritingStatus);
   probeTts(); renderTtsStatus(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens(); renderBgListen(); renderPauseTol();
   Reflect_.run();
@@ -10942,6 +11192,13 @@ document.getElementById('ai-reset')?.addEventListener('click', async () => {
     await renderProviderStatus();
     alert('Model blocklist cleared. If TARS said it had no tools, try again now.');
   }catch(e){ alert('Could not reach the assistant service.'); }
+});
+document.getElementById('vocab-save')?.addEventListener('click', () => {
+  const el = document.getElementById('vocab-input');
+  if(Vocab.add(el.value)){ el.value = ''; SFX.tick(); }
+});
+document.getElementById('vocab-input')?.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ e.preventDefault(); document.getElementById('vocab-save').click(); }
 });
 document.getElementById('tts-diag')?.addEventListener('click', async () => {
   const btn = document.getElementById('tts-diag');
