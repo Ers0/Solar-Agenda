@@ -1650,6 +1650,8 @@ const DueWatch = {
   },
 
   start(){
+    // With the orbital engine mounted, the old loop would clear its frames.
+    if(typeof GalaxyView !== 'undefined' && GalaxyView.api) return;
     if(this.timer) return;
     this.check();
     this.timer = setInterval(() => this.check(), 20000);
@@ -7186,6 +7188,7 @@ const GalaxyFeed = {
     this.render();
     // A freshly touched subject glows and drifts for a while.
     GalaxyLife.touch(text);
+    if(this.onPush) try{ this.onPush(kind, text); }catch(e){}
   },
   render(){
     const el = document.getElementById('galaxy-feed');
@@ -7468,6 +7471,503 @@ function toMin(hhmm){
   const m = String(hhmm || '').match(/(\d{1,2}):(\d{2})/);
   return m ? (+m[1]) * 60 + (+m[2]) : 0;
 }
+
+// Canvas galaxy engine for Solar Agenda. Three visual variants over one
+// deterministic layout + animation loop. No deps.
+const TAU = Math.PI * 2;
+
+function mulberry(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hexRgb(h) {
+  const n = parseInt(h.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgba(hex, a) {
+  const [r, g, b] = hexRgb(hex);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+}
+
+function createGalaxy(canvas, opts) {
+  const variant = opts.variant || 'constellation';
+  const data = opts.data;
+  const settings = opts.settings || {};
+  const ctx = canvas.getContext('2d');
+  const rnd = mulberry(variant === 'nebula' ? 4211 : variant === 'orrery' ? 7717 : 1301);
+
+  /* ---------- layout ---------- */
+  const clusters = data.clusters.map((c) => ({ ...c }));
+  const n = clusters.length;
+  clusters.forEach((c, i) => {
+    if (i === 0) { c.x = 0; c.y = 0; c.big = true; return; }
+    const a = -Math.PI / 2 + ((i - 1) / (n - 1)) * TAU + 0.18;
+    const rx = variant === 'orrery' ? 430 : 400;
+    const ry = variant === 'orrery' ? 250 : 232;
+    c.x = Math.cos(a) * rx;
+    c.y = Math.sin(a) * ry;
+  });
+
+  const perCluster = clusters.map(() => 0);
+  const nodes = data.nodes.map((nd) => {
+    const c = clusters[nd.cluster];
+    const k = perCluster[nd.cluster]++;
+    const ring = nd.hub ? -1 : k % 3;
+    const base = variant === 'orrery' ? 58 + ring * 30 : 48 + ring * 25;
+    const r = nd.hub ? 0 : base + rnd() * (variant === 'nebula' ? 20 : 10);
+    return {
+      ...nd, c, r, ring,
+      a0: rnd() * TAU,
+      spd: ((0.05 + rnd() * 0.05) / (1 + Math.max(ring, 0) * 0.55)) * (rnd() > 0.5 ? 1 : -1),
+      tw: rnd() * TAU,
+      size: (nd.hub ? 7.5 : 2.4 + nd.links * 0.42) * (variant === 'nebula' ? 1.1 : 1),
+      x: c.x, y: c.y, alpha: 1, flash: 0,
+    };
+  });
+  const hubs = nodes.filter((nd) => nd.hub);
+
+  // a few long relationships between clusters
+  const bridges = [];
+  for (let i = 0; i < 14; i++) {
+    const a = nodes[Math.floor(rnd() * nodes.length)];
+    const b = nodes[Math.floor(rnd() * nodes.length)];
+    if (a.cluster !== b.cluster) bridges.push({ a, b, off: rnd() });
+  }
+
+  const stars = [];
+  for (let i = 0; i < 260; i++) {
+    stars.push({ x: (rnd() - 0.5) * 1900, y: (rnd() - 0.5) * 1200, s: rnd() * 1.1 + 0.25, t: rnd() * TAU });
+  }
+  const dust = [];
+  for (let i = 0; i < 70; i++) {
+    dust.push({ x: (rnd() - 0.5) * 1500, y: (rnd() - 0.5) * 900, r: 90 + rnd() * 210, t: rnd() * TAU, c: clusters[Math.floor(rnd() * n)].color });
+  }
+
+  /* ---------- state ---------- */
+  let W = 1, H = 1, dpr = 1;
+  const z0 = opts.zoom != null ? opts.zoom : (variant === 'orrery' ? 0.72 : 0.8);
+  const cam = { x: 0, y: 0, z: z0, tz: z0 };
+  let focus = null;           // cluster index
+  let hover = null;
+  let maxAge = 999;
+  let pings = [];
+  let raf = 0, t0 = performance.now(), running = true;
+
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    if (!r.width) return;
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(r.width * dpr);
+    canvas.height = Math.round(r.height * dpr);
+    W = r.width; H = r.height;
+  }
+  const ro = new ResizeObserver(resize);
+  ro.observe(canvas);
+  resize();
+
+  const toScreen = (wx, wy) => [wx * cam.z + W / 2 + cam.x, wy * cam.z + H / 2 + cam.y];
+  const toWorld = (sx, sy) => [(sx - W / 2 - cam.x) / cam.z, (sy - H / 2 - cam.y) / cam.z];
+
+  /* ---------- draw ---------- */
+  function frame(now) {
+    if (!running) return;
+    const t = (now - t0) / 1000;
+    const motion = settings.motion === 'calm' ? 0.35 : settings.motion === 'hyper' ? 2.1 : 1;
+    const glow = settings.glow == null ? 1 : settings.glow;
+    cam.z += (cam.tz - cam.z) * 0.12;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    // deep space background
+    const bg = ctx.createRadialGradient(W * 0.5, H * 0.35, 0, W * 0.5, H * 0.35, Math.max(W, H) * 0.85);
+    if (variant === 'nebula') { bg.addColorStop(0, '#131f2c'); bg.addColorStop(0.55, '#0c1420'); bg.addColorStop(1, '#070b11'); }
+    else if (variant === 'orrery') { bg.addColorStop(0, '#101a24'); bg.addColorStop(0.6, '#0a121b'); bg.addColorStop(1, '#06090e'); }
+    else { bg.addColorStop(0, '#14202c'); bg.addColorStop(0.6, '#0b131c'); bg.addColorStop(1, '#070b10'); }
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    // nebula dust
+    const dustA = variant === 'nebula' ? 0.16 : variant === 'orrery' ? 0.05 : 0.075;
+    dust.forEach((d) => {
+      const [sx, sy] = toScreen(d.x, d.y);
+      const r = d.r * cam.z;
+      if (sx < -r || sx > W + r || sy < -r || sy > H + r) return;
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+      const a = dustA * glow * (0.6 + 0.4 * Math.sin(t * 0.25 * motion + d.t));
+      g.addColorStop(0, rgba(d.c, a));
+      g.addColorStop(1, rgba(d.c, 0));
+      ctx.fillStyle = g;
+      ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+    });
+
+    // starfield
+    stars.forEach((s) => {
+      const [sx, sy] = toScreen(s.x, s.y);
+      if (sx < -4 || sx > W + 4 || sy < -4 || sy > H + 4) return;
+      const a = 0.22 + 0.5 * Math.abs(Math.sin(t * 0.7 * motion + s.t));
+      ctx.fillStyle = 'rgba(214,231,247,' + a * 0.55 + ')';
+      ctx.fillRect(sx, sy, s.s, s.s);
+    });
+
+    // node positions
+    nodes.forEach((nd) => {
+      const ang = nd.a0 + t * nd.spd * motion;
+      const wob = variant === 'nebula' ? 1 + Math.sin(t * 0.6 * motion + nd.tw) * 0.06 : 1;
+      const sq = variant === 'orrery' ? 0.58 : variant === 'nebula' ? 0.9 : 0.72;
+      nd.x = nd.c.x + Math.cos(ang) * nd.r * wob;
+      nd.y = nd.c.y + Math.sin(ang) * nd.r * wob * sq;
+      const dim = focus != null && nd.cluster !== focus ? 0.1 : 1;
+      const aged = nd.age > maxAge ? 0.05 : 1;
+      nd.alpha += (dim * aged - nd.alpha) * 0.12;
+      nd.flash *= 0.94;
+    });
+
+    // orbit rings
+    if (variant !== 'nebula') {
+      clusters.forEach((c, ci) => {
+        const a = (focus != null && ci !== focus ? 0.05 : variant === 'orrery' ? 0.2 : 0.11) * glow;
+        for (let ring = 0; ring < 3; ring++) {
+          const rr = (variant === 'orrery' ? 58 + ring * 30 : 48 + ring * 25) * cam.z;
+          const [sx, sy] = toScreen(c.x, c.y);
+          ctx.beginPath();
+          ctx.ellipse(sx, sy, rr, rr * (variant === 'orrery' ? 0.58 : 0.72), 0, 0, TAU);
+          ctx.strokeStyle = rgba(c.color, a);
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      });
+    } else {
+      // time rings: concentric "how old" bands
+      const [cx, cy] = toScreen(0, 0);
+      for (let i = 1; i <= 4; i++) {
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, i * 150 * cam.z, i * 92 * cam.z, 0, 0, TAU);
+        ctx.strokeStyle = 'rgba(123,224,196,' + 0.045 * glow + ')';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // hub -> node links
+    nodes.forEach((nd) => {
+      if (nd.hub || nd.alpha < 0.07) return;
+      const [x1, y1] = toScreen(nd.c.x, nd.c.y);
+      const [x2, y2] = toScreen(nd.x, nd.y);
+      const col = variant === 'nebula' ? nd.statusColor : nd.c.color;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.strokeStyle = rgba(col, 0.14 * nd.alpha * glow);
+      ctx.lineWidth = Math.max(0.6, nd.links * 0.12 * cam.z);
+      ctx.stroke();
+      // travelling pulse
+      const p = (t * 0.22 * motion + nd.a0) % 1;
+      const px = x1 + (x2 - x1) * p, py = y1 + (y2 - y1) * p;
+      ctx.fillStyle = rgba(col, 0.5 * nd.alpha * glow);
+      ctx.beginPath(); ctx.arc(px, py, 1.3 * cam.z + 0.5, 0, TAU); ctx.fill();
+    });
+
+    // cross-cluster bridges (curved)
+    bridges.forEach((b) => {
+      const a = Math.min(b.a.alpha, b.b.alpha);
+      if (a < 0.07) return;
+      const [x1, y1] = toScreen(b.a.x, b.a.y);
+      const [x2, y2] = toScreen(b.b.x, b.b.y);
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 60 * cam.z;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1); ctx.quadraticCurveTo(mx, my, x2, y2);
+      ctx.strokeStyle = 'rgba(160,190,215,' + 0.1 * a * glow + ')';
+      ctx.lineWidth = 0.9;
+      ctx.stroke();
+      const p = (t * 0.1 * motion + b.off) % 1;
+      const q = 1 - p;
+      const px = q * q * x1 + 2 * q * p * mx + p * p * x2;
+      const py = q * q * y1 + 2 * q * p * my + p * p * y2;
+      ctx.fillStyle = rgba(b.a.c.color, 0.55 * a * glow);
+      ctx.beginPath(); ctx.arc(px, py, 1.6, 0, TAU); ctx.fill();
+    });
+
+    // nodes
+    nodes.forEach((nd) => {
+      const [sx, sy] = toScreen(nd.x, nd.y);
+      if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) return;
+      const col = variant === 'nebula' && !nd.hub ? nd.statusColor : nd.c.color;
+      const pulse = 1 + 0.12 * Math.sin(t * 1.5 * motion + nd.tw) + nd.flash * 1.4;
+      const r = nd.size * cam.z * pulse * (nd.hub ? 1.25 : 1);
+      const a = nd.alpha;
+      // halo
+      const hr = r * (nd.hub ? 9 : 5.2);
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, hr);
+      g.addColorStop(0, rgba(col, 0.5 * a * glow));
+      g.addColorStop(0.35, rgba(col, 0.14 * a * glow));
+      g.addColorStop(1, rgba(col, 0));
+      ctx.fillStyle = g;
+      ctx.fillRect(sx - hr, sy - hr, hr * 2, hr * 2);
+      // core
+      ctx.beginPath(); ctx.arc(sx, sy, Math.max(0.9, r), 0, TAU);
+      ctx.fillStyle = 'rgba(255,255,255,' + Math.min(1, 0.55 + nd.flash) * a + ')';
+      ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.4, r * 1.7), 0, TAU);
+      ctx.fillStyle = rgba(col, 0.55 * a);
+      ctx.fill();
+      // unlinked marker
+      if (nd.links <= 1 && !nd.hub) {
+        ctx.beginPath(); ctx.arc(sx, sy, r * 3.4, 0, TAU);
+        ctx.strokeStyle = rgba('#e15b4c', 0.4 * a);
+        ctx.lineWidth = 1; ctx.stroke();
+      }
+      if (nd === hover) {
+        ctx.beginPath(); ctx.arc(sx, sy, r * 4.2 + 3, 0, TAU);
+        ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.2; ctx.stroke();
+      }
+    });
+
+    // pings (live activity)
+    pings = pings.filter((p) => t - p.t < 1.6);
+    pings.forEach((p) => {
+      const k = (t - p.t) / 1.6;
+      const [sx, sy] = toScreen(p.node.x, p.node.y);
+      ctx.beginPath();
+      ctx.arc(sx, sy, (8 + k * 74) * cam.z, 0, TAU);
+      ctx.strokeStyle = rgba(p.color, (1 - k) * 0.65 * glow);
+      ctx.lineWidth = 2 * (1 - k) + 0.4;
+      ctx.stroke();
+    });
+
+    ctx.globalCompositeOperation = 'source-over';
+
+    // cluster labels
+    if (cam.z > 0.42) {
+      hubs.forEach((h) => {
+        const [sx, sy] = toScreen(h.c.x, h.c.y);
+        const a = focus != null && h.cluster !== focus ? 0.22 : 1;
+        ctx.textAlign = 'center';
+        ctx.font = '600 14px "Space Grotesk", sans-serif';
+        ctx.fillStyle = rgba(h.c.color, a);
+        ctx.fillText(h.c.name, sx, sy - 34 * cam.z - 14);
+        ctx.font = '11px "JetBrains Mono", monospace';
+        ctx.fillStyle = 'rgba(202,217,231,' + 0.5 * a + ')';
+        ctx.fillText(h.c.count + ' entries', sx, sy - 34 * cam.z);
+      });
+    }
+
+    drawMini();
+    raf = requestAnimationFrame(frame);
+  }
+
+  /* ---------- minimap ---------- */
+  const mini = opts.minimap || null;
+  const mctx = mini ? mini.getContext('2d') : null;
+  let mw = 0, mh = 0;
+  function drawMini() {
+    if (!mctx) return;
+    const r = mini.getBoundingClientRect();
+    if (!r.width) return;
+    if (mw !== r.width || mh !== r.height) {
+      mw = r.width; mh = r.height;
+      mini.width = Math.round(mw * dpr); mini.height = Math.round(mh * dpr);
+    }
+    mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    mctx.clearRect(0, 0, mw, mh);
+    const s = Math.min(mw / 1250, mh / 800);
+    const px = (wx) => mw / 2 + wx * s;
+    const py = (wy) => mh / 2 + wy * s;
+    mctx.globalCompositeOperation = 'lighter';
+    nodes.forEach((nd) => {
+      const col = variant === 'nebula' && !nd.hub ? nd.statusColor : nd.c.color;
+      mctx.fillStyle = rgba(col, 0.25 + 0.6 * nd.alpha);
+      const rr = nd.hub ? 2.2 : 1.1;
+      mctx.beginPath(); mctx.arc(px(nd.x), py(nd.y), rr, 0, TAU); mctx.fill();
+    });
+    mctx.globalCompositeOperation = 'source-over';
+    // viewport rect
+    const [wx1, wy1] = toWorld(0, 0);
+    const [wx2, wy2] = toWorld(W, H);
+    mctx.strokeStyle = 'rgba(242,167,27,0.65)';
+    mctx.lineWidth = 1;
+    mctx.strokeRect(px(wx1), py(wy1), (wx2 - wx1) * s, (wy2 - wy1) * s);
+  }
+
+  /* ---------- interaction ---------- */
+  function pick(sx, sy) {
+    const [wx, wy] = toWorld(sx, sy);
+    let best = null, bd = 1e9;
+    nodes.forEach((nd) => {
+      if (nd.alpha < 0.2) return;
+      const d = (nd.x - wx) ** 2 + (nd.y - wy) ** 2;
+      const rad = (nd.size * 3.2 + 10 / cam.z) ** 2;
+      if (d < rad && d < bd) { bd = d; best = nd; }
+    });
+    return best;
+  }
+
+  let dragging = false, moved = 0, lx = 0, ly = 0;
+  const onDown = (e) => { dragging = true; moved = 0; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); };
+  const onMove = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+    if (dragging) {
+      cam.x += e.clientX - lx; cam.y += e.clientY - ly;
+      moved += Math.abs(e.clientX - lx) + Math.abs(e.clientY - ly);
+      lx = e.clientX; ly = e.clientY;
+      return;
+    }
+    const nd = pick(sx, sy);
+    if (nd !== hover) {
+      hover = nd;
+      if (opts.onHover) opts.onHover(nd, sx, sy);
+    } else if (nd && opts.onHover) opts.onHover(nd, sx, sy);
+  };
+  const onUp = (e) => {
+    if (dragging && moved < 5) {
+      const r = canvas.getBoundingClientRect();
+      const nd = pick(e.clientX - r.left, e.clientY - r.top);
+      focus = nd ? (focus === nd.cluster ? null : nd.cluster) : null;
+      if (opts.onPick) opts.onPick(nd, focus == null ? null : clusters[focus]);
+    }
+    dragging = false;
+  };
+  const onWheel = (e) => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+    const [wx, wy] = toWorld(sx, sy);
+    const f = Math.exp(-e.deltaY * 0.0016);
+    cam.tz = Math.min(2.6, Math.max(0.3, cam.tz * f));
+    cam.z = cam.tz;
+    cam.x = sx - W / 2 - wx * cam.z;
+    cam.y = sy - H / 2 - wy * cam.z;
+  };
+  const onLeave = () => { hover = null; if (opts.onHover) opts.onHover(null); };
+
+  canvas.addEventListener('pointerdown', onDown);
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerup', onUp);
+  canvas.addEventListener('pointerleave', onLeave);
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+
+  /* ---------- live activity ---------- */
+  let timer = 0;
+  function scheduleEvent() {
+    timer = setTimeout(() => {
+      if (settings.live !== false) {
+        const kinds = opts.eventKinds || [];
+        const k = kinds[Math.floor(Math.random() * kinds.length)] || { text: 'ping', color: '#f2a71b' };
+        const pool = focus != null ? nodes.filter((x) => x.cluster === focus) : nodes;
+        const nd = pool[Math.floor(Math.random() * pool.length)];
+        api.ping(nd, k.color);
+        if (opts.onEvent) opts.onEvent({ node: nd, kind: k });
+      }
+      scheduleEvent();
+    }, 1400 + Math.random() * 2200);
+  }
+  scheduleEvent();
+
+  const api = {
+    ping(node, color) {
+      const nd = node || nodes[Math.floor(Math.random() * nodes.length)];
+      nd.flash = 1;
+      pings.push({ node: nd, t: (performance.now() - t0) / 1000, color: color || nd.c.color });
+    },
+    setTime(frac) { maxAge = frac >= 0.99 ? 999 : Math.round(frac * 120); },
+    clearFocus() { focus = null; if (opts.onPick) opts.onPick(null, null); },
+    focusCluster(i) { focus = focus === i ? null : i; if (opts.onPick) opts.onPick(null, focus == null ? null : clusters[focus]); },
+    reset() { cam.x = 0; cam.y = 0; cam.tz = z0; },
+    destroy() {
+      running = false; cancelAnimationFrame(raf); clearTimeout(timer); ro.disconnect();
+      canvas.removeEventListener('pointerdown', onDown);
+      canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('pointerup', onUp);
+      canvas.removeEventListener('pointerleave', onLeave);
+      canvas.removeEventListener('wheel', onWheel);
+    },
+  };
+
+  raf = requestAnimationFrame(frame);
+  return api;
+}
+
+
+// ===== Galaxy renderer (redesign) =====================================
+// The orbital engine from the redesign, driven by real records. It expects
+// clusters and nodes rather than a force graph, so this adapter maps what we
+// hold onto that shape — no data is invented, only reshaped.
+const GalaxyView = {
+  api: null, variant: 'constellation',
+
+  palette(){
+    const css = getComputedStyle(document.documentElement);
+    const v = n => css.getPropertyValue(n).trim();
+    return [v('--amber') || '#f2a71b', v('--accent2') || '#4f9fd8', v('--accent3') || '#7be0c4',
+            '#a98cf0', '#f07ab0', v('--urgente') || '#e15b4c', v('--ok') || '#4caf82',
+            '#4fa3a0', v('--muted') || '#9aa9b8'];
+  },
+
+  // Biggest cluster first: the engine puts index 0 at the centre of the map.
+  data(){
+    const nodes = (Galaxy.nodes || []);
+    if(!nodes.length) return null;
+    const counts = {};
+    nodes.forEach(n => { const f = n.folder || 'Other'; counts[f] = (counts[f] || 0) + 1; });
+    const names = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 10);
+    const pal = this.palette();
+    const clusters = names.map((name, i) => ({ id: name, name, color: pal[i % pal.length],
+                                               count: counts[name] }));
+    const index = Object.fromEntries(names.map((n, i) => [n, i]));
+
+    const out = [];
+    names.forEach(name => {
+      const inF = nodes.filter(n => (n.folder || 'Other') === name);
+      const hub = inF.find(n => n.isHub) || inF.reduce((a, b) => (b.deg > a.deg ? b : a), inF[0]);
+      inF.forEach(n => out.push({
+        id: n.id, title: n.title || '', cluster: index[name],
+        hub: n === hub, links: Math.max(1, n.deg || 1),
+        // Age in days drives the time slider; unknown dates read as current.
+        age: n.when ? Math.max(0, Math.round((Date.now() - n.when) / 86400000)) : 0,
+        statusColor: clusters[index[name]].color,
+        ref: n,
+      }));
+    });
+    return { clusters, nodes: out };
+  },
+
+  mount(){
+    const canvas = document.getElementById('kb-map');
+    if(!canvas || !Galaxy.ready) return;
+    const data = this.data();
+    if(!data) return;
+    if(this.api){ this.api.destroy(); this.api = null; }
+    this.api = createGalaxy(canvas, {
+      variant: this.variant,
+      data,
+      minimap: document.getElementById('galaxy-mini'),
+      settings: { motion: settings.galaxyMotion || 'normal', glow: 1, live: false },
+      // Activity comes from real events, not a timer, so a still map means a
+      // still day rather than a broken renderer.
+      eventKinds: [],
+      onPick: (nd, cluster) => {
+        if(nd && nd.ref){ Galaxy.focus = nd.ref; showStar(nd.ref); }
+        else Galaxy.focus = null;
+        renderGalaxySide();
+      },
+    });
+    // Real activity pings the map.
+    GalaxyFeed.onPush = (kind, text) => {
+      const hit = data.nodes.find(n => String(n.title || '').toLowerCase()
+                    .includes(String(text || '').toLowerCase().slice(0, 14)));
+      if(hit && this.api) this.api.ping(hit);
+    };
+  },
+
+  setTime(frac){ if(this.api) this.api.setTime(frac); },
+  reset(){ if(this.api) this.api.reset(); },
+};
 
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
@@ -8395,6 +8895,10 @@ const Galaxy = {
     });
     this.ready = true;
     this.layout();
+    // The redesign's orbital engine takes over the canvas. The force layout
+    // still runs because search, focus and the sidebar read its structure —
+    // only the drawing changed hands.
+    try{ GalaxyView.mount(); }catch(e){ console.warn('[galaxy] engine failed, keeping the old renderer', e); }
     this.updateHud();
     const empty = document.getElementById('kb-map-empty');
     if(empty) empty.style.display = this.nodes.length ? 'none' : 'flex';

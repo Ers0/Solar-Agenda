@@ -963,6 +963,12 @@
   .vb-own{ color:var(--amber); border-color:var(--amber); display:inline-flex; align-items:center; gap:5px; }
   .vb-own button{ background:none; border:none; color:inherit; padding:0; font-size:.8rem; line-height:1; }
 
+
+  .galaxy-mini{ position:absolute; right:14px; bottom:44px; width:140px; height:90px;
+    border:1px solid var(--line); border-radius:9px;
+    background:color-mix(in srgb, var(--bg) 78%, transparent); z-index:3; }
+  @media (max-width: 900px){ .galaxy-mini{ display:none } }
+
   .galaxy-wrap{ position:relative; }
   .galaxy-side{ position:absolute; right:14px; top:14px; width:236px; display:flex;
     flex-direction:column; gap:10px; z-index:4; pointer-events:none; }
