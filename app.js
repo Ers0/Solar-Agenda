@@ -2595,6 +2595,35 @@ async function transcribe(blob){
   return r.json();
 }
 
+// A one-shot recorder for calibration. The live pipeline streams continuously
+// and is driven by voice activity, which is the wrong shape for "say this word
+// now", so calibration gets its own short capture.
+async function recordClip(ms){
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const type = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus' : 'audio/webm';
+  const rec = new MediaRecorder(stream, { mimeType: type });
+  const parts = [];
+  rec.ondataavailable = e => { if(e.data && e.data.size) parts.push(e.data); };
+  const done = new Promise(res => { rec.onstop = () => res(new Blob(parts, { type })); });
+  rec.start();
+  await new Promise(r => setTimeout(r, ms || 1800));
+  try{ rec.stop(); }catch(e){}
+  const blob = await done;
+  stream.getTracks().forEach(t => t.stop());
+  return blob;
+}
+
+async function transcribeClip(blob){
+  if(!blob || blob.size < 1200) return '';
+  try{
+    const d = await transcribe(blob);
+    // Raw, deliberately: calibration must see what was actually heard, not a
+    // version already corrected by the aliases it is trying to learn.
+    return (d.text || '').trim();
+  }catch(e){ return ''; }
+}
+
 async function onClipReady(blob){
   if(!VOICE.active) return;
   if(!blob || blob.size < 2000){
@@ -2606,7 +2635,8 @@ async function onClipReady(blob){
   let said = '', detected = null;
   try{
     const d = await transcribe(blob);
-    said = (d.text || '').trim();
+    // Known mishearings are put right before anything acts on the words.
+    said = Vocab.correct((d.text || '').trim());
     detected = d.language;
   }catch(err){
     showHeard('could not transcribe — network or service problem');
@@ -7305,6 +7335,7 @@ const Vocab = {
 
   load(){
     this.manual = Array.isArray(settings.vocab) ? settings.vocab.slice(0, this.MAX) : [];
+    this.loadAliases();
   },
   save(){
     settings.vocab = this.manual.slice(0, this.MAX);
@@ -7322,6 +7353,46 @@ const Vocab = {
   remove(word){
     this.manual = this.manual.filter(x => x !== word);
     this.save();
+  },
+
+
+  // --- calibration -----------------------------------------------------
+  // Telling the recogniser a word exists helps; knowing what it actually hears
+  // instead is better. The user says the word a few times, and whatever comes
+  // back wrong becomes a correction applied to every later transcript.
+  aliases: {},                 // misheard -> intended
+
+  loadAliases(){
+    this.aliases = (settings.vocabAliases && typeof settings.vocabAliases === 'object')
+      ? { ...settings.vocabAliases } : {};
+  },
+  addAlias(heard, intended){
+    const h = String(heard || '').trim().toLowerCase();
+    const w = String(intended || '').trim();
+    if(!h || !w || h === w.toLowerCase() || h.length > 40) return false;
+    this.aliases[h] = w;
+    settings.vocabAliases = this.aliases;
+    saveSettings();
+    return true;
+  },
+
+  // Applied to every transcript before anything else reads it.
+  correct(text){
+    let t = String(text || '');
+    if(!t) return t;
+    Object.entries(this.aliases).forEach(([heard, intended]) => {
+      // Whole words only, and punctuation-tolerant: "d-e" and "D. E." are the
+      // same mishearing.
+      // Escaping first turned "." into "\." and broke the separator swap, which
+      // produced an invalid pattern. Split, then escape each piece.
+      const esc = heard.split(/[-.\s]+/).filter(Boolean)
+        .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('[-.\\s]*');
+      if(!esc) return;
+      t = t.replace(new RegExp('(^|[^\\p{L}])' + esc + '(?=$|[^\\p{L}])', 'giu'),
+                    (m, p1) => p1 + intended);
+    });
+    return t;
   },
 
   // Everything worth biasing towards: typed terms first, then what the
@@ -7946,7 +8017,12 @@ const GalaxyView = {
     this.api = createGalaxy(canvas, {
       variant: this.variant,
       data,
-      minimap: document.getElementById('galaxy-mini'),
+      minimap: (() => {
+        const m = document.getElementById('galaxy-mini');
+        if(!m) return null;
+        m.style.pointerEvents = 'none';
+        return m;
+      })(),
       settings: { motion: settings.galaxyMotion || 'normal', glow: 1, live: false },
       // Activity comes from real events, not a timer, so a still map means a
       // still day rather than a broken renderer.
@@ -7968,6 +8044,60 @@ const GalaxyView = {
   setTime(frac){ if(this.api) this.api.setTime(frac); },
   reset(){ if(this.api) this.api.reset(); },
 };
+
+
+// Calibration: record the user saying a word, see what comes back, and keep
+// the difference. Three passes, because one mishearing might be a fluke and
+// three of the same is a pattern worth correcting for.
+const VocabTrain = {
+  word: '', heard: [], busy: false,
+
+  async run(word){
+    const box = document.getElementById('vocab-train-box');
+    if(!box) return;
+    this.word = word; this.heard = [];
+    box.style.display = 'block';
+    for(let i = 1; i <= 3; i++){
+      box.innerHTML = `<b>Say “${escapeHtml(word)}”</b> — pass ${i} of 3<div class="vt-bar"><span></span></div>`;
+      let clip;
+      try{ clip = await recordClip(1800); }
+      catch(e){ box.innerHTML = 'Could not use the microphone.'; return; }
+      const got = await transcribeClip(clip);
+      this.heard.push(String(got || '').trim());
+      box.innerHTML = `Heard: <i>${escapeHtml(this.heard[i-1] || '(nothing)')}</i>`;
+      await new Promise(r => setTimeout(r, 550));
+    }
+
+    // Anything that came back different from the word is a mishearing worth
+    // correcting. Identical results mean the recogniser already has it right.
+    const wrong = this.heard
+      .map(h => h.replace(/[.,!?]+$/, '').trim())
+      .filter(h => h && h.toLowerCase() !== word.toLowerCase());
+    const uniq = [...new Set(wrong.map(w => w.toLowerCase()))];
+
+    if(!uniq.length){
+      box.innerHTML = `<b>Already correct.</b> “${escapeHtml(word)}” came back right all three times.`;
+      Vocab.add(word);
+      return;
+    }
+    uniq.forEach(h => Vocab.addAlias(h, word));
+    Vocab.add(word);
+    renderVocab();
+    box.innerHTML = `<b>Learned.</b> “${escapeHtml(word)}” was heard as `
+      + uniq.map(u => `<i>${escapeHtml(u)}</i>`).join(', ')
+      + '. Those will be corrected from now on.';
+  },
+};
+
+document.getElementById('vocab-train')?.addEventListener('click', async () => {
+  const el = document.getElementById('vocab-input');
+  const w = (el.value || '').trim();
+  if(!w){ alert('Type the word first, then say it.'); return; }
+  const btn = document.getElementById('vocab-train');
+  btn.disabled = true;
+  try{ await VocabTrain.run(w); }
+  finally{ btn.disabled = false; el.value = ''; }
+});
 
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
