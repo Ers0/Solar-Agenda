@@ -1003,6 +1003,158 @@
   .gf-empty{ color:var(--muted); font-size:.68rem; }
   @media (max-width: 900px){ .galaxy-side{ display:none } }
 
+
+  /* ===== Redesign: rail layout ==========================================
+     An 82px icon rail replaces the top tab strip and the bottom bar. The page
+     becomes a two-column grid; everything that was in the topbar's right side
+     moves into the rail's foot. */
+  body.has-rail{ display:grid; grid-template-columns:82px 1fr;
+    background: radial-gradient(1400px 900px at 78% -14%,
+      color-mix(in srgb, var(--panel) 82%, var(--amber) 4%) 0%,
+      var(--bg2) 44%, var(--bg) 100%); }
+  body.has-rail > *:not(.rail){ grid-column:2; min-width:0; }
+
+  .rail{ grid-column:1; grid-row:1 / -1; display:flex; flex-direction:column;
+    align-items:center; gap:6px; padding:18px 0 14px; border-right:1px solid var(--line);
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--panel) 72%, transparent),
+      color-mix(in srgb, var(--bg) 72%, transparent));
+    position:sticky; top:0; height:100vh; z-index:40; }
+  .rail-mark{ width:34px; height:34px; border-radius:50%; margin-bottom:16px; flex:none;
+    background: radial-gradient(circle at 34% 28%, #fff2cc, var(--amber) 48%,
+      var(--accent3) 96%, var(--accent2) 150%);
+    box-shadow: 0 0 22px color-mix(in srgb, var(--amber) 45%, transparent); }
+  .rail-item{ width:52px; display:flex; flex-direction:column; align-items:center; gap:5px;
+    padding:9px 0; border-radius:12px; cursor:pointer; background:none;
+    color:var(--muted); border:1px solid transparent; transition:background .16s, color .16s; }
+  .rail-item svg{ width:19px; height:19px; fill:none; stroke:currentColor;
+    stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+  .rail-item span{ font-size:9px; letter-spacing:.06em; font-weight:600; text-transform:uppercase; }
+  .rail-item:hover{ background:var(--panel2); color:var(--text); }
+  .rail-item.active{ background:color-mix(in srgb, var(--amber) 15%, transparent);
+    color:var(--amber); border-color:color-mix(in srgb, var(--amber) 34%, transparent); }
+  .rail-gap{ flex:1; }
+  .rail-tools{ display:flex; flex-direction:column; align-items:center; gap:8px; width:100%; }
+  .rail-tools > *{ width:40px !important; height:40px; padding:0 !important; flex:none;
+    justify-content:center; border-radius:11px; }
+  .rail-tools .btn-lab, .rail-tools .user-pill{ display:none !important; }
+
+  /* the old bars step aside */
+  body.has-rail .bottom-nav{ display:none !important; }
+  body.has-rail .topbar{ background:none; border-bottom:1px solid var(--line);
+    padding:16px 26px; }
+  body.has-rail .topbar .tagline{ display:none; }
+
+  /* ===== Redesign: view heading ===== */
+  .view-head{ padding:18px 26px 4px; }
+  .view-head h2{ margin:0; font-size:1.42rem; font-weight:600; letter-spacing:-.01em; }
+  .view-head p{ margin:5px 0 0; font-size:.62rem; letter-spacing:.16em;
+    color:var(--muted); font-family:"JetBrains Mono", monospace; }
+
+  @media (max-width: 860px){
+    body.has-rail{ display:block; }
+    .rail{ display:none; }
+    body.has-rail .bottom-nav{ display:flex !important; }
+    body.has-rail .topbar .tagline{ display:block; }
+    .view-head{ padding:12px 16px 2px; }
+    .view-head h2{ font-size:1.15rem; }
+  }
+
+
+  .dial-hour{ fill:var(--muted); font-family:"JetBrains Mono",monospace;
+    font-size:10px; letter-spacing:.1em; }
+  .dial-hub-n{ fill:var(--text); font-size:34px; font-weight:600; }
+  .dial-hub-l{ fill:var(--muted); font-size:10px; letter-spacing:.14em;
+    text-transform:uppercase; font-family:"JetBrains Mono",monospace; }
+  .dial-hub-t{ fill:var(--amber); font-size:13px; font-family:"JetBrains Mono",monospace; }
+  .dial-pip{ cursor:pointer; }
+  .dial-pip:hover path{ opacity:1 !important; }
+
+
+  /* ===== Redesign: view treatments ======================================
+     Card surfaces, mono meta lines and pill filters, applied to the markup
+     that is already there rather than replacing it — so every handler,
+     id and render path stays exactly as it was. */
+
+  /* --- shared card surface, matching the design's panels --- */
+  body.has-rail .panel,
+  body.has-rail .calendar-panel,
+  body.has-rail .nb-grid-card{
+    border:1px solid var(--line); border-radius:16px;
+    background: color-mix(in srgb, var(--panel) 92%, var(--bg));
+  }
+  body.has-rail .panel > h2{
+    font-size:.82rem; font-weight:700; letter-spacing:-.005em;
+    padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:10px;
+  }
+  body.has-rail .panel > h2 .badge{ font-weight:500; }
+
+  /* --- History: a tabular register, not a stack of cards --- */
+  body.has-rail #view-history .case-list{ display:block; }
+  body.has-rail #view-history .case-card{
+    display:grid; grid-template-columns:78px 1fr 130px 96px 74px;
+    align-items:center; gap:12px; padding:13px 18px; font-size:.78rem;
+    border:none; border-bottom:1px solid var(--line); border-radius:0;
+    background:none;
+  }
+  body.has-rail #view-history .case-card:hover{ background:var(--panel2); }
+  body.has-rail #view-history .case-card .cc-time{
+    font-family:"JetBrains Mono",monospace; font-size:.7rem; color:var(--muted);
+  }
+  body.has-rail #view-history .case-card .cc-title{
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+
+  /* --- Calendar: taller cells with room for pips --- */
+  body.has-rail .cal-grid{ gap:8px; }
+  body.has-rail .cal-day{
+    border:1px solid var(--line); border-radius:11px; min-height:76px;
+    background: color-mix(in srgb, var(--panel) 70%, transparent);
+    transition:border-color .14s, background .14s;
+  }
+  body.has-rail .cal-day:hover{ border-color:var(--amber); }
+  body.has-rail .cal-day.today, body.has-rail .cal-day.is-today{
+    border-color:var(--amber);
+    background: color-mix(in srgb, var(--amber) 11%, transparent);
+  }
+  body.has-rail .calendar-nav button{
+    width:30px; height:30px; border:1px solid var(--line); border-radius:8px;
+    display:grid; place-items:center; color:var(--muted); background:none;
+  }
+  body.has-rail .calendar-nav button:hover{ color:var(--text); border-color:var(--amber); }
+
+  /* --- Notebooks: pill filters and a four-column grid --- */
+  body.has-rail .notebooks-toolbar .sub-tab,
+  body.has-rail .notebooks-toolbar .nb-filter{
+    border:1px solid var(--line); border-radius:999px; padding:6px 14px;
+    font-size:.74rem; font-weight:600; background:none; color:var(--muted);
+  }
+  body.has-rail .notebooks-toolbar .sub-tab.active,
+  body.has-rail .notebooks-toolbar .nb-filter.active{
+    border-color:var(--amber); color:var(--amber);
+    background: color-mix(in srgb, var(--amber) 12%, transparent);
+  }
+  body.has-rail .notebooks-grid{
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
+    grid-auto-rows:min-content; gap:16px;
+  }
+  body.has-rail .nb-grid-card{ padding:15px; transition:border-color .14s, transform .14s; }
+  body.has-rail .nb-grid-card:hover{ border-color:var(--amber); transform:translateY(-2px); }
+
+  /* --- the mono meta line the design uses throughout --- */
+  body.has-rail .meta-mono{
+    font-family:"JetBrains Mono",monospace; font-size:.62rem;
+    letter-spacing:.12em; text-transform:uppercase; color:var(--muted);
+  }
+
+  @media (max-width: 860px){
+    body.has-rail #view-history .case-card{
+      grid-template-columns:1fr; gap:4px; padding:11px 13px;
+    }
+    body.has-rail .notebooks-grid{ grid-template-columns:1fr 1fr; }
+  }
+
   /* ===== Notion-style note editor ===== */
   .nb-toolbar{
     display:flex; align-items:center; gap:3px; flex-wrap:wrap; margin-top:12px;

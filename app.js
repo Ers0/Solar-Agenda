@@ -75,6 +75,7 @@ function switchView(view){
   });
   // keep the mobile bottom bar in sync with the desktop pill tabs
   document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  try{ renderViewHead(view); }catch(e){};
   SFX.tick();
   requestAnimationFrame(() => setRain());
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -311,6 +312,11 @@ function renderHistory(){
 function renderArc(){
   const svg = document.getElementById('day-arc');
   if(!svg) return;
+  // The redesign's ring replaces the shallow arc. If it throws for any reason
+  // the original renderer below still runs, so the day is never left blank.
+  if(settings.dialRing !== false){
+    try{ Dial.render(); return; }catch(e){ console.warn('[dial] falling back to the arc', e); }
+  }
   const r = 160, cx = 400, cy = 190;
   const night = curPhase === 'night';
   const AC = night ? 'var(--accent2)' : 'var(--amber)';
@@ -8099,6 +8105,181 @@ document.getElementById('vocab-train')?.addEventListener('click', async () => {
   finally{ btn.disabled = false; el.value = ''; }
 });
 
+
+// The redesign puts navigation in a left rail and the tools beneath it. The
+// existing buttons are MOVED rather than rebuilt, so every handler, label and
+// state update already bound to them keeps working untouched.
+function buildRail(){
+  const tools = document.getElementById('rail-tools');
+  if(!tools || tools._built) return;
+  // The class is only applied once the rail exists, so a failure here leaves
+  // the previous layout working rather than a broken half-state.
+  document.body.classList.add('has-rail');
+  tools._built = true;
+  ['hud-toggle','theme-toggle','voice-toggle','ai-toggle','logout-btn'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) tools.appendChild(el);
+  });
+  // The old tab strip is hidden, not removed: tab-* ids still resolve, so any
+  // code that clicks them programmatically still works.
+  // No click binding here: .bn-item already carries one, and adding a second
+  // would switch the view twice per press.
+}
+
+// Each view gets the redesign's title and mono sub-line, filled from real
+// counts rather than the mock's fixed strings.
+const VIEW_HEAD = {
+  agenda:    { title:'Your day',        sub: () => `SUPPORT ROUTINE · ${new Date().toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'}).toUpperCase()}` },
+  history:   { title:'Case history',    sub: () => `${(cases||[]).filter(x=>x.status==='resolvido').length} CLOSED RECORDS` },
+  calendar:  { title:'Calendar',        sub: () => `${new Date().toLocaleDateString(undefined,{month:'long',year:'numeric'}).toUpperCase()} · ${(cases||[]).length} CASES` },
+  notebooks: { title:'Notebooks',       sub: () => `${(notes||[]).length} NOTES · ${(notebooks||[]).length} NOTEBOOKS` },
+  settings:  { title:'Settings',        sub: () => 'ASSISTANT · VOICE · WRITING · KNOWLEDGE' },
+};
+function renderViewHead(view){
+  const h = document.getElementById('view-head');
+  if(!h) return;
+  const d = VIEW_HEAD[view];
+  if(!d){ h.style.display = 'none'; return; }
+  h.style.display = '';
+  let sub = '';
+  try{ sub = d.sub(); }catch(e){}
+  h.innerHTML = `<h2>${escapeHtml(d.title)}</h2><p>${escapeHtml(sub)}</p>`;
+}
+
+
+// ===== Daily dial (redesign) ==========================================
+// The workday bent into a ring: 07h to 19h over 288 degrees, open at the
+// bottom. Geometry lifted from the redesign; the data is ours, so pips are
+// real cases at their real times rather than a fixed demo set.
+const Dial = {
+  CX: 310, CY: 246, H0: 7, H1: 19, SPAN: 288,
+  RING: 190, TICK_IN: 190, TICK_OUT: 204, LAB: 226,
+
+  get A0(){ return -90 - this.SPAN / 2; },
+  ang(h){
+    const cl = Math.min(this.H1, Math.max(this.H0, h));
+    return this.A0 + ((cl - this.H0) / (this.H1 - this.H0)) * this.SPAN;
+  },
+  pt(r, a){
+    const t = a * Math.PI / 180;
+    return [this.CX + Math.cos(t) * r, this.CY + Math.sin(t) * r];
+  },
+  arc(r, a0, a1){
+    const [x0, y0] = this.pt(r, a0), [x1, y1] = this.pt(r, a1);
+    return `M${x0.toFixed(1)} ${y0.toFixed(1)}A${r} ${r} 0 ${Math.abs(a1 - a0) > 180 ? 1 : 0} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+  },
+
+  colourFor(cs){
+    const p = String(cs.prioridade || '').toLowerCase();
+    return cs.status === 'resolvido' ? 'var(--ok)'
+      : p === 'urgente' ? 'var(--urgente)'
+      : p === 'alta' ? 'var(--alta)'
+      : p === 'media' ? 'var(--media)' : 'var(--accent2)';
+  },
+
+  render(){
+    const svg = document.getElementById('day-arc');
+    if(!svg) return;
+    const now = new Date();
+    const nowH = now.getHours() + now.getMinutes() / 60;
+    const night = (typeof curPhase !== 'undefined' && curPhase === 'night');
+    const phase = night ? 'var(--accent2)' : 'var(--amber)';
+
+    const parts = [];
+    parts.push(`<defs>
+      <filter id="dial-soft" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="5"/></filter>
+      <linearGradient id="dial-elapsed" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="${phase}" stop-opacity=".15"/>
+        <stop offset="1" stop-color="${phase}" stop-opacity=".9"/></linearGradient>
+    </defs>`);
+
+    // the full track
+    parts.push(`<path d="${this.arc(this.RING, this.ang(this.H0), this.ang(this.H1))}"
+      fill="none" stroke="var(--line)" stroke-width="2" stroke-linecap="round" opacity=".85"/>`);
+
+    // how much of the day has gone
+    if(nowH > this.H0){
+      const d = this.arc(this.RING, this.ang(this.H0), this.ang(Math.min(nowH, this.H1)));
+      parts.push(`<path d="${d}" fill="none" stroke="url(#dial-elapsed)" stroke-width="7"
+        stroke-linecap="round" opacity=".2" filter="url(#dial-soft)"/>`);
+      parts.push(`<path d="${d}" fill="none" stroke="url(#dial-elapsed)" stroke-width="2.5"
+        stroke-linecap="round"/>`);
+    }
+
+    // hour ticks, odd hours longer
+    for(let h = this.H0; h <= this.H1; h++){
+      const major = h % 2 === 1;
+      const a = this.ang(h);
+      const [x1, y1] = this.pt(this.TICK_IN + 2, a);
+      const [x2, y2] = this.pt(major ? this.TICK_OUT : this.TICK_OUT - 6, a);
+      parts.push(`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+        stroke="${major ? 'var(--muted)' : 'var(--line)'}" stroke-width="${major ? 1.6 : 1}" stroke-linecap="round"/>`);
+      if(major){
+        const [lx, ly] = this.pt(this.LAB, a);
+        parts.push(`<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle"
+          dominant-baseline="middle" class="dial-hour">${String(h).padStart(2,'0')}h</text>`);
+      }
+    }
+
+    // the first hour after clock-in, reserved for urgent work
+    const startH = (typeof firstHourStart === 'number') ? firstHourStart : this.H0;
+    parts.push(`<path d="${this.arc(this.RING, this.ang(startH), this.ang(startH + 1))}"
+      fill="none" stroke="var(--urgente)" stroke-width="2" stroke-linecap="round" opacity=".7"/>`);
+
+    // cases as arc segments at their real times
+    const today = dateStr(now);
+    const mine = (cases || []).filter(x => x.case_date === today && isClock(x.horario));
+    mine.forEach(cs => {
+      const h = toMin(cs.horario) / 60;
+      const endM = isClock(cs.horario_fim) ? toMin(cs.horario_fim) : toMin(cs.horario) + 20;
+      const a0 = this.ang(h);
+      const a1 = Math.max(a0 + 4, this.ang(endM / 60) - 1.2);
+      const col = this.colourFor(cs);
+      const done = cs.status === 'resolvido';
+      parts.push(`<g class="dial-pip" data-case="${escapeHtml(cs.id)}">`
+        + `<path d="${this.arc(this.RING, a0, a1)}" fill="none" stroke="${col}"
+             stroke-width="10" opacity="${done ? 0.04 : 0.14}" stroke-linecap="round" filter="url(#dial-soft)"/>`
+        + `<path d="${this.arc(this.RING, a0, a1)}" fill="none" stroke="${col}"
+             stroke-width="${done ? 3 : 6}" opacity="${done ? 0.45 : 0.75}" stroke-linecap="round"/>`
+        + `<title>${escapeHtml(cs.horario + ' · ' + (cs.titulo || ''))}</title></g>`);
+    });
+
+    // the now hand
+    if(nowH >= this.H0 && nowH <= this.H1){
+      const a = this.ang(nowH);
+      const [bx, by] = this.pt(this.RING, a);
+      const [ix, iy] = this.pt(46, a);
+      parts.push(`<line x1="${ix.toFixed(1)}" y1="${iy.toFixed(1)}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}"
+        stroke="${phase}" stroke-width="1" stroke-dasharray="3 5" opacity=".4"/>`);
+      parts.push(`<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="13" fill="${phase}"
+        opacity=".22" filter="url(#dial-soft)"/>`);
+      parts.push(`<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="7" fill="var(--bg)"
+        stroke="${phase}" stroke-width="2"/>`);
+    }
+
+    // hub: what is left, and the time
+    const open = mine.filter(x => x.status !== 'resolvido').length;
+    parts.push(`<text x="${this.CX}" y="${this.CY - 6}" text-anchor="middle" class="dial-hub-n">${open}</text>`);
+    parts.push(`<text x="${this.CX}" y="${this.CY + 16}" text-anchor="middle" class="dial-hub-l">${open === 1 ? 'case left' : 'cases left'}</text>`);
+    parts.push(`<text x="${this.CX}" y="${this.CY + 38}" text-anchor="middle" class="dial-hub-t">${
+      String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}</text>`);
+
+    // Measured from the geometry, not guessed: hour labels reach x 84-536 and
+    // y 20-429, so a shorter box clipped the bottom two.
+    svg.setAttribute('viewBox', '72 10 492 432');
+    svg.innerHTML = parts.join('');
+
+    // clicking a pip opens its case, as the list does
+    svg.querySelectorAll('.dial-pip').forEach(g => {
+      g.addEventListener('click', () => {
+        const cs = (cases || []).find(x => String(x.id) === g.dataset.case);
+        if(cs && typeof openCaseModal === 'function') openCaseModal(cs);
+      });
+    });
+  },
+};
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -11656,6 +11837,7 @@ function renderSettings(){
     const el = document.getElementById(id);
     if(el && settings[key] != null) el.value = settings[key];
   });
+  try{ buildRail(); renderViewHead('agenda'); }catch(e){ console.warn('[rail]', e); }
   organiseSettings();
   renderVocab();
   Handwriting.load().then(renderHandwritingStatus);

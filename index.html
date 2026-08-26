@@ -36,6 +36,16 @@
 </div>
 
 <div class="app hidden" id="app-root">
+  <nav class="rail" id="app-rail">
+    <div class="rail-mark"></div>
+    <button class="bn-item rail-item active" data-view="agenda" title="Agenda"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9M12 7v5l3 2"/></svg><span>Day</span></button>
+    <button class="bn-item rail-item" data-view="history" title="History"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 8v4l3 2"/></svg><span>Log</span></button>
+    <button class="bn-item rail-item" data-view="calendar" title="Calendar"><svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM4 10h16M8 4v4M16 4v4"/></svg><span>Cal</span></button>
+    <button class="bn-item rail-item" data-view="notebooks" title="Notebooks"><svg viewBox="0 0 24 24"><path d="M6 4h11a2 2 0 0 1 2 2v14H8a2 2 0 0 1-2-2zM10 4v16"/></svg><span>Notes</span></button>
+    <button class="bn-item rail-item" data-view="settings" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6M12 2v3M12 19v3M4 4l2 2M18 18l2 2M2 12h3M19 12h3M4 20l2-2M18 6l2-2"/></svg><span>Set</span></button>
+    <div class="rail-gap"></div>
+    <div class="rail-tools" id="rail-tools"></div>
+  </nav>
   <header class="topbar">
     <div class="brand">
       <div class="brand-mark"></div>
@@ -45,7 +55,7 @@
       </div>
     </div>
     <div class="topbar-actions">
-      <div class="nav-tabs">
+      <div class="nav-tabs" hidden>
         <button class="nav-tab active" id="tab-agenda">Agenda</button>
         <button class="nav-tab" id="tab-history">History</button>
         <button class="nav-tab" id="tab-calendar">Calendar</button>
@@ -110,6 +120,8 @@
       <svg id="day-arc" viewBox="0 -22 800 232" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <main class="layout">
+  <div class="view-head" id="view-head"></div>
+
       <div class="col-left">
       <section class="panel first-hour-panel">
         <h2>First hour <span class="badge">priority</span></h2>
