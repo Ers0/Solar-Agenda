@@ -78,10 +78,7 @@ function switchView(view){
   try{ renderViewHead(view); }catch(e){};
   // The canvas has no size until its view is visible, so the engine is
   // mounted on first show rather than at load.
-  if(view === 'galaxy') requestAnimationFrame(() => {
-    try{ GalaxyView.mount(); renderGalaxySide(); renderGalaxyOverview(); GalaxyFeed.render(); }
-    catch(e){ console.warn('[galaxy]', e); }
-  });
+  if(view === 'galaxy') requestAnimationFrame(() => { showGalaxy(); });
   SFX.tick();
   requestAnimationFrame(() => setRain());
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -8445,6 +8442,39 @@ document.getElementById('gx-time')?.addEventListener('input', e => {
   if(lab) lab.textContent = frac >= 0.99 ? 'all time' : Math.round((1 - frac) * 30) + 'd back';
 });
 
+
+// Opening the galaxy builds it if it has never been built, and rebuilds it if
+// the records have changed since. Previously this only happened when the
+// Knowledge settings tab was opened, so the new view came up blank and stayed
+// blank until a manual refresh.
+let galaxyStamp = '';
+function recordsStamp(){
+  return [(cases || []).length, (notes || []).length, (KB || []).length,
+          (Learn.rules || []).length, (Learn.episodes || []).length].join('/');
+}
+
+async function showGalaxy(force){
+  const stamp = recordsStamp();
+  try{
+    if(!Galaxy.ready || force || stamp !== galaxyStamp){
+      await Galaxy.build({ folder:false });
+      galaxyStamp = stamp;
+    }
+    GalaxyView.mount();
+  }catch(e){
+    console.warn('[galaxy] build failed', e);
+  }
+  try{ renderGalaxySide(); renderGalaxyOverview(); GalaxyFeed.render(); }catch(e){}
+}
+
+// Keep it current while it is on screen, without rebuilding a map nobody is
+// looking at.
+setInterval(() => {
+  const v = document.getElementById('view-galaxy');
+  if(!v || v.classList.contains('hidden')) return;
+  if(recordsStamp() !== galaxyStamp) showGalaxy();
+}, 6000);
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -9720,7 +9750,7 @@ document.getElementById('galaxy-drive')?.addEventListener('click', async () => {
   if(!driveToken){ alert('Connect Google Drive first, in the media section above.'); return; }
   await Galaxy.build({ folder: true, drive: true });
 });
-document.getElementById('galaxy-refresh')?.addEventListener('click', () => Galaxy.build({ folder: true }));
+document.getElementById('galaxy-refresh')?.addEventListener('click', () => showGalaxy(true));
 document.getElementById('galaxy-expand')?.addEventListener('click', () => {
   document.getElementById('galaxy-wrap')?.classList.toggle('big');
 });
