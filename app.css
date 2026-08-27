@@ -1127,8 +1127,8 @@
 
   /* ===== Knowledge galaxy: its own view, three columns ===== */
   #view-galaxy{ padding:0 26px 20px; }
-  .gx-shell{ display:grid; grid-template-columns:236px minmax(0,1fr) 268px;
-    gap:16px; align-items:start; }
+  .gx-shell{ display:grid; grid-template-columns:212px minmax(0,1fr) 244px;
+    gap:14px; align-items:start; }
   .gx-col-left, .gx-col-right{ display:flex; flex-direction:column; gap:14px; }
   .gx-stage{ display:flex; flex-direction:column; gap:10px; min-width:0; }
   #view-galaxy .galaxy-wrap{ position:relative; height:min(72vh, 720px);
@@ -1137,6 +1137,18 @@
       color-mix(in srgb, var(--panel) 70%, transparent), var(--bg) 78%); }
   #view-galaxy #kb-map{ position:absolute; inset:0; width:100%; height:100%;
     cursor:grab; touch-action:none; }
+
+
+
+  .gx-new{ margin-left:auto; width:18px; height:18px; border-radius:5px; padding:0;
+    border:1px solid var(--line); background:none; color:var(--muted);
+    font-size:.8rem; line-height:1; cursor:pointer; }
+  .gx-new:hover{ color:var(--amber); border-color:var(--amber); }
+  .gl-del{ color:var(--urgente) !important; }
+
+  .gl-edit{ opacity:0; margin-left:4px; color:var(--muted); font-size:.72rem; cursor:pointer; }
+  .gl-row:hover .gl-edit{ opacity:1; }
+  .gl-edit:hover{ color:var(--amber); }
 
   .gx-legend{ display:flex; flex-direction:column; gap:7px; font-size:.72rem; color:var(--muted); }
   .gx-legend span{ display:flex; align-items:center; gap:9px; }
@@ -1161,16 +1173,18 @@
   .gx-time span{ font-size:.6rem; letter-spacing:.12em; color:var(--muted);
     font-family:"JetBrains Mono",monospace; text-transform:uppercase; }
 
-  @media (max-width: 1240px){
-    .gx-shell{ grid-template-columns:200px minmax(0,1fr); }
-    .gx-col-right{ grid-column:1 / -1; flex-direction:row; }
-    .gx-col-right .gs-card{ flex:1; }
+  @media (max-width: 1320px){
+    .gx-shell{ grid-template-columns:186px minmax(0,1fr) 210px; gap:12px; }
+  }
+  @media (max-width: 1040px){
+    .gx-shell{ grid-template-columns:1fr; }
+    .gx-col-left, .gx-col-right{ flex-direction:row; }
+    .gx-col-left .gs-card, .gx-col-right .gs-card{ flex:1; }
+    .gx-col-right{ order:3; }
   }
   @media (max-width: 860px){
     #view-galaxy{ padding:0 14px 16px; }
-    .gx-shell{ grid-template-columns:1fr; }
-    .gx-col-left{ flex-direction:row; }
-    .gx-col-left .gs-card{ flex:1; }
+    .gx-col-left, .gx-col-right{ flex-direction:column; }
   }
 
   /* ===== Redesign: view heading ===== */

@@ -3781,6 +3781,7 @@ const TOOLS = [
       title:{ type:'string', description:'Short identifying title, e.g. "Hoymiles 303 — firmware".' },
       content:{ type:'string', description:'The full explanation, as you would tell a colleague.' },
       tags:{ type:'array', items:{ type:'string' }, description:'Manufacturer, code, category.' } },
+      cluster:{ type:'string', description:'Which cluster it belongs to — use an existing one where it fits: ' + Clusters.names().slice(0, 14).join(', ') },
       required:['title','content'] },
     async execute(args){
       const entry = { title: args.title, content: args.content,
@@ -7353,6 +7354,42 @@ function renderGalaxySide(){
     .map(f => row(pal[folders.indexOf(f) % pal.length], f, counts[f], true))
     .join('') || '<div class="gf-empty">No clusters yet.</div>';
 
+  // Each row gets a rename control: the automatic rules will not always be
+  // right, and a wrong cluster you cannot fix is worse than no cluster.
+  cl.querySelectorAll('[data-focus]').forEach(b => {
+    const name = b.dataset.focus;
+    const bareName = name.replace(/\/$/, '');
+    // Only clusters you created can be deleted; the built-ins and Others stay.
+    if(Clusters.custom.some(d => d.name === bareName)){
+      const del = document.createElement('span');
+      del.className = 'gl-edit gl-del';
+      del.textContent = '×';
+      del.title = 'Delete this cluster — its entries move to Others';
+      del.addEventListener('click', ev => {
+        ev.stopPropagation();
+        if(!confirm(`Delete “${bareName}”? Its entries move to Others — nothing is lost.`)) return;
+        Clusters.remove(bareName);
+        showGalaxy(true);
+      });
+      b.appendChild(del);
+    }
+    const edit = document.createElement('span');
+    edit.className = 'gl-edit';
+    edit.textContent = '✎';
+    edit.title = 'Move these entries to another cluster';
+    edit.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const bare = name.replace(/\/$/, '');
+      const to = prompt(`Move everything in “${bare}” to which cluster?\n\n`
+        + `In use: ${Clusters.names().slice(0, 12).join(', ')}`, bare);
+      if(to === null) return;
+      (KB || []).forEach(e => {
+        if(Clusters.forEntry(e) === bare) Clusters.assign(e.id, to.trim());
+      });
+      showGalaxy(true);
+    });
+    b.appendChild(edit);
+  });
   cl.querySelectorAll('[data-focus]').forEach(b => {
     b.addEventListener('click', () => {
       // Clicking a cluster focuses its hub, which is the entry the rest hang
@@ -8512,6 +8549,144 @@ setInterval(() => {
   if(recordsStamp() !== galaxyStamp) showGalaxy();
 }, 6000);
 
+
+// ===== Clusters ========================================================
+// A cluster used to be whatever text happened to sit in an entry's `source`,
+// cut at the first dash. That field records WHERE a fact came from — a manual,
+// a call — which is not the same as what it is ABOUT, so "test", "test hand
+// writing" and "BEL SUPPORT RUNBOOK 4.6" each became their own cluster.
+//
+// Clusters are now a named thing you control: an explicit tag if the entry has
+// one, otherwise a known manufacturer or topic found in its text, otherwise
+// the source as before.
+const Clusters = {
+  // Edited in the sidebar; kept with the rest of the settings.
+  get map(){ return settings.clusterMap || (settings.clusterMap = {}); },
+
+  // Clusters you have created. Each is a name plus optional match terms, so a
+  // new topic can either be named once and matched automatically, or created
+  // empty and filled by hand.
+  get custom(){ return settings.clusterDefs || (settings.clusterDefs = []); },
+
+  create(name, terms){
+    const n = this.norm(name);
+    if(!n) return false;
+    if(this.custom.some(d => d.name.toLowerCase() === n.toLowerCase())) return false;
+    if(this.KNOWN.some(([l]) => l.toLowerCase() === n.toLowerCase())) return false;
+    this.custom.push({ name: n, terms: String(terms || '').split(',')
+      .map(t => t.trim()).filter(Boolean).slice(0, 12) });
+    saveSettings();
+    return true;
+  },
+  remove(name){
+    // Removing a definition does not orphan its entries — they fall back
+    // through the rules, most landing in Others.
+    settings.clusterDefs = this.custom.filter(d => d.name !== name);
+    Object.keys(this.map).forEach(k => { if(this.map[k] === name) delete this.map[k]; });
+    saveSettings();
+  },
+
+  // Custom definitions are tested before the built-ins, so a cluster you made
+  // for your own work beats a generic manufacturer match.
+  matchCustom(text){
+    for(const d of this.custom){
+      if(!d.terms.length) continue;
+      for(const t of d.terms){
+        const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if(new RegExp('\\b' + esc, 'i').test(text)) return d.name;
+      }
+    }
+    return null;
+  },
+
+  // The vocabulary this job actually uses. First match wins, so the more
+  // specific names come first.
+  KNOWN: [
+    ['Deye', /\bdeye\b/i], ['Growatt', /\bgrowatt\b/i], ['Solis', /\bsolis\b/i],
+    ['FoxESS', /\bfox\s?ess\b/i], ['Hoymiles', /\bhoymiles\b/i], ['Huawei', /\bhuawei\b/i],
+    ['Canadian', /\bcanadian\b/i], ['SAJ', /\bsaj\b/i], ['Sungrow', /\bsungrow\b/i],
+    ['Warranty & RMA', /\b(garantia|warranty|rma|troca em garantia)\b/i],
+    ['Grid & Utility', /\b(concession[áa]ria|rede|utility|sobretens[ãa]o|overvoltage|ov-?g-?v)\b/i],
+    ['Monitoring', /\b(monitoramento|datalogger|wi-?fi|monitoring|portal)\b/i],
+    ['Safety & Field', /\b(seguran[çc]a|epi|campo|field|nr-?10|nr-?35)\b/i],
+    ['Support', /\b(atendimento|suporte|support|pac\b|ticket)\b/i],
+  ],
+
+  // Normalise so "deye", "Deye " and "DEYE/" are one cluster, not three.
+  norm(name){
+    const t = String(name || '').replace(/\/+$/, '').trim();
+    if(!t) return '';
+    const hit = this.KNOWN.find(([label]) => label.toLowerCase() === t.toLowerCase());
+    return hit ? hit[0] : t.replace(/\s+/g, ' ');
+  },
+
+  // Decide an entry's cluster. Explicit wins over inferred, always.
+  forEntry(e){
+    const text = `${e.title || ''} ${(e.tags || []).join(' ')} ${e.source || ''}`;
+
+    // 1. anything you have assigned by hand
+    const manual = this.map[String(e.id)];
+    if(manual) return this.norm(manual);
+
+    // 2. a tag that names a known cluster
+    for(const t of (e.tags || [])){
+      const n = this.norm(t);
+      if(this.KNOWN.some(([label]) => label.toLowerCase() === n.toLowerCase())) return n;
+    }
+
+    // 3. a cluster you defined, matched on its own terms
+    const mine = this.matchCustom(text);
+    if(mine) return mine;
+
+    // 4. a known name appearing anywhere in the entry
+    const found = this.KNOWN.find(([, re]) => re.test(text));
+    if(found) return found[0];
+
+    // 5. Everything else goes to Others rather than becoming a cluster of one.
+    //    A source is only allowed to name a cluster if you have said so, by
+    //    creating it — otherwise every document title spawns its own galaxy.
+    const src = this.norm(String(e.source || '').split(/[—:\-–|]/)[0].trim());
+    if(src && (this.custom.some(d => d.name.toLowerCase() === src.toLowerCase())
+            || this.KNOWN.some(([l]) => l.toLowerCase() === src.toLowerCase()))) return src;
+
+    return 'Others';
+  },
+
+  // Everything currently in use, for the sidebar and for add_knowledge.
+  names(){
+    const s = new Set([...this.KNOWN.map(k => k[0]), ...this.custom.map(d => d.name)]);
+    (KB || []).forEach(e => s.add(this.forEntry(e)));
+    return [...s].sort();
+  },
+
+  assign(entryId, cluster){
+    if(!entryId) return;
+    if(cluster) this.map[String(entryId)] = this.norm(cluster);
+    else delete this.map[String(entryId)];
+    saveSettings();
+  },
+};
+
+
+// Creating a cluster: a name, and optionally the words that belong to it.
+// Terms are what let a new topic collect itself — without them the cluster
+// exists but stays empty until entries are moved in by hand.
+document.getElementById('gx-new-cluster')?.addEventListener('click', () => {
+  const name = prompt('Name the new cluster\n\nExamples: Training · Market & Trends · Commissioning');
+  if(!name || !name.trim()) return;
+  const terms = prompt(
+    `Which words belong to “${name.trim()}”?\n\n`
+    + 'Comma separated. Any entry mentioning one of these joins the cluster.\n'
+    + 'Leave blank to create it empty and move entries in yourself.',
+    '');
+  if(terms === null) return;
+  if(!Clusters.create(name, terms)){
+    alert('There is already a cluster with that name.');
+    return;
+  }
+  showGalaxy(true);
+});
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -9200,7 +9375,7 @@ const Galaxy = {
       id: 'kb:' + i, key: String(e.title || '').toLowerCase(), title: e.title || 'Untitled',
       tags: (e.tags || []).map(t => String(t).toLowerCase()), links: [],
       words: String(e.content || '').split(/\s+/).length, excerpt: String(e.content || '').slice(0, 220),
-      folder: (e.source ? e.source.split(/[—:]/)[0].trim() : 'Knowledge') + '/', source: 'kb' }));
+      folder: Clusters.forEntry(e) + '/', source: 'kb' }));
     (Memory.cache || []).filter(m => m.kind !== 'template').forEach(m => out.push({
       id: 'mem:' + m.id, key: String(m.content).slice(0, 30).toLowerCase(),
       title: String(m.content).slice(0, 40), tags: (m.keywords || '').split(/\s+/).filter(Boolean).slice(0, 6),
