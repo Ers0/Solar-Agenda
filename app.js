@@ -8086,12 +8086,35 @@ const GalaxyView = {
       // Activity comes from real events, not a timer, so a still map means a
       // still day rather than a broken renderer.
       eventKinds: [],
+
+  // The design shows a card on hover — title, cluster, age. Ours had only a
+  // browser tooltip, which is slow to appear and unstyled.
+  onHover: (nd, sx, sy) => {
+    const tip = document.getElementById('galaxy-tip');
+    const cv = document.getElementById('kb-map');
+    if(!tip || !cv) return;
+    if(!nd){ tip.style.opacity = 0; return; }
+    tip.style.opacity = 1;
+    tip.style.left = Math.min(sx + 14, cv.clientWidth - 244) + 'px';
+    tip.style.top = Math.max(8, sy - 76) + 'px';
+    const age = nd.age === 0 ? 'today' : nd.age + ' d';
+    const cl = (nd.c && nd.c.name) || '';
+    tip.innerHTML = `<div class="gt-title">${escapeHtml(nd.title || '')}</div>`
+      + `<div class="gt-cluster" style="color:${(nd.c && nd.c.color) || 'var(--muted)'}">${escapeHtml(cl)}</div>`
+      + `<div class="gt-age">${age}${nd.links ? ' · ' + nd.links + ' links' : ''}</div>`;
+  },
       onPick: (nd, cluster) => {
         if(nd && nd.ref){ Galaxy.focus = nd.ref; showStar(nd.ref); }
         else Galaxy.focus = null;
         renderGalaxySide();
       },
     });
+    const stats = document.getElementById('galaxy-stats');
+    if(stats){
+      const links = (Galaxy.edges || []).length;
+      stats.textContent = `${data.nodes.length} NODES · ${links} LINKS · ${data.clusters.length} CLUSTERS`;
+    }
+
     // Real activity pings the map.
     GalaxyFeed.onPush = (kind, text) => {
       const hit = data.nodes.find(n => String(n.title || '').toLowerCase()
@@ -8333,6 +8356,51 @@ const Dial = {
     });
   },
 };
+
+
+// ===== Agenda layout (redesign) =======================================
+// The design lays the day out as two columns: the wheel with the weather and
+// suggestions beneath it on the left, the actual day list on the right. Our
+// markup had everything stacked in one narrow column with the wheel floating
+// above, which is why it read as a wall of dead space on a wide screen.
+//
+// The panels are MOVED, not rebuilt — every id, handler and render path is
+// untouched, so nothing that works stops working.
+function reflowAgenda(){
+  const view = document.getElementById('view-agenda');
+  const main = view && view.querySelector('main.layout');
+  const arc  = view && view.querySelector('.arc-wrap');
+  if(!view || !main || main._reflowed) return;
+
+  const grab = sel => view.querySelector(sel);
+  const firstHour = grab('.first-hour-panel');
+  const suggest   = grab('.suggest-panel');
+  const weather   = grab('.weather-panel');
+  const day       = grab('.day-panel');
+  // If the markup ever changes shape, leave it alone rather than half-move it.
+  if(!firstHour || !day){ return; }
+
+  main._reflowed = true;
+  main.classList.add('agenda-grid');
+  main.innerHTML = '';
+
+  const left = document.createElement('div');
+  left.className = 'ag-left';
+  if(arc) left.appendChild(arc);              // the wheel heads its own column
+  const cards = document.createElement('div');
+  cards.className = 'ag-cards';
+  if(weather) cards.appendChild(weather);
+  if(suggest) cards.appendChild(suggest);
+  if(cards.children.length) left.appendChild(cards);
+
+  const right = document.createElement('div');
+  right.className = 'ag-right';
+  right.appendChild(firstHour);
+  right.appendChild(day);
+
+  main.appendChild(left);
+  main.appendChild(right);
+}
 
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
@@ -11891,7 +11959,7 @@ function renderSettings(){
     const el = document.getElementById(id);
     if(el && settings[key] != null) el.value = settings[key];
   });
-  try{ buildRail(); renderViewHead('agenda'); }catch(e){ console.warn('[rail]', e); }
+  try{ buildRail(); reflowAgenda(); renderViewHead('agenda'); }catch(e){ console.warn('[rail]', e); }
   organiseSettings();
   renderVocab();
   Handwriting.load().then(renderHandwritingStatus);

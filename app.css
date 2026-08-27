@@ -973,6 +973,17 @@
     animation: vtFill 1.8s linear forwards; }
   @keyframes vtFill{ to{ width:100% } }
 
+
+  .galaxy-tip{ position:absolute; left:0; top:0; opacity:0; pointer-events:none;
+    max-width:230px; z-index:4;
+    background: color-mix(in srgb, var(--bg) 94%, transparent);
+    border:1px solid var(--line); border-radius:9px; padding:8px 10px;
+    font-size:12px; line-height:1.45; transition:opacity .12s; }
+  .gt-title{ font-weight:600; color:var(--text); }
+  .gt-cluster{ font-size:11px; margin-top:2px; }
+  .gt-age{ color:var(--muted); font-size:11px; margin-top:3px;
+    font-family:"JetBrains Mono",monospace; }
+
   .galaxy-mini-frame{ position:absolute; right:10px; bottom:10px;
     width:150px; height:96px; border:1px solid var(--line); border-radius:9px;
     background:color-mix(in srgb, var(--bg) 72%, transparent);
@@ -1071,6 +1082,47 @@
 
   #app-root.has-rail .sub-tabs{ gap:6px; flex-wrap:wrap; }
   #app-root.has-rail .sub-tab{ flex:0 0 auto; padding:8px 16px; }
+
+
+  /* ===== Redesign: the agenda as two columns ===== */
+  #app-root.has-rail main.agenda-grid{
+    display:grid; grid-template-columns:minmax(0,620px) minmax(0,1fr);
+    gap:20px; align-items:start;
+  }
+  .ag-left{ display:flex; flex-direction:column; gap:16px; min-width:0; }
+  .ag-right{ display:flex; flex-direction:column; gap:16px; min-width:0; }
+  .ag-cards{ display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:stretch; }
+  .ag-cards > *{ margin:0; }
+
+  /* the wheel now heads a column, so it no longer needs its own centring */
+  #app-root.has-rail .ag-left .arc-wrap{ max-width:none; margin:0; }
+  #app-root.has-rail .ag-left #day-arc{ max-height:330px; }
+
+  /* the design's glow behind the wheel */
+  #app-root.has-rail .ag-left .arc-wrap{
+    position:relative; overflow:hidden;
+    box-shadow: 0 0 70px -34px color-mix(in srgb, var(--amber) 55%, transparent);
+  }
+  #app-root.has-rail .ag-left .arc-wrap::before{
+    content:''; position:absolute; left:50%; top:-160px; width:520px; height:420px;
+    transform:translateX(-50%); pointer-events:none;
+    background: radial-gradient(closest-side,
+      color-mix(in srgb, var(--amber) 20%, transparent), transparent 72%);
+  }
+
+  /* first hour, in the design's red-tinted frame */
+  #app-root.has-rail .first-hour-panel{
+    border-color: color-mix(in srgb, var(--urgente) 34%, var(--line));
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--urgente) 11%, transparent),
+      color-mix(in srgb, var(--panel) 60%, transparent));
+  }
+
+  @media (max-width: 1180px){
+    #app-root.has-rail main.agenda-grid{ grid-template-columns:1fr; }
+    .ag-cards{ grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width: 700px){ .ag-cards{ grid-template-columns:1fr; } }
 
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
