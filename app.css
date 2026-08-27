@@ -1009,6 +1009,14 @@
      the focus bar, the HUD strip — and making them grid items rearranged all
      of them. The rail is taken out of flow instead, so nothing else moves. */
   #app-root.has-rail{ max-width:none; margin:0; padding:0 0 80px 82px; }
+  #app-root.has-rail > .topbar,
+  #app-root.has-rail > .view-head,
+  #app-root.has-rail > .arc-wrap,
+  #app-root.has-rail > .focus-bar,
+  #app-root.has-rail > .hud-strip,
+  #app-root.has-rail > main{
+    max-width:1280px; margin-left:auto; margin-right:auto; width:100%;
+  }
   #app-root.has-rail > .topbar{ padding:16px 26px; }
   #app-root.has-rail > main{ padding-left:26px; padding-right:26px; }
 
@@ -1048,7 +1056,15 @@
   .rail-tools .btn-lab, .rail-tools .user-pill{ display:none !important; }
 
   #app-root.has-rail .bottom-nav{ display:none !important; }
+  #app-root.has-rail .nav-tabs{ display:none !important; }
+  /* The topbar already carries the mark and the name; the rail's own orb
+     duplicated it. */
+  #app-root.has-rail .rail-mark{ display:none; }
+  #app-root.has-rail .rail{ padding-top:14px; }
   #app-root.has-rail .topbar .tagline{ display:none; }
+
+  #app-root.has-rail .sub-tabs{ gap:6px; flex-wrap:wrap; }
+  #app-root.has-rail .sub-tab{ flex:0 0 auto; padding:8px 16px; }
 
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
@@ -1082,6 +1098,11 @@
   .sg-why{ font-size:.68rem; color:var(--muted); margin-top:2px; }
   .sg-act{ font-size:.68rem; color:var(--amber); margin-top:4px; }
   .sg-clear{ font-size:.74rem; color:var(--muted); }
+  .sg-btn{ margin-top:8px; padding:6px 12px; font-size:.7rem; font-weight:600;
+    border:1px solid var(--amber); border-radius:8px; background:none;
+    color:var(--amber); cursor:pointer; }
+  .sg-btn:hover{ background:color-mix(in srgb, var(--amber) 14%, transparent); }
+
   @media (min-width: 861px){
     #app-root.has-rail .weather-panel,
     #app-root.has-rail .suggest-panel{ grid-column:span 1; }

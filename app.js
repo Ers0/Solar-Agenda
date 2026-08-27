@@ -7491,18 +7491,16 @@ const Suggest = {
         act: 'Good window for a stalled case' });
     }
 
-    // 3. The same client appearing repeatedly — usually one fault, not three.
-    const byClient = {};
-    open.forEach(x => {
-      const k = String(x.titulo || '').toLowerCase().slice(0, 22);
-      (byClient[k] = byClient[k] || []).push(x);
-    });
-    const repeat = Object.values(byClient).find(g => g.length >= 3);
-    if(repeat){
-      out.push({ kind:'repeat',
-        text: `${repeat.length} open cases look like the same client`,
-        why: repeat[0].titulo,
-        act: 'Worth treating as one fault' });
+    // 3. Cases that look like one underlying fault. Matching on the client
+    //    alone was too crude — two Deye jobs for the same integrator are not
+    //    the same problem. A shared fault code or symptom is the real signal.
+    const dup = this.duplicates(open);
+    if(dup){
+      const codes = dup.signal ? ` — both mention ${dup.signal}` : '';
+      out.push({ kind:'repeat', merge: dup,
+        text: `${dup.cases.length} cases look like the same fault${codes}`,
+        why: dup.cases.map(x => x.titulo).slice(0, 3).join(' · '),
+        act: 'Merge into one case, keeping each note separate' });
     }
 
     // 4. Cases sitting untouched for a week.
@@ -7527,6 +7525,44 @@ const Suggest = {
     return out.slice(0, 4);
   },
 
+
+  // What makes two cases the same problem: a shared fault code, or a shared
+  // distinctive term plus the same client. Deliberately narrow — a false merge
+  // suggestion costs more trust than a missed one.
+  FAULT: /\b(F\d{2,3}|E\d{2,3}|OV-?G-?V|UV-?G-?V|ERR\d+|[0-9]{3} ?(sobretens\w+|overvolt\w+))\b/gi,
+
+  signals(cs){
+    const t = `${cs.titulo || ''} ${(cs.tags || []).join(' ')} ${
+      (cs.notes_log || []).map(n => n && n.text || '').join(' ')}`;
+    const out = new Set();
+    (t.match(this.FAULT) || []).forEach(m => out.add(m.toUpperCase().replace(/[^A-Z0-9]/g, '')));
+    return out;
+  },
+
+  duplicates(open){
+    // Group by shared fault code first.
+    const byCode = {};
+    open.forEach(cs => this.signals(cs).forEach(sig => {
+      (byCode[sig] = byCode[sig] || []).push(cs);
+    }));
+    const codeHit = Object.entries(byCode)
+      .filter(([, g]) => g.length >= 2)
+      .sort((a, b) => b[1].length - a[1].length)[0];
+    if(codeHit) return { cases: codeHit[1], signal: codeHit[0], basis: 'fault code' };
+
+    // Otherwise the same client with the same equipment word.
+    const key = cs => {
+      const words = String(cs.titulo || '').toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u).filter(w => w.length > 3);
+      return words.slice(0, 2).join(' ');
+    };
+    const byKey = {};
+    open.forEach(cs => { const k = key(cs); if(k) (byKey[k] = byKey[k] || []).push(cs); });
+    const hit = Object.values(byKey).filter(g => g.length >= 3)
+      .sort((a, b) => b.length - a.length)[0];
+    return hit ? { cases: hit, signal: '', basis: 'same client and equipment' } : null;
+  },
+
   render(){
     const box = document.getElementById('suggest-box');
     if(!box) return;
@@ -7541,7 +7577,24 @@ const Suggest = {
       `<div class="sg-row" style="border-left-color:${tone[i.kind] || 'var(--line)'}">`
       + `<div class="sg-text">${escapeHtml(i.text)}</div>`
       + `<div class="sg-why">${escapeHtml(i.why)}</div>`
-      + `<div class="sg-act">${escapeHtml(i.act)}</div></div>`).join('');
+      + `<div class="sg-act">${escapeHtml(i.act)}</div>`
+      + (i.merge ? `<button class="sg-btn" data-merge="1">Ask TARS to merge them</button>` : '')
+      + `</div>`).join('');
+
+    // The merge is proposed to TARS rather than performed here: combining
+    // cases is destructive, and it should be confirmed like any other change.
+    const mergeItem = items.find(i => i.merge);
+    box.querySelector('[data-merge]')?.addEventListener('click', () => {
+      const names = mergeItem.merge.cases.map(x => x.titulo).join(', ');
+      openAiPanel();
+      const input = document.getElementById('ai-input');
+      if(input){
+        input.value = `These cases look like one fault${mergeItem.merge.signal
+          ? ' (' + mergeItem.merge.signal + ')' : ''}: ${names}. `
+          + 'Merge them into a single case but keep each visit as its own note. Ask me before changing anything.';
+        input.focus();
+      }
+    });
   },
 };
 function toMin(hhmm){
