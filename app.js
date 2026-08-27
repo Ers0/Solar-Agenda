@@ -8114,7 +8114,8 @@ function buildRail(){
   if(!tools || tools._built) return;
   // The class is only applied once the rail exists, so a failure here leaves
   // the previous layout working rather than a broken half-state.
-  document.body.classList.add('has-rail');
+  const root = document.getElementById('app-root');
+  if(root) root.classList.add('has-rail');
   tools._built = true;
   ['hud-toggle','theme-toggle','voice-toggle','ai-toggle','logout-btn'].forEach(id => {
     const el = document.getElementById(id);
