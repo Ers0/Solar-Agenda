@@ -69,13 +69,19 @@ document.getElementById("tab-notebooks").addEventListener("click", () => switchV
 document.getElementById("tab-settings").addEventListener("click", () => switchView("settings"));
 function switchView(view){
   TarsContext.page = view;
-  ["agenda","history","calendar","notebooks","settings"].forEach(v => {
+  ["agenda","history","calendar","notebooks","galaxy","settings"].forEach(v => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
-    document.getElementById("tab-" + v).classList.toggle("active", v === view);
+    document.getElementById("tab-" + v)?.classList.toggle("active", v === view);
   });
   // keep the mobile bottom bar in sync with the desktop pill tabs
   document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   try{ renderViewHead(view); }catch(e){};
+  // The canvas has no size until its view is visible, so the engine is
+  // mounted on first show rather than at load.
+  if(view === 'galaxy') requestAnimationFrame(() => {
+    try{ GalaxyView.mount(); renderGalaxySide(); renderGalaxyOverview(); GalaxyFeed.render(); }
+    catch(e){ console.warn('[galaxy]', e); }
+  });
   SFX.tick();
   requestAnimationFrame(() => setRain());
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -8402,6 +8408,43 @@ function reflowAgenda(){
   main.appendChild(right);
 }
 
+
+// The overview panel, from the same nodes the canvas draws. Health is the
+// share of entries that are actually connected to something — an isolated
+// entry is knowledge nobody can find.
+function renderGalaxyOverview(){
+  const box = document.getElementById('gx-overview');
+  if(!box || !Galaxy.ready) return;
+  const nodes = (Galaxy.nodes || []);
+  const links = (Galaxy.edges || []).length;
+  const linked = nodes.filter(n => (n.deg || 0) > 0).length;
+  const health = nodes.length ? Math.round(linked / nodes.length * 100) : 0;
+  const tone = health >= 80 ? 'var(--ok)' : health >= 55 ? 'var(--amber)' : 'var(--urgente)';
+  box.innerHTML = `<div class="gx-num">${nodes.length}<span>entries</span></div>`
+    + `<div class="gx-num">${links}<span>links</span></div>`
+    + `<div class="gx-num" style="color:${tone}">${health}%<span>health</span></div>`;
+  const lab = document.getElementById('gx-focus-label');
+  if(lab) lab.textContent = Galaxy.focus ? (Galaxy.focus.title || Galaxy.focus.folder || 'one entry')
+                                         : 'the whole map';
+}
+
+document.getElementById('gx-clear-focus')?.addEventListener('click', () => {
+  Galaxy.focus = null;
+  if(GalaxyView.api) GalaxyView.api.reset();
+  renderGalaxyOverview();
+  renderGalaxySide();
+  SFX.tick();
+});
+
+document.getElementById('gx-time')?.addEventListener('input', e => {
+  // The slider hides entries newer than its position, so the map can be
+  // wound back through the month.
+  const frac = (+e.target.value) / 100;
+  try{ GalaxyView.setTime(frac); }catch(err){}
+  const lab = e.target.nextElementSibling;
+  if(lab) lab.textContent = frac >= 0.99 ? 'all time' : Math.round((1 - frac) * 30) + 'd back';
+});
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -9564,7 +9607,7 @@ const Galaxy = {
   window._galaxyPanelTimer = setInterval(() => {
     const wrap = document.getElementById('galaxy-wrap');
     if(!wrap || !wrap.offsetParent) return;         // not on screen
-    try{ renderGalaxyPulse(); GalaxyFeed.render(); renderGalaxySide(); }catch(e){}
+    try{ GalaxyFeed.render(); renderGalaxySide(); renderGalaxyOverview(); }catch(e){}
   }, 4000);
 
   const cv = document.getElementById('kb-map');

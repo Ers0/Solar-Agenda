@@ -42,6 +42,7 @@
     <button class="bn-item rail-item" data-view="history" title="History"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 8v4l3 2"/></svg><span>Log</span></button>
     <button class="bn-item rail-item" data-view="calendar" title="Calendar"><svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM4 10h16M8 4v4M16 4v4"/></svg><span>Cal</span></button>
     <button class="bn-item rail-item" data-view="notebooks" title="Notebooks"><svg viewBox="0 0 24 24"><path d="M6 4h11a2 2 0 0 1 2 2v14H8a2 2 0 0 1-2-2zM10 4v16"/></svg><span>Notes</span></button>
+    <button class="bn-item rail-item" data-view="galaxy" title="Knowledge galaxy"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M6 6l12 12M18 6L6 18"/></svg><span>KB</span></button>
     <button class="bn-item rail-item" data-view="settings" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6M12 2v3M12 19v3M4 4l2 2M18 18l2 2M2 12h3M19 12h3M4 20l2-2M18 6l2-2"/></svg><span>Set</span></button>
     <div class="rail-gap"></div>
     <div class="rail-tools" id="rail-tools"></div>
@@ -171,6 +172,37 @@
   </div>
 
 
+  <div id="view-galaxy" class="hidden">
+    <div class="gx-shell">
+      <aside class="gx-col-left">
+        <div class="gs-card"><div class="gs-title">Clusters</div>
+          <div id="gl-clusters"></div></div>
+        <div class="gs-card"><div class="gs-title">Legend</div>
+          <div class="gx-legend">
+            <span><i class="lg-ring"></i>Entry</span>
+            <span><i class="lg-sun"></i>Cluster hub</span>
+            <span><i class="lg-orphan"></i>Unlinked</span>
+            <span><i class="lg-line"></i>Link between clusters</span>
+          </div></div>
+      </aside>
+
+      <div class="gx-stage">
+        <div class="hint">The knowledge galaxy now has its own tab — press <b>KB</b> in the rail.</div>
+        <div class="gx-time"><input type="range" id="gx-time" min="0" max="100" value="100">
+          <span>all time</span></div>
+      </div>
+
+      <aside class="gx-col-right">
+        <div class="gs-card"><div class="gs-title">Overview</div>
+          <div class="gx-overview" id="gx-overview"></div>
+          <div class="gx-focus">Focus: <b id="gx-focus-label">the whole map</b></div>
+          <button class="btn-ghost" id="gx-clear-focus">Clear focus</button>
+        </div>
+        <div class="gs-card"><div class="gs-title"><span class="gs-live"></span>TARS live</div>
+          <div class="galaxy-feed" id="galaxy-feed"></div></div>
+      </aside>
+    </div>
+  </div>
   <div id="view-settings" class="hidden">
     <div class="sub-tabs" role="tablist" aria-label="Settings sections">
       <button class="sub-tab active" role="tab" data-sub="assistant" aria-selected="true">Assistant</button>
@@ -319,24 +351,14 @@
         <button class="btn-ghost" id="kb-template">Copy template</button>
       </div>
       
-      <aside class="galaxy-left" id="galaxy-left">
-        <div class="gs-card"><div class="gs-title">Status</div>
-          <div id="gl-status"></div></div>
-        <div class="gs-card"><div class="gs-title">Clusters</div>
-          <div id="gl-clusters"></div></div>
-      </aside>
+      
       <div class="galaxy-wrap" id="galaxy-wrap">
         <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
         <div class="galaxy-stats" id="galaxy-stats"></div>
         <div class="galaxy-tip" id="galaxy-tip"></div>
         <div class="galaxy-mini-frame"><canvas id="galaxy-mini"></canvas></div>
         <div class="galaxy-hint">drag · zoom · click to focus</div>
-        <aside class="galaxy-side">
-        <div class="gs-card"><div class="gs-title">This week</div>
-          <div class="galaxy-pulse" id="galaxy-pulse"></div></div>
-        <div class="gs-card"><div class="gs-title"><span class="gs-live"></span>Live</div>
-          <div class="galaxy-feed" id="galaxy-feed"></div></div>
-      </aside>
+        
         <div class="kb-map-empty" id="kb-map-empty">Nothing mapped yet — scan a folder of markdown notes to build the galaxy.</div>
         <div class="kb-map-tip" id="kb-map-tip"></div>
         <div class="galaxy-hud" id="galaxy-hud"></div>
