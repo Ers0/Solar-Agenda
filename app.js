@@ -117,7 +117,7 @@ function statusRank(s){ return s === 'pending' || !s ? 0 : 1; }
 function prioColor(p){ return {urgente:'#e15b4c', alta:'#f2a71b', media:'#4fa3a0', baixa:'#6d7f92'}[p] || '#6d7f92'; }
 function blocoLabel(b){ return {'primeira-hora':'First hour', manha:'Morning', tarde:'Afternoon', 'fim-do-dia':'End of day'}[b] || b; }
 
-function render(){ renderFirstHour(); renderBlocks(); renderArc(); updateHudStrip(); }
+function render(){ renderFirstHour(); renderBlocks(); renderArc(); try{ Suggest.render(); }catch(e){} updateHudStrip(); }
 
 function todaysCases(){ const t = todayStr(); return cases.filter(c => (c.case_date || t) === t); }
 // Anything mis-filed under an old default is placed by its clock time instead,

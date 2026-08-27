@@ -1066,9 +1066,30 @@
   }
 
 
+  #app-root.has-rail #day-arc{
+    max-height:290px; height:auto; width:100%; display:block; margin:0 auto; }
+  @media (min-width: 861px){
+    #app-root.has-rail .arc-wrap{ max-width:640px; margin-left:auto; margin-right:auto; }
+  }
+
+  /* TARS suggests sits beside the weather card, as in the design */
+  .suggest-panel{ display:flex; flex-direction:column; gap:9px; }
+  .suggest-panel .sg-title{ font-size:10px; letter-spacing:.14em; font-weight:700;
+    color:var(--muted); text-transform:uppercase; margin:0; }
+  .sg-row{ border-left:2px solid var(--line); padding:6px 0 7px 10px; }
+  .sg-row + .sg-row{ margin-top:8px; border-top:1px solid var(--line); padding-top:10px; }
+  .sg-text{ font-size:.8rem; line-height:1.45; color:var(--text); }
+  .sg-why{ font-size:.68rem; color:var(--muted); margin-top:2px; }
+  .sg-act{ font-size:.68rem; color:var(--amber); margin-top:4px; }
+  .sg-clear{ font-size:.74rem; color:var(--muted); }
+  @media (min-width: 861px){
+    #app-root.has-rail .weather-panel,
+    #app-root.has-rail .suggest-panel{ grid-column:span 1; }
+  }
+
   .dial-hour{ fill:var(--muted); font-family:"JetBrains Mono",monospace;
     font-size:10px; letter-spacing:.1em; }
-  .dial-hub-n{ fill:var(--text); font-size:34px; font-weight:600; }
+  .dial-hub-n{ fill:var(--text); font-size:40px; font-weight:600; }
   .dial-hub-l{ fill:var(--muted); font-size:10px; letter-spacing:.14em;
     text-transform:uppercase; font-family:"JetBrains Mono",monospace; }
   .dial-hub-t{ fill:var(--amber); font-size:13px; font-family:"JetBrains Mono",monospace; }

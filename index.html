@@ -128,6 +128,10 @@
         <p class="hint">From clock-in until 1h later: urgent and high priority only. Everything else waits.</p>
         <div class="case-list" id="first-hour-list"></div>
       </section>
+      <section class="panel suggest-panel" id="suggest-panel">
+        <div class="sg-title">TARS suggests</div>
+        <div id="suggest-box"></div>
+      </section>
       <section class="panel weather-panel" id="weather-panel">
         <div class="wx-head"><span class="wx-title">Vinhedo today</span><span class="wx-temp mono" id="wx-temp">—</span></div>
         <div class="wx-row" id="wx-local"><span class="wx-load">loading forecast…</span></div>
@@ -830,9 +834,7 @@
   <div class="ai-messages" id="ai-messages">
     <div class="ai-msg hint">Ask about today's agenda, or say what to create — e.g. "add an urgent case for Integrator XPTO at 14:00".</div>
   </div>
-  <div class="suggest-wrap"><div class="sg-title">TARS suggests</div>
-        <div id="suggest-box"></div></div>
-      <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button class="ai-share" id="ai-share" title="Share a window so TARS can read it">⧉</button><button id="ai-send">Send</button></div>
+  <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button class="ai-share" id="ai-share" title="Share a window so TARS can read it">⧉</button><button id="ai-send">Send</button></div>
 </div>
 
 <script src="/app.js"></script>
