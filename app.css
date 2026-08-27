@@ -939,7 +939,7 @@
   .gl-dot{ width:7px; height:7px; border-radius:50%; flex:none; }
   .gl-name{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .gl-n{ color:var(--muted); font-family:"JetBrains Mono",monospace; font-size:.62rem; }
-  .galaxy-hint{ position:absolute; left:50%; transform:translateX(-50%); bottom:12px;
+  .galaxy-hint{ position:absolute; left:50%; transform:translateX(-50%); bottom:12px; z-index:3;
     font-size:.56rem; letter-spacing:.16em; text-transform:uppercase; color:var(--muted);
     background:color-mix(in srgb, var(--panel) 80%, transparent); padding:5px 14px;
     border-radius:20px; border:1px solid var(--line); z-index:3; pointer-events:none; }
@@ -973,11 +973,17 @@
     animation: vtFill 1.8s linear forwards; }
   @keyframes vtFill{ to{ width:100% } }
 
-  #galaxy-mini.galaxy-mini{ position:absolute; right:14px; bottom:44px;
-    width:140px; height:90px; max-width:140px; max-height:90px; display:block;
-    border:1px solid var(--line); border-radius:9px;
-    background:color-mix(in srgb, var(--bg) 78%, transparent); z-index:3;
-    pointer-events:none; }
+  .galaxy-mini-frame{ position:absolute; right:10px; bottom:10px;
+    width:150px; height:96px; border:1px solid var(--line); border-radius:9px;
+    background:color-mix(in srgb, var(--bg) 72%, transparent);
+    overflow:hidden; z-index:3; pointer-events:none; }
+  .galaxy-mini-frame canvas{ width:100%; height:100%; display:block; }
+  @media (max-width: 900px){ .galaxy-mini-frame{ display:none } }
+
+  /* the node count sits top-left, as in the design, and must not be covered */
+  .galaxy-stats{ position:absolute; left:12px; top:11px; z-index:3;
+    font-family:"JetBrains Mono",monospace; font-size:10px; letter-spacing:.1em;
+    color:var(--muted); pointer-events:none; }
   @media (max-width: 900px){ .galaxy-mini{ display:none } }
 
   .galaxy-wrap{ position:relative; }
