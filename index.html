@@ -187,7 +187,14 @@
       </aside>
 
       <div class="gx-stage">
-        <div class="hint">The knowledge galaxy now has its own tab — press <b>KB</b> in the rail.</div>
+        <div class="galaxy-wrap" id="galaxy-wrap">
+        <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
+        <div class="galaxy-stats" id="galaxy-stats"></div>
+        <div class="galaxy-tip" id="galaxy-tip"></div>
+        <div class="galaxy-mini-frame"><canvas id="galaxy-mini"></canvas></div>
+        <div class="galaxy-hint">drag · zoom · click to focus</div>
+        
+        <div class="kb-map-empty" id="kb-map-empty">Nothing mapped yet — scan a folder of markdown notes to build the galaxy.</div>
         <div class="gx-time"><input type="range" id="gx-time" min="0" max="100" value="100">
           <span>all time</span></div>
       </div>
@@ -352,14 +359,7 @@
       </div>
       
       
-      <div class="galaxy-wrap" id="galaxy-wrap">
-        <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
-        <div class="galaxy-stats" id="galaxy-stats"></div>
-        <div class="galaxy-tip" id="galaxy-tip"></div>
-        <div class="galaxy-mini-frame"><canvas id="galaxy-mini"></canvas></div>
-        <div class="galaxy-hint">drag · zoom · click to focus</div>
-        
-        <div class="kb-map-empty" id="kb-map-empty">Nothing mapped yet — scan a folder of markdown notes to build the galaxy.</div>
+      
         <div class="kb-map-tip" id="kb-map-tip"></div>
         <div class="galaxy-hud" id="galaxy-hud"></div>
         <button class="galaxy-expand" id="galaxy-expand" title="Expand">⤢</button>

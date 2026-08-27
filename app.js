@@ -7219,7 +7219,44 @@ const Session = {
 // work IS, not merely what exists: a running feed, motion that decays with
 // attention, a weekly pulse, and hubs that look like hubs.
 const GalaxyFeed = {
-  items: [], MAX: 40,
+  items: [], MAX: 60,
+
+  // How each tool reads in the feed. Anything not named here still appears,
+  // under its own name — silence would be worse than an unpolished label.
+  TOOL_LABEL: {
+    web_search:        ['web',  q => `searched the web for “${q}”`],
+    find_in_galaxy:    ['kb',   q => `looked up “${q}” in the galaxy`],
+    search_notes:      ['kb',   q => `searched the notebooks for “${q}”`],
+    recall_experience: ['rule', q => `recalled experience of “${q}”`],
+    learn_rule:        ['rule', q => `learned: ${q}`],
+    remember:          ['rule', q => `remembered: ${q}`],
+    add_knowledge:     ['kb',   q => `added “${q}” to the knowledge base`],
+    create_case:       ['case', q => `created case “${q}”`],
+    update_case:       ['case', q => `updated “${q}”`],
+    delete_case:       ['close',q => `deleted “${q}”`],
+    create_note:       ['kb',   q => `wrote note “${q}”`],
+    create_notebook:   ['kb',   q => `created notebook “${q}”`],
+    draw_diagram:      ['kb',   q => `drew a diagram: ${q}`],
+    look_at_screen:    ['web',  () => 'read your screen'],
+    search_email:      ['web',  q => `searched mail for “${q}”`],
+    get_briefing:      ['case', () => 'reviewed the day'],
+    start_focus:       ['case', q => `started focus: ${q}`],
+    record_outcome:    ['close',q => `recorded an outcome`],
+  },
+
+  tool(name, args, result){
+    const a = args || {};
+    // The most descriptive argument, whatever the tool calls it.
+    const subject = String(a.query || a.title || a.titulo || a.statement
+                    || a.content || a.label || a.text || '').slice(0, 44);
+    const spec = this.TOOL_LABEL[name];
+    const failed = /^(failed|could not|no |nothing)/i.test(String(result || ''));
+    const kind = failed ? 'close' : (spec ? spec[0] : 'tars');
+    const text = spec ? spec[1](subject || '…')
+                      : `${name.replace(/_/g, ' ')}${subject ? ' — ' + subject : ''}`;
+    this.push(kind, failed ? text + ' (nothing found)' : text);
+  },
+
   push(kind, text){
     if(!text) return;
     this.items.unshift({ kind, text: String(text).slice(0, 90), t: Date.now() });
@@ -7233,7 +7270,7 @@ const GalaxyFeed = {
     const el = document.getElementById('galaxy-feed');
     if(!el) return;
     const colour = { tars:'var(--accent3)', case:'var(--amber)', kb:'var(--accent2)',
-                     rule:'var(--ok)', close:'var(--muted)' };
+                     rule:'var(--ok)', web:'var(--accent3)', close:'var(--muted)' };
     el.innerHTML = this.items.slice(0, 12).map(i => {
       const mins = Math.round((Date.now() - i.t) / 60000);
       const when = mins < 1 ? 'now' : mins < 60 ? mins + 'm' : Math.round(mins / 60) + 'h';
@@ -10296,6 +10333,9 @@ async function runAssistantTurn(text, spoken){
         result = 'Failed: ' + err.message;
         actions.push({ tool: fname, ok: false, detail: err.message });
       }
+      // The live feed shows what TARS is doing, not only what it changed:
+      // a search, a lookup and a case edit are all worth seeing as they happen.
+      try{ GalaxyFeed.tool(fname, args, result); }catch(e){}
       const toolMsg = { role:'tool', tool_call_id: call.id, content: result };
       convo.push(toolMsg); aiHistory.push(toolMsg);
     }
