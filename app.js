@@ -8447,7 +8447,7 @@ function reflowAgenda(){
   const view = document.getElementById('view-agenda');
   const main = view && view.querySelector('main.layout');
   const arc  = view && view.querySelector('.arc-wrap');
-  if(!view || !main || main._reflowed) return;
+  if(!view || !main || main._reflowed || main.dataset.reflowed) return;
 
   const grab = sel => view.querySelector(sel);
   const firstHour = grab('.first-hour-panel');
@@ -8458,6 +8458,7 @@ function reflowAgenda(){
   if(!firstHour || !day){ return; }
 
   main._reflowed = true;
+  main.dataset.reflowed = '1';
   main.classList.add('agenda-grid');
   main.innerHTML = '';
 
@@ -12247,7 +12248,6 @@ function renderSettings(){
     const el = document.getElementById(id);
     if(el && settings[key] != null) el.value = settings[key];
   });
-  try{ buildRail(); reflowAgenda(); renderViewHead('agenda'); }catch(e){ console.warn('[rail]', e); }
   organiseSettings();
   renderVocab();
   Handwriting.load().then(renderHandwritingStatus);
@@ -13106,9 +13106,21 @@ async function loadWeather(){
 setInterval(loadWeather, 30 * 60 * 1000); // refresh twice an hour
 
 // --- Boot ---
+// Layout runs ONCE, before anything renders into it. It used to sit inside
+// renderSettings(), which fires again later — clearing main and taking the
+// day's rendered contents with it.
+let layoutDone = false;
+function applyLayoutOnce(){
+  if(layoutDone) return;
+  layoutDone = true;
+  try{ buildRail(); reflowAgenda(); renderViewHead('agenda'); }
+  catch(e){ console.warn('[layout]', e); }
+}
+
 async function bootApp(){
   if(session){
     showApp();
+    applyLayoutOnce();                     // before the first render, not after
     await fetchVaultKey();                 // unlock first, then fetch
     loadCases(); loadNotebooks(); loadNotes(); loadWeather();
   } else {
