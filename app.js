@@ -3781,7 +3781,7 @@ const TOOLS = [
       title:{ type:'string', description:'Short identifying title, e.g. "Hoymiles 303 — firmware".' },
       content:{ type:'string', description:'The full explanation, as you would tell a colleague.' },
       tags:{ type:'array', items:{ type:'string' }, description:'Manufacturer, code, category.' } },
-      cluster:{ type:'string', description:'Which cluster it belongs to — use an existing one where it fits: ' + Clusters.names().slice(0, 14).join(', ') },
+      cluster:{ type:'string', description:'Which cluster it belongs to. Use an existing one where it fits rather than inventing a new name.' },
       required:['title','content'] },
     async execute(args){
       const entry = { title: args.title, content: args.content,
