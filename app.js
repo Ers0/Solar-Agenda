@@ -289,10 +289,19 @@ function hourToAngle(h){
 function arcPoint(angle, r){ const cx = 400, cy = 190; return { x: cx + r * Math.cos(angle), y: cy - r * Math.sin(angle) }; }
 
 function renderHistory(){
+  try{ renderHistorySide(); }catch(e){}
   const container = document.getElementById('history-container');
   container.innerHTML = '';
-  const finished = cases.filter(c => statusRank(c.status) === 1)
-                         .sort((a,b) => (b.case_date || '').localeCompare(a.case_date || ''));
+  // The register shows closed cases by default; the filter bar can widen it
+  // to open work by priority, which is what the design's tabs are for.
+  const base = (histFilter === 'all' || histFilter === 'resolvido')
+    ? cases.filter(c => statusRank(c.status) === 1)
+    : cases.filter(c => c.prioridade === histFilter && statusRank(c.status) !== 1);
+  const finished = base
+    .filter(c => !histQuery
+      || String(c.titulo || '').toLowerCase().includes(histQuery)
+      || String(c.ticket || '').toLowerCase().includes(histQuery))
+    .sort((a,b) => (b.case_date || '').localeCompare(a.case_date || ''));
   if(finished.length === 0){
     container.innerHTML = '<div class="empty">No finished cases yet. Swipe a case right or left on the Agenda tab.</div>';
     return;
@@ -2359,9 +2368,17 @@ function createTranscriptWakeProvider(){
       if(!onWakeCb) return false;
       if(!running){ console.warn('[wake] provider was not started'); running = true; }
       const low = String(text || '').toLowerCase();
-      const hit = WAKE_WORDS.find(w => low.includes(w));
+      // A fixed list of spellings misses what the recogniser really produces —
+      // "tarz", "tas", "tars." — and matching anywhere in the sentence let a
+      // stray "e TARS" halfway through count as a wake.
+      const WAKE_RE = /\b(?:hey|hei|ei|ok|o|e|and)?\s*(?:tars|tarz|tarss|tarce|taz|tass|thars)\b[,.\s]*/i;
+      const m = low.match(WAKE_RE);
+      const hit = m ? m[0] : null;
+      // Beyond a few words in, the phrase is almost certainly part of a
+      // sentence rather than a summons.
+      if(m && m.index > 18) return false;
       if(!hit) return false;
-      const after = text.slice(low.indexOf(hit) + hit.length).replace(/^[,.\s!?]+/, '');
+      const after = text.slice(m.index + hit.length).replace(/^[,.\s!?]+/, '');
       onWakeCb(after);
       return true;
     },
@@ -2646,6 +2663,38 @@ async function onClipReady(blob){
     const d = await transcribe(blob);
     // Known mishearings are put right before anything acts on the words.
     said = Vocab.correct((d.text || '').trim());
+      // "No, cancel that" takes back the previous command rather than
+      // becoming a new one.
+      if(Spoken.isCancel(said)){
+        showHeard(said);
+        const msg = await Spoken.undo();
+        addProactiveMessage(msg);
+        speak(msg);
+        setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+        return;
+      }
+      // "…no wait, Growatt" keeps only what follows the correction.
+      const fix = Spoken.apply(said);
+      if(fix.empty){
+        showHeard(said);
+        addProactiveMessage('Cancelled — nothing was done. Say it again when ready.');
+        setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+        return;
+      }
+      if(fix.corrected){
+        said = fix.text;
+        showHeard('(corrected) ' + said);
+      }
+
+      // Judge what was heard before anything is done with it.
+      const grade = Heard.check(said);
+      if(!grade.ok && grade.acts){
+        showHeard(said);
+        addProactiveMessage(`I heard “${said}” — ${grade.reasons.join(' and ')}. `
+          + 'I have not acted on it. Say it again, or type it.');
+        setVoiceState(VOICE.conversing ? VSTATE.LISTENING : VSTATE.IDLE);
+        return;
+      }
     detected = d.language;
   }catch(err){
     showHeard('could not transcribe — network or service problem');
@@ -2870,6 +2919,9 @@ function addAiMessage(role, text){
 // TARS starting the conversation on its own. Marked so it cannot be mistaken
 // for a reply to whatever the user last said.
 function addProactiveMessage(text){
+  // Anything proactive is, by definition, something you did not ask for right
+  // now — exactly what deserves to reach you outside the tab.
+  try{ Notify.send('TARS', text, 'tars-proactive'); }catch(e){}
   const div = document.createElement('div');
   div.className = 'ai-msg assistant proactive';
   div.innerHTML = `<span class="pro-tag">TARS noticed</span>${escapeHtml(text)}`;
@@ -2908,6 +2960,12 @@ const TOOL_HINTS = {
   update_case:     /\b(change|move|reschedule|update|set .* to|mudar?|alterar|remarcar)\b/i,
   add_knowledge:   /\b(save|store|note down|knowledge|remember .*(error|code|fault)|salvar|guardar|anotar|erro)\b/i,
   create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
+  // Must not fire when the sentence is about FINISHING; "finished studying"
+  // contains "studying" and was matching start.
+  start_study:     /^(?!.*\b(finish\w*|done|stop|end|termin\w*|acab\w*)\b).*\b(study|studying|estudar|revisar|revis[ãa]o|let'?s learn)\b/i,
+  // No trailing \b after "stud": the word continues as "studying", so the
+  // boundary never matched and the phrase fell through to nothing.
+  finish_study:    /\b(finish\w* stud|done stud|stop stud|end(ed)? stud|termin\w*|acab\w* de estudar|write it up)/i,
   draw_diagram:    /\b(diagram|flow ?chart|draw|sketch|visuali[sz]e|map out|desenh|fluxograma)\b/i,
   read_page:       /\b(this page|summari[sz]e|what.*here|whats on (this|the) page|resum|esta p[aá]gina)\b/i,
   cleanup_page:    /\b(clean ?up|tidy|organi[sz]e|checklist|turn (these|this) into|organiz|limpar)\b/i,
@@ -3489,9 +3547,18 @@ const TOOLS = [
     async execute(args){
       if(!Galaxy.ready) await Galaxy.build({ folder:false });
       const hits = Galaxy.search(args.query);
-      if(!hits.length) return `Nothing in the galaxy matches "${args.query}".`;
-      switchView('settings');
-      document.querySelector('.sub-tab[data-sub=\"knowledge\"]')?.click();
+      if(!hits.length){
+        // The exact matcher needs the same spelling; fuzzy search does not, so
+        // it is worth a second look before saying there is nothing.
+        const fuzzy = await FuzzyKB.find(args.query, 5);
+        if(fuzzy.length){
+          return `Nothing matched exactly, but ${fuzzy.length} near match(es): `
+            + fuzzy.map(f => `“${f.title}”`).join(', ')
+            + '. Say which you meant, or use its wording.';
+        }
+        return `Nothing in the galaxy matches "${args.query}".`;
+      }
+      switchView('galaxy');
       const top = hits[0];
       return `Found ${hits.length} match${hits.length > 1 ? 'es' : ''}, focused on "${top.title}" in ${top.folder} `
         + `(${top.deg || 'no'} links). Others: ${hits.slice(1, 4).map(n => n.title).join('; ') || 'none'}. `
@@ -3755,6 +3822,10 @@ const TOOLS = [
       const hit = cases.find(x => (x.ticket && norm(x.ticket).includes(q))) || cases.find(x => norm(x.titulo).includes(q));
       if(!hit) return `No case matches "${args.query}". Do not claim anything changed.`;
       if(statusRank(hit.status) === 1) return `"${hit.titulo}" is closed and cannot be edited.`;
+      // Snapshot before anything changes, so "no, cancel that" can put it back.
+      lastCaseBefore = { id: hit.id, titulo: hit.titulo, before: {
+        titulo: hit.titulo, horario: hit.horario, horario_fim: hit.horario_fim,
+        prioridade: hit.prioridade, status: hit.status, bloco: hit.bloco } };
       const patch = {};
       ['prioridade','bloco','ticket','phone','titulo'].forEach(k => { if(args[k]) patch[k] = args[k]; });
       if(args.horario){
@@ -3836,6 +3907,8 @@ const TOOLS = [
       notes_log: args.note ? [{ text: args.note, at: new Date().toISOString() }] : [],
     };
     const created = await createCase(payload);
+    // Kept so “no, cancel that” has something concrete to take back.
+    lastCreatedCase = { id: created.id, titulo: created.titulo };
     cases.push(created);
     render(); renderCalendar(); renderHistory();
 
@@ -3862,6 +3935,24 @@ const TOOLS = [
     }
     return `Case created: "${created.titulo}" on ${created.case_date}`
       + (created.horario ? ` at ${created.horario}.` : '.') + extra;
+    },
+  },
+  {
+    name: 'start_study',
+    permission: PERM.LOW,
+    description: "Begin a study session: watch the shared screen and listen, then write it up afterwards. Use for 'let's study', 'start studying', 'vou estudar'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      return await Study.start();
+    },
+  },
+  {
+    name: 'finish_study',
+    permission: PERM.LOW,
+    description: "End the study session and write it up as a notebook with topics, insights and what to work on. Use for 'I've finished studying', 'terminei de estudar'.",
+    schema: { type:'object', properties:{} },
+    async execute(){
+      return await Study.finish();
     },
   },
   {
@@ -5829,6 +5920,7 @@ const Ink = {
   status(){
     const el = document.getElementById('ink-info');
     const ink = this.doc.strokes.filter(s => !s.hidden).length;
+  try{ pulseChanged(el, ink); }catch(e){}
     if(el) el.textContent = `${ink} strokes`
       + (this.doc.objects.length ? ` · ${this.doc.objects.length} shapes` : '')
       + (this.sel.size ? ` · ${this.sel.size} selected` : '')
@@ -7424,6 +7516,7 @@ const Vocab = {
     settings.vocab = this.manual.slice(0, this.MAX);
     saveSettings();
     renderVocab();
+  renderNotifyStatus();
   },
   add(word){
     const w = String(word || '').trim();
@@ -8687,6 +8780,537 @@ document.getElementById('gx-new-cluster')?.addEventListener('click', () => {
   }
   showGalaxy(true);
 });
+
+
+// ===== Transcript quality =============================================
+// "Hey TARS, create a case for..." came back as "New, Case, Minha Vores,
+// Caso. E TARS, search for the IE on database" — one sentence chopped into
+// fragments, half-translated, with the wake phrase stranded in the middle.
+// A case was created from it anyway.
+//
+// Acting on speech that plainly was not understood is worse than asking
+// again, so a transcript is judged before anything is done with it.
+const Heard = {
+  // A clean sentence has few commas relative to its words. Recognition that
+  // has fragmented produces short pieces separated by punctuation.
+  fragmented(text){
+    const t = String(text || '').trim();
+    const words = t.split(/\s+/).filter(Boolean);
+    if(words.length < 4) return false;
+    const pieces = t.split(/[,;.]+/).map(s => s.trim()).filter(Boolean);
+    if(pieces.length < 3) return false;
+    const avg = pieces.reduce((n, p) => n + p.split(/\s+/).length, 0) / pieces.length;
+    return avg <= 2.2;
+  },
+
+  // The same word twice, or a word beside its own translation, means the
+  // recogniser was guessing between languages.
+  echoes(text){
+    const w = String(text || '').toLowerCase().split(/[^\p{L}]+/u).filter(Boolean);
+    const pairs = [['case','caso'], ['new','novo'], ['note','nota'], ['search','busca']];
+    for(let i = 1; i < w.length; i++){
+      if(w[i] === w[i-1]) return true;
+      if(pairs.some(([a, b]) => (w[i-1] === a && w[i] === b) || (w[i-1] === b && w[i] === a))) return true;
+    }
+    return false;
+  },
+
+  // The wake phrase belongs at the start. In the middle means the clip began
+  // before the user did, so what precedes it is not part of the command.
+  strayWake(text){
+    const at = String(text || '').toLowerCase().search(/\b(hey )?tars\b/);
+    return at > 12;
+  },
+
+  // Creating, changing or deleting deserves more certainty than a question.
+  ACTS: /\b(create|criar?|new|nov[oa]|delete|apagar?|excluir|remove|update|atualiz|schedule|agendar?|marcar)\b/i,
+
+  check(text){
+    const reasons = [];
+    if(this.fragmented(text)) reasons.push('it came through in fragments');
+    if(this.echoes(text)) reasons.push('words repeated');
+    if(this.strayWake(text)) reasons.push('the wake phrase was in the middle');
+    return { ok: reasons.length === 0, reasons, acts: this.ACTS.test(text) };
+  },
+};
+
+
+// ===== Spoken corrections =============================================
+// Speech has no backspace. Saying the wrong thing used to go straight through,
+// so this handles both halves of the problem: correcting yourself mid-sentence,
+// and undoing something that already happened.
+const Spoken = {
+  // "create a case for Deye — no wait, for Growatt" should keep only what
+  // follows the correction. People restate rather than repeat the whole thing.
+  CORRECTION: /\b(no wait|wait no|scratch that|i mean|i meant|sorry,? i meant|actually,? no|rather|correction|n[ãa]o,? espera|espera n[ãa]o|quer dizer|na verdade n[ãa]o|desconsidera|corrigindo)\b/i,
+
+  // Said on its own, these cancel rather than correct.
+  // No trailing \b: it never matches after an accented letter, so phrases
+  // ending in á or ã were silently excluded.
+  CANCEL: /^\s*(no+[,.!\s]*$|cancel( that)?|forget it|scratch that|stop|undo( that)?|n[ãa]o[,.!\s]*$|cancela(r)?|esquece|deixa pra l[áa]|desfaz(er)?)(?![\p{L}])/iu,
+
+  // Trim everything up to the last correction marker. The last one wins:
+  // "for Deye, no wait Growatt, sorry I meant Solis" means Solis.
+  apply(text){
+    let t = String(text || '');
+    let guard = 0;
+    while(this.CORRECTION.test(t) && guard++ < 4){
+      const m = t.match(this.CORRECTION);
+      const after = t.slice(m.index + m[0].length).replace(/^[,.\s]+/, '');
+      // Only accept the tail if it still says something; otherwise the
+      // correction was the whole point and there is nothing left to do.
+      // Any remaining words count. Only a correction with nothing after it
+      // means "forget the whole thing".
+      if(!after.replace(/[^\p{L}\p{N}]/gu, '')) return { text: t, corrected: false, empty: true };
+      t = after;
+    }
+    return { text: t, corrected: t !== String(text || ''), empty: false };
+  },
+
+  isCancel(text){ return this.CANCEL.test(String(text || '').trim()); },
+
+  // What the last spoken command actually did, so it can be taken back.
+  last: null,
+  remember(kind, detail){ this.last = { kind, detail, at: Date.now() }; },
+
+  async undo(){
+    const l = this.last;
+    if(!l || Date.now() - l.at > 10 * 60000){
+      return 'There is nothing recent to undo.';
+    }
+    this.last = null;
+    try{
+      if(l.kind === 'create_case' && l.detail?.id){
+        await deleteCaseApi(l.detail.id);
+        cases = cases.filter(x => x.id !== l.detail.id);
+        render();
+        return `Removed “${l.detail.titulo || 'that case'}”.`;
+      }
+      if(l.kind === 'update_case' && l.detail?.id && l.detail.before){
+        await updateCase(l.detail.id, l.detail.before);
+        return `Put “${l.detail.titulo || 'that case'}” back as it was.`;
+      }
+      if(l.kind === 'create_note' && l.detail?.id){
+        await deleteNoteApi(l.detail.id);
+        notes = notes.filter(x => x.id !== l.detail.id);
+        renderNotebooksGrid();
+        return 'Removed that note.';
+      }
+    }catch(e){
+      return 'That could not be undone: ' + errText(e);
+    }
+    return `I can't undo ${String(l.kind).replace(/_/g, ' ')} automatically — do it from the list.`;
+  },
+};
+
+
+// ===== Startup self-check =============================================
+// Most of this app's failures have been silent: a handler bound to an element
+// that no longer exists, a tool whose name no longer matches, a render target
+// removed by a layout change. None of them throw — the feature simply stops
+// working, and nobody finds out until it is needed.
+//
+// This runs once at startup and reports what is actually wrong, so a broken
+// wire is visible immediately instead of three sessions later.
+const SelfCheck = {
+  // Controls that must be present and bound for the app to be usable.
+  CRITICAL: [
+    'ai-send', 'ai-input', 'add-case-btn', 'blocks-container', 'first-hour-list',
+    'day-arc', 'view-agenda', 'view-settings', 'view-galaxy', 'kb-map',
+    'notebook-canvas', 'suggest-box', 'galaxy-feed', 'gl-clusters',
+  ],
+
+  run(){
+    const missing = [];
+    const unbound = [];
+
+    this.CRITICAL.forEach(id => {
+      if(!document.getElementById(id)) missing.push(id);
+    });
+
+    // Every rail and nav button must name a view that exists.
+    document.querySelectorAll('[data-view]').forEach(b => {
+      const v = b.dataset.view;
+      if(!document.getElementById('view-' + v)) missing.push(`view-${v} (referenced by a nav button)`);
+    });
+
+    // Every tool must have a name, a schema and something to run.
+    const badTools = (typeof TOOLS !== 'undefined' ? TOOLS : [])
+      .filter(t => !t.name || !t.schema || typeof t.execute !== 'function')
+      .map(t => t.name || '(unnamed)');
+
+    // A tool hint that names a tool which no longer exists will silently never
+    // fire — which is how the diagram tool went missing.
+    const names = new Set((typeof TOOLS !== 'undefined' ? TOOLS : []).map(t => t.name));
+    const staleHints = Object.keys(typeof TOOL_HINTS !== 'undefined' ? TOOL_HINTS : {})
+      .filter(n => !names.has(n));
+
+    const problems = [];
+    if(missing.length) problems.push(`missing elements: ${missing.join(', ')}`);
+    if(unbound.length) problems.push(`unbound controls: ${unbound.join(', ')}`);
+    if(badTools.length) problems.push(`malformed tools: ${badTools.join(', ')}`);
+    if(staleHints.length) problems.push(`tool hints with no tool: ${staleHints.join(', ')}`);
+
+    if(problems.length){
+      console.warn('%c[self-check] ' + problems.length + ' problem(s)',
+                   'color:#e15b4c;font-weight:700');
+      problems.forEach(p => console.warn('  ' + p));
+    } else {
+      console.log('%c[self-check] all wiring intact', 'color:#4caf82');
+    }
+    this.last = problems;
+    return problems;
+  },
+};
+
+
+// ===== Study mode =====================================================
+// Watches and listens through a study session, then writes it up. The whole
+// design problem here is cost: naively sending a frame every few seconds would
+// exhaust the rate limit in minutes. So frames are filtered LOCALLY first — a
+// perceptual hash decides whether anything actually changed — and only genuinely
+// new material is ever described. Reading one page quietly costs nothing;
+// flipping slides costs one call each, up to a hard budget.
+const Study = {
+  active: false, startedAt: 0, timer: null,
+  transcript: [],        // what you said, from the existing voice pipeline
+  captions: [],          // what the screen showed, when it changed
+  lastHash: null, lastShotAt: 0, used: 0,
+  BUDGET: 12,            // vision calls per session
+  MIN_GAP: 45000,        // never two descriptions closer than this
+  TICK: 12000,           // how often a frame is even considered
+
+  async start(){
+    if(this.active) return 'A study session is already running.';
+    if(!Screen_.stream || !Screen_.stream.active){
+      const ok = await Screen_.open();
+      if(!ok) return 'Screen sharing did not start: ' + (Screen_.lastReason || 'unknown');
+      Screen_.keepOpen = true;
+    }
+    this.active = true; this.startedAt = Date.now();
+    this.transcript = []; this.captions = [];
+    this.lastHash = null; this.lastShotAt = 0; this.used = 0;
+    this.timer = setInterval(() => this.tick(), this.TICK);
+    renderStudyBar();
+    return 'Studying. I will watch and listen, and write it up when you say you have finished.';
+  },
+
+  note(text){
+    if(!this.active || !text) return;
+    this.transcript.push({ t: Date.now(), text: String(text).slice(0, 600) });
+    if(this.transcript.length > 400) this.transcript.shift();
+  },
+
+  // A 16x16 greyscale average hash. Cheap enough to run every tick, and good
+  // enough to tell a new slide from a cursor moving.
+  hash(video){
+    const cv = document.createElement('canvas');
+    cv.width = 16; cv.height = 16;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    g.drawImage(video, 0, 0, 16, 16);
+    const d = g.getImageData(0, 0, 16, 16).data;
+    const grey = [];
+    for(let i = 0; i < d.length; i += 4) grey.push((d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114));
+    const mean = grey.reduce((a, b) => a + b, 0) / grey.length;
+    cv.width = cv.height = 0;
+    return grey.map(v => (v > mean ? 1 : 0)).join('');
+  },
+
+  distance(a, b){
+    if(!a || !b || a.length !== b.length) return 999;
+    let n = 0;
+    for(let i = 0; i < a.length; i++) if(a[i] !== b[i]) n++;
+    return n;
+  },
+
+  async tick(){
+    if(!this.active) return;
+    const v = Screen_.video;
+    if(!v || !v.videoWidth) return;
+
+    let h;
+    try{ h = this.hash(v); }catch(e){ return; }
+    const changed = this.distance(this.lastHash, h);
+    this.lastHash = h;
+
+    // Fewer than ~28 of 256 bits different is a cursor or a scroll, not new
+    // material. This is what keeps a quiet hour free.
+    if(changed < 28) return;
+    if(this.used >= this.BUDGET) return;
+    if(Date.now() - this.lastShotAt < this.MIN_GAP) return;
+
+    this.lastShotAt = Date.now();
+    this.used++;
+    try{
+      const res = await Screen_.ask(
+        'Describe what is being studied here in two sentences. Name the topic, '
+        + 'and any diagram, formula, fault code or figure shown. Do not describe the interface.');
+      if(res && res.ok !== false && res.reply){
+        this.captions.push({ t: Date.now(), text: String(res.reply).slice(0, 400) });
+        renderStudyBar();
+      }
+    }catch(e){ /* one lost frame is not worth interrupting a session for */ }
+  },
+
+  minutes(){ return Math.max(1, Math.round((Date.now() - this.startedAt) / 60000)); },
+
+  async finish(){
+    if(!this.active) return 'No study session is running.';
+    this.active = false;
+    clearInterval(this.timer);
+    renderStudyBar();
+
+    const mins = this.minutes();
+    if(!this.transcript.length && !this.captions.length){
+      return 'Nothing was captured — no speech and no screen changes. Nothing written.';
+    }
+
+    const said = this.transcript.map(x => x.text).join('\n').slice(0, 6000);
+    const seen = this.captions.map((x, i) => `[${i + 1}] ${x.text}`).join('\n').slice(0, 4000);
+    const sys = [
+      'You write up a study session for a solar technician, from what they said aloud',
+      'and what was on their screen. Reply as JSON only:',
+      '{"title":"…","topics":[{"heading":"…","notes":"…"}],"insights":["…"],',
+      ' "strengthen":["…"],"deprioritise":["…"]}',
+      'topics: 2 to 6, each a real subject covered, notes a short paragraph.',
+      'insights: what actually clicked — specific, not generic study advice.',
+      'strengthen: what deserves more work, and why, based on what was covered.',
+      'deprioritise: what was already solid or is low value for this job.',
+      'Record only what the material shows. Never invent a fact, a figure or a fault code.',
+      'If the session was too thin to say anything useful, return empty arrays.',
+    ].join('\n');
+
+    let parsed;
+    try{
+      const raw = await callAi(`Spoken:\n${said}\n\nOn screen:\n${seen}`, sys);
+      parsed = JSON.parse(String(raw).replace(/```json?|```/g, '').trim());
+    }catch(e){
+      return 'The write-up failed: ' + errText(e) + '. Nothing was saved.';
+    }
+    if(!parsed || !(parsed.topics || []).length){
+      return 'Not enough was captured to write anything worth keeping.';
+    }
+
+    // One notebook, one note per topic, plus a summary note.
+    try{
+      const title = parsed.title || `Study — ${new Date().toLocaleDateString()}`;
+      const nb = await createNotebookApi({ title });
+      notebooks.unshift(nb);
+
+      const list = a => (a || []).map(s => `<li>${escapeHtml(s)}</li>`).join('');
+      const summary = await createNoteApi({
+        notebook_id: nb.id,
+        title: 'Session summary',
+        content: `<p><em>${mins} minutes · ${this.captions.length} screens · `
+          + `${this.transcript.length} spoken notes</em></p>`
+          + (parsed.insights?.length ? `<h3>What clicked</h3><ul>${list(parsed.insights)}</ul>` : '')
+          + (parsed.strengthen?.length ? `<h3>Worth more work</h3><ul>${list(parsed.strengthen)}</ul>` : '')
+          + (parsed.deprioritise?.length ? `<h3>Already solid</h3><ul>${list(parsed.deprioritise)}</ul>` : ''),
+        tags: ['study'],
+      });
+      notes.unshift(summary);
+
+      for(const t of (parsed.topics || []).slice(0, 6)){
+        const made = await createNoteApi({
+          notebook_id: nb.id,
+          title: String(t.heading || 'Topic').slice(0, 90),
+          content: `<p>${escapeHtml(String(t.notes || ''))}</p>`,
+          tags: ['study'],
+        });
+        notes.unshift(made);
+      }
+      renderNotebooksGrid();
+      GalaxyFeed.push('kb', `study written up: ${title}`);
+      return `Written up as “${title}” — ${(parsed.topics || []).length} topics, `
+        + `from ${mins} minutes. ${this.used} of ${this.BUDGET} screen reads used.`;
+    }catch(e){
+      return 'The notes could not be saved: ' + errText(e);
+    }
+  },
+};
+
+function renderStudyBar(){
+  let bar = document.getElementById('study-bar');
+  if(!Study.active){ if(bar) bar.remove(); return; }
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'study-bar';
+    bar.className = 'study-bar';
+    document.body.appendChild(bar);
+    bar.addEventListener('click', async () => {
+      if(!confirm('Finish the study session and write it up?')) return;
+      const msg = await Study.finish();
+      addProactiveMessage(msg);
+      speak(msg);
+    });
+  }
+  bar.innerHTML = `<span class="sb-dot"></span>Studying · ${Study.minutes()}m · `
+    + `${Study.captions.length} screens · ${Study.transcript.length} notes`
+    + `<b>finish</b>`;
+}
+setInterval(() => { if(Study.active) renderStudyBar(); }, 30000);
+
+
+// ===== Fuzzy knowledge search =========================================
+// The keyword matcher needed the words to be spelled the same way. It failed
+// on missing accents ("sobretensao"), typos, partial words and different word
+// order — which is most of how people actually type. Trigram matching in the
+// database handles all four; it still cannot connect "firmware" to "versão do
+// software", which genuinely needs embeddings.
+const FuzzyKB = {
+  async find(query, limit){
+    const q = String(query || '').trim();
+    if(q.length < 2) return [];
+    try{
+      const r = await fetch(FN_URL + "/agenda-search-kb", {
+        method:'POST', headers: authHeaders(),
+        body: JSON.stringify({ q, limit: limit || 6 }),
+      });
+      const out = await readJson(r);
+      if(!out.ok) return [];
+      return out.json.hits || [];
+    }catch(e){ return []; }
+  },
+};
+
+// ===== Background alerts ==============================================
+// Reminders only fired while the tab was open. A notification does not need
+// the tab focused, only permission — so a case due in ten minutes reaches you
+// while you are in another window.
+const Notify = {
+  get on(){ return settings.desktopAlerts === true; },
+
+  async enable(){
+    if(!('Notification' in window)) return 'This browser does not support notifications.';
+    let p = Notification.permission;
+    if(p === 'default') p = await Notification.requestPermission();
+    if(p !== 'granted'){
+      settings.desktopAlerts = false; saveSettings();
+      return p === 'denied'
+        ? 'Notifications are blocked for this site — allow them in the address bar.'
+        : 'Notifications were not allowed.';
+    }
+    settings.desktopAlerts = true; saveSettings();
+    renderNotifyStatus();
+    return 'Desktop alerts on. Reminders will reach you with the tab in the background.';
+  },
+
+  disable(){ settings.desktopAlerts = false; saveSettings(); renderNotifyStatus(); },
+
+  // Deliberately quiet when the tab is already in front: a notification for
+  // something you are looking at is just noise.
+  send(title, body, tag){
+    if(!this.on || !('Notification' in window)) return false;
+    if(Notification.permission !== 'granted') return false;
+    if(document.visibilityState === 'visible') return false;
+    try{
+      const n = new Notification(title, {
+        body: String(body || '').slice(0, 180),
+        tag: tag || 'solar-agenda',      // same tag replaces, never stacks
+        renotify: false,
+        silent: false,
+      });
+      n.onclick = () => { window.focus(); n.close(); };
+      return true;
+    }catch(e){ return false; }
+  },
+};
+
+function renderNotifyStatus(){
+  const el = document.getElementById('notify-status');
+  if(!el) return;
+  const supported = 'Notification' in window;
+  const perm = supported ? Notification.permission : 'unsupported';
+  el.textContent = !supported ? 'not supported in this browser'
+    : perm === 'denied' ? 'blocked — allow them in the address bar'
+    : Notify.on && perm === 'granted' ? 'on — reminders reach you in the background'
+    : 'off';
+}
+
+
+// ===== History and Calendar side panels ===============================
+// Both views now have a rail, as the design does. The figures come from the
+// same case list the main panel renders, so the two can never disagree.
+let histFilter = 'all', histQuery = '';
+
+function renderHistorySide(){
+  const stats = document.getElementById('hist-stats');
+  const makers = document.getElementById('hist-makers');
+  if(!stats || !makers) return;
+  const all = cases || [];
+  const closed = all.filter(x => x.status === 'resolvido');
+  const open = all.filter(x => x.status !== 'resolvido');
+  // Median days to close, which says more about the workload than a mean does.
+  const spans = closed.map(x => {
+    const a = Date.parse(x.created_at || 0), b = Date.parse(x.updated_at || 0);
+    return (a && b && b > a) ? (b - a) / 86400000 : null;
+  }).filter(v => v !== null).sort((a, b) => a - b);
+  const median = spans.length ? spans[Math.floor(spans.length / 2)] : null;
+
+  stats.innerHTML = `<div class="hs-num">${all.length}<span>total</span></div>`
+    + `<div class="hs-num" style="color:var(--ok)">${closed.length}<span>closed</span></div>`
+    + `<div class="hs-num" style="color:var(--amber)">${open.length}<span>open</span></div>`
+    + (median !== null ? `<div class="hs-num">${median.toFixed(median < 10 ? 1 : 0)}<span>days median</span></div>` : '');
+
+  const by = {};
+  all.forEach(x => {
+    const m = Clusters.forEntry({ id:x.id, title:x.titulo, tags:x.tags || [], source:'' });
+    if(m && m !== 'Others') by[m] = (by[m] || 0) + 1;
+  });
+  const rows = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const top = rows.length ? rows[0][1] : 1;
+  makers.innerHTML = rows.map(([name, n]) =>
+    `<div class="hm-row"><span style="flex:0 0 84px">${escapeHtml(name)}</span>`
+    + `<span class="hm-bar"><i style="width:${Math.round(n / top * 100)}%"></i></span>`
+    + `<span class="hm-n">${n}</span></div>`).join('')
+    || '<div class="gf-empty">Nothing recorded yet.</div>';
+}
+
+function renderCalendarSide(){
+  const stats = document.getElementById('cal-stats');
+  if(!stats) return;
+  const label = document.getElementById('cal-month-label')?.textContent || '';
+  const inMonth = (cases || []).filter(x => {
+    if(!x.case_date) return false;
+    const d = new Date(x.case_date + 'T12:00:00');
+    return d.getMonth() === calendarMonth.getMonth() && d.getFullYear() === calendarMonth.getFullYear();
+  });
+  const busiest = {};
+  inMonth.forEach(x => { busiest[x.case_date] = (busiest[x.case_date] || 0) + 1; });
+  const peak = Object.entries(busiest).sort((a, b) => b[1] - a[1])[0];
+  stats.innerHTML = `<div class="hs-num">${inMonth.length}<span>cases</span></div>`
+    + `<div class="hs-num" style="color:var(--urgente)">${inMonth.filter(x => x.prioridade === 'urgente').length}<span>urgent</span></div>`
+    + (peak ? `<div class="hs-num">${peak[1]}<span>busiest day</span></div>` : '');
+}
+
+// Filters narrow what the register shows without touching how it is rendered.
+document.getElementById('hist-filters')?.addEventListener('click', e => {
+  const b = e.target.closest('[data-hf]');
+  if(!b) return;
+  histFilter = b.dataset.hf;
+  document.querySelectorAll('[data-hf]').forEach(x => x.classList.toggle('active', x === b));
+  renderHistory();
+});
+document.getElementById('hist-search')?.addEventListener('input', e => {
+  histQuery = String(e.target.value || '').toLowerCase().trim();
+  renderHistory();
+});
+
+
+// A number that has just changed pulses once, so a total updating is noticed
+// without anything shouting. Values are compared before the class is applied —
+// re-rendering the same figure should look like nothing happened, because
+// nothing did.
+function pulseChanged(el, value){
+  if(!el) return;
+  const next = String(value);
+  if(el.dataset.prev !== undefined && el.dataset.prev !== next){
+    el.classList.remove('just-changed');
+    void el.offsetWidth;                 // restart the animation
+    el.classList.add('just-changed');
+  }
+  el.dataset.prev = next;
+}
 
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
@@ -10040,6 +10664,7 @@ const Memory = {
 };
 let lastMemHits = [];
 let lastNoteHit = null;
+let lastCreatedCase = null, lastCaseBefore = null, lastCreatedNote = null;
 let lastLearnBrief = 'No learned rules yet.';
 
 
@@ -10436,6 +11061,7 @@ async function runAssistantTurn(text, spoken){
   lastUserQuestion = text;
   rememberForTools(text);
   Session.note('user', text);
+  Study.note(text);
   // One retrieval bundle, owned by this turn. Nothing here is read from a
   // module global, so concurrent or rapid turns cannot cross-contaminate.
   const R = { kb: [], mem: [], rules: [], learnBrief: '', assessment: '' };
@@ -10512,6 +11138,15 @@ async function runAssistantTurn(text, spoken){
       // The live feed shows what TARS is doing, not only what it changed:
       // a search, a lookup and a case edit are all worth seeing as they happen.
       try{ GalaxyFeed.tool(fname, args, result); }catch(e){}
+      // Remember reversible work, so "no, cancel that" has something to act on.
+      try{
+        if(fname === 'create_case' && lastCreatedCase)
+          Spoken.remember('create_case', lastCreatedCase);
+        else if(fname === 'update_case' && lastCaseBefore)
+          Spoken.remember('update_case', lastCaseBefore);
+        else if(fname === 'create_note' && lastCreatedNote)
+          Spoken.remember('create_note', lastCreatedNote);
+      }catch(e){}
       const toolMsg = { role:'tool', tool_call_id: call.id, content: result };
       convo.push(toolMsg); aiHistory.push(toolMsg);
     }
@@ -12411,6 +13046,16 @@ bindSetting('tts-model', 'ttsModelId');
 });
 // last resort: flush anything typed but not yet committed
 window.addEventListener('beforeunload', () => { try{ saveSettings(); }catch(e){} });
+document.getElementById('notify-toggle')?.addEventListener('click', async () => {
+  if(Notify.on){ Notify.disable(); alert('Desktop alerts off.'); return; }
+  alert(await Notify.enable());
+});
+document.getElementById('self-check')?.addEventListener('click', () => {
+  const problems = SelfCheck.run();
+  alert(problems.length
+    ? `${problems.length} problem(s) found:\n\n` + problems.join('\n\n')
+    : 'Every control, view and tool is wired correctly.');
+});
 document.getElementById('ai-reset')?.addEventListener('click', async () => {
   try{
     await fetch(FN_URL + "/agenda-ai", { method:'POST', headers: authHeaders(), body: JSON.stringify({ reset:true }) });
@@ -12700,6 +13345,7 @@ document.getElementById('cal-next').addEventListener('click', () => { calendarMo
 document.getElementById('cal-today').addEventListener('click', () => { calendarMonth = new Date(); calendarMonth.setDate(1); renderCalendar(); });
 
 function renderCalendar(){
+  try{ renderCalendarSide(); }catch(e){}
   const wd = document.getElementById('cal-weekdays');
   if(wd.children.length === 0){ WEEKDAYS.forEach(d => { const el = document.createElement('div'); el.className = 'cal-weekday'; el.textContent = d; wd.appendChild(el); }); }
 
@@ -13121,6 +13767,8 @@ async function bootApp(){
   if(session){
     showApp();
     applyLayoutOnce();                     // before the first render, not after
+    // Report broken wiring immediately rather than letting it hide.
+    setTimeout(() => { try{ SelfCheck.run(); }catch(e){ console.warn('[self-check]', e); } }, 800);
     await fetchVaultKey();                 // unlock first, then fetch
     loadCases(); loadNotebooks(); loadNotes(); loadWeather();
   } else {

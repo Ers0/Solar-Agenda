@@ -984,6 +984,17 @@
   .gt-age{ color:var(--muted); font-size:11px; margin-top:3px;
     font-family:"JetBrains Mono",monospace; }
 
+
+  .study-bar{ position:fixed; left:50%; transform:translateX(-50%); bottom:18px;
+    display:flex; align-items:center; gap:10px; padding:9px 16px; border-radius:999px;
+    background:color-mix(in srgb, var(--panel) 94%, transparent);
+    border:1px solid var(--amber); color:var(--text); font-size:.74rem;
+    box-shadow:0 6px 26px rgba(0,0,0,.4); cursor:pointer; z-index:60; }
+  .study-bar b{ color:var(--amber); text-transform:uppercase; letter-spacing:.1em;
+    font-size:.62rem; margin-left:4px; }
+  .sb-dot{ width:7px; height:7px; border-radius:50%; background:var(--urgente);
+    animation: gsPulse 1.6s ease-in-out infinite; }
+
   .galaxy-mini-frame{ position:absolute; right:10px; bottom:10px;
     width:150px; height:96px; border:1px solid var(--line); border-radius:9px;
     background:color-mix(in srgb, var(--bg) 72%, transparent);
@@ -1185,6 +1196,164 @@
   @media (max-width: 860px){
     #view-galaxy{ padding:0 14px 16px; }
     .gx-col-left, .gx-col-right{ flex-direction:column; }
+  }
+
+
+  /* ===== History and Calendar: the design's main + rail split ===== */
+  .hist-shell, .cal-shell{ display:grid; grid-template-columns:minmax(0,1fr) 268px;
+    gap:16px; align-items:start; }
+  .hist-main, .cal-main{ padding:0; overflow:hidden; }
+  .hist-side, .cal-side{ display:flex; flex-direction:column; gap:14px; }
+
+  .hist-bar{ display:flex; align-items:center; gap:12px; padding:13px 16px;
+    border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .hist-filters{ display:flex; gap:6px; }
+  .hist-f{ padding:5px 13px; border-radius:999px; border:1px solid var(--line);
+    background:none; color:var(--muted); font-size:.72rem; font-weight:600; cursor:pointer; }
+  .hist-f:hover{ color:var(--text); }
+  .hist-f.active{ border-color:var(--amber); color:var(--amber);
+    background:color-mix(in srgb, var(--amber) 12%, transparent); }
+  .hist-search{ flex:1; min-width:180px; padding:7px 12px; border-radius:8px;
+    border:1px solid var(--line); background:var(--bg); color:var(--text); font-size:.76rem; }
+
+  .hist-stats, .cal-stats{ display:flex; gap:16px; flex-wrap:wrap; }
+  .hs-num{ font-family:"JetBrains Mono",monospace; font-size:1.4rem; font-weight:600;
+    line-height:1; color:var(--text); }
+  .hs-num span{ display:block; font-size:.55rem; font-weight:500; color:var(--muted);
+    letter-spacing:.1em; margin-top:4px; text-transform:uppercase; font-family:inherit; }
+  .hm-row{ display:flex; align-items:center; gap:9px; padding:4px 0; font-size:.72rem; }
+  .hm-bar{ flex:1; height:4px; border-radius:3px; background:var(--line); overflow:hidden; }
+  .hm-bar i{ display:block; height:100%; background:var(--amber); }
+  .hm-n{ color:var(--muted); font-family:"JetBrains Mono",monospace; font-size:.62rem; }
+
+  .cal-day-list{ max-height:340px; overflow:auto; display:flex;
+    flex-direction:column; gap:7px; }
+  .cd-item{ padding:7px 9px; border-left:2px solid var(--line); font-size:.73rem; cursor:pointer; }
+  .cd-item:hover{ background:var(--panel2); }
+  .cd-time{ font-family:"JetBrains Mono",monospace; font-size:.62rem; color:var(--muted); }
+
+  @media (max-width: 1100px){
+    .hist-shell, .cal-shell{ grid-template-columns:1fr; }
+    .hist-side, .cal-side{ flex-direction:row; }
+    .hist-side .gs-card, .cal-side .gs-card{ flex:1; }
+  }
+  @media (max-width: 700px){
+    .hist-side, .cal-side{ flex-direction:column; }
+  }
+
+
+  /* ===== Micro-interactions =============================================
+     The point is perceived responsiveness, not decoration: something you can
+     press should acknowledge the pointer before you press it, and acknowledge
+     the press itself. Everything here is small (2–3%), fast (120–160ms) and
+     eased out, so it registers without being noticed.
+
+     One easing curve and two durations throughout — a house style, so the app
+     feels like one thing rather than a collection of effects. */
+  :root{
+    --ease: cubic-bezier(.22, .61, .36, 1);
+    --quick: 130ms;
+    --settle: 220ms;
+  }
+
+  /* --- things you can press --- */
+  .cal-day, .case-card, .nb-grid-card, .gl-row, .sg-row,
+  .hist-f, .rail-item, .gs-card, .cd-item, .vb-own{
+    transition: transform var(--quick) var(--ease),
+                box-shadow var(--quick) var(--ease),
+                border-color var(--quick) var(--ease),
+                background var(--quick) var(--ease);
+    will-change: transform;
+  }
+
+  /* Calendar days and cards rise very slightly and gain a soft shadow. The
+     shadow does most of the work — lift alone reads as a glitch. */
+  .cal-day:hover{
+    transform: translateY(-2px) scale(1.015);
+    box-shadow: 0 6px 18px -8px rgba(0,0,0,.55);
+    z-index: 2;
+  }
+  .case-card:hover, .nb-grid-card:hover, .cd-item:hover{
+    transform: translateY(-2px);
+    box-shadow: 0 8px 22px -12px rgba(0,0,0,.5);
+  }
+
+  /* The press. Going *below* the resting state is what makes a click feel
+     mechanical rather than merely animated. */
+  .cal-day:active, .case-card:active, .nb-grid-card:active,
+  .hist-f:active, .rail-item:active, .cd-item:active{
+    transform: translateY(0) scale(.985);
+    transition-duration: 70ms;
+  }
+  button:not(.ink-tool):not(.rail-item):active{
+    transform: scale(.97);
+    transition: transform 70ms var(--ease);
+  }
+
+  /* Rows nudge sideways rather than lifting — a list should not levitate. */
+  .gl-row:hover, .sg-row:hover{ transform: translateX(2px); }
+
+  /* Rail items grow a touch and their icon leads the movement. */
+  .rail-item:hover{ transform: translateY(-1px); }
+  .rail-item svg{ transition: transform var(--quick) var(--ease); }
+  .rail-item:hover svg{ transform: scale(1.12); }
+  .rail-item.active svg{ transform: scale(1.06); }
+
+  /* Filter pills settle rather than snap when they become active. */
+  .hist-f.active, .sub-tab.active{ transition: all var(--settle) var(--ease); }
+
+  /* --- arrivals --- */
+  /* New content fades up rather than appearing. 8px is enough to read as
+     movement and short enough not to delay anything. */
+  @keyframes riseIn{
+    from{ opacity:0; transform: translateY(8px); }
+    to{ opacity:1; transform: none; }
+  }
+  .case-list > *, .nb-grid-card, .sg-row, .gf-row, .cd-item{
+    animation: riseIn var(--settle) var(--ease) both;
+  }
+  /* A short stagger down the list, capped so a long list is not a slideshow. */
+  .case-list > *:nth-child(1),  .nb-grid-card:nth-child(1)  { animation-delay: 0ms; }
+  .case-list > *:nth-child(2),  .nb-grid-card:nth-child(2)  { animation-delay: 30ms; }
+  .case-list > *:nth-child(3),  .nb-grid-card:nth-child(3)  { animation-delay: 60ms; }
+  .case-list > *:nth-child(4),  .nb-grid-card:nth-child(4)  { animation-delay: 90ms; }
+  .case-list > *:nth-child(5),  .nb-grid-card:nth-child(5)  { animation-delay: 120ms; }
+  .case-list > *:nth-child(n+6),.nb-grid-card:nth-child(n+6){ animation-delay: 140ms; }
+
+  /* --- state changes worth noticing --- */
+  /* A value that has just changed pulses once. Used for counts and totals,
+     where the number moving is the whole point. */
+  @keyframes tick{
+    0%{ transform: none; }
+    35%{ transform: scale(1.14); }
+    100%{ transform: none; }
+  }
+  .just-changed{ animation: tick 340ms var(--ease); }
+
+  /* Focus, for keyboard users. Never removed, only made to match. */
+  :where(button, input, textarea, select, [tabindex]):focus-visible{
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  /* Every one of the above is optional. Motion sensitivity is not a
+     preference to be overridden by a house style. */
+  @media (prefers-reduced-motion: reduce){
+    .cal-day, .case-card, .nb-grid-card, .gl-row, .sg-row, .hist-f,
+    .rail-item, .gs-card, .cd-item, .vb-own, .rail-item svg{
+      transition: none !important;
+    }
+    .cal-day:hover, .case-card:hover, .nb-grid-card:hover, .cd-item:hover,
+    .gl-row:hover, .sg-row:hover, .rail-item:hover,
+    .cal-day:active, .case-card:active, .nb-grid-card:active,
+    .hist-f:active, .rail-item:active, .cd-item:active,
+    button:not(.ink-tool):not(.rail-item):active{
+      transform: none !important;
+      box-shadow: none !important;
+    }
+    .case-list > *, .nb-grid-card, .sg-row, .gf-row, .cd-item,
+    .just-changed{ animation: none !important; }
   }
 
   /* ===== Redesign: view heading ===== */

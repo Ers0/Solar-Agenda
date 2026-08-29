@@ -149,14 +149,31 @@
   </div>
 
   <div id="view-history" class="hidden">
-    <section class="panel">
-      <div class="day-panel-header"><h2>Case history</h2></div>
-      <p class="hint">Resolved and failed cases land here once you swipe them off today's list.</p>
-      <div id="history-container"></div>
-    </section>
+    <div class="hist-shell">
+      <section class="panel hist-main">
+        <div class="hist-bar">
+          <div class="hist-filters" id="hist-filters">
+            <button class="hist-f active" data-hf="all">All</button>
+            <button class="hist-f" data-hf="urgente">Urgent</button>
+            <button class="hist-f" data-hf="alta">High</button>
+            <button class="hist-f" data-hf="resolvido">Closed</button>
+          </div>
+          <input class="hist-search" id="hist-search" placeholder="Filter by title, client or ticket…">
+        </div>
+        <div id="history-container"></div>
+      </section>
+      <aside class="hist-side">
+        <div class="gs-card"><div class="gs-title">Totals</div>
+          <div class="hist-stats" id="hist-stats"></div></div>
+        <div class="gs-card"><div class="gs-title">By manufacturer</div>
+          <div id="hist-makers"></div></div>
+      </aside>
+    </div>
   </div>
 
   <div id="view-calendar" class="hidden">
+    <div class="cal-shell">
+      <section class="panel cal-main">
     <section class="calendar-panel">
       <div class="calendar-header">
         <h2 id="cal-month-label">Month</h2>
@@ -169,8 +186,15 @@
       <div class="cal-grid" id="cal-weekdays"></div>
       <div class="cal-grid" id="cal-grid" style="margin-top:6px;"></div>
     </section>
+  </section>
+      <aside class="cal-side">
+        <div class="gs-card"><div class="gs-title">This month</div>
+          <div class="cal-stats" id="cal-stats"></div></div>
+        <div class="gs-card"><div class="gs-title" id="cal-day-title">Select a day</div>
+          <div id="cal-day-list" class="cal-day-list"></div></div>
+      </aside>
+    </div>
   </div>
-
 
   <div id="view-galaxy" class="hidden">
     <div class="gx-shell">
@@ -299,6 +323,11 @@
         <div class="set-info"><b>Reasoning model</b><span id="prov-status">checking…</span></div>
         <select class="voice-select" id="prov-select" style="max-width:150px"></select>
         <button class="btn-ghost" id="ai-reset" title="Clear the temporary model blocklist">Reset models</button>
+        <button class="btn-ghost" id="self-check" title="Verify every control is wired">Self-check</button>
+      </div>
+      <div class="set-row">
+        <div class="set-info"><b>Desktop alerts</b><span id="notify-status">off</span></div>
+        <button class="btn-ghost" id="notify-toggle">Turn on</button>
       </div>
       <p class="hint">Say “TARS, switch to Cerebras” to change it by voice. Keys live in Supabase → Edge Functions → Secrets:
       <b>CEREBRAS_API_KEY</b> (about a million tokens a day, no card — the roomiest free option),
