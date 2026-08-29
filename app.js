@@ -4607,10 +4607,34 @@ const Ink = {
   resize(){
     if(!this.cv) return;
     const r = this.cv.getBoundingClientRect();
+    // A canvas measured while its panel is still hidden or animating in has no
+    // size, and Math.max(1, …) quietly made it 1x1 — so every stroke was drawn
+    // correctly onto a canvas one pixel across. Nothing visible, no error.
+    if(r.width < 2 || r.height < 2){
+      if(this._sizeTries === undefined) this._sizeTries = 0;
+      if(this._sizeTries++ < 30){ requestAnimationFrame(() => this.resize()); return; }
+    }
+    this._sizeTries = 0;
     this.dpr = Math.min(2.5, window.devicePixelRatio || 1);
-    this.cv.width = Math.max(1, Math.round(r.width * this.dpr));
-    this.cv.height = Math.max(1, Math.round(r.height * this.dpr));
+    const w = Math.max(1, Math.round(r.width * this.dpr));
+    const h = Math.max(1, Math.round(r.height * this.dpr));
+    // Resizing a canvas clears it, so skip when nothing actually changed.
+    if(this.cv.width !== w || this.cv.height !== h){
+      this.cv.width = w; this.cv.height = h;
+      this.cacheDirty = true;
+    }
     this.redraw();
+  },
+
+  // Whatever the cause of a size change — a panel opening, the window, the
+  // rail appearing — the canvas follows it. This removes a whole class of
+  // "the drawing vanished" problems rather than guessing at their timing.
+  watchSize(){
+    if(this._sizeWatch || !this.cv || typeof ResizeObserver === 'undefined') return;
+    this._sizeWatch = new ResizeObserver(() => {
+      if(this.active) this.resize();
+    });
+    this._sizeWatch.observe(this.cv);
   },
 
   // --- coordinate space ---------------------------------------------
@@ -5933,7 +5957,7 @@ const Ink = {
     if(wrap) wrap.style.display = on ? 'block' : 'none';
     const btn = document.getElementById('nb-ink-toggle');
     if(btn) btn.classList.toggle('active', on);
-    if(on){ this.mount(); this.resize(); this.updateHandBar(); renderInkColours(); }
+    if(on){ this.mount(); this.watchSize(); this.resize(); this.updateHandBar(); renderInkColours(); }
   },
 };
 

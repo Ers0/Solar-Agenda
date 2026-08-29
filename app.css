@@ -1356,6 +1356,41 @@
     .just-changed{ animation: none !important; }
   }
 
+
+  /* ===== Settings panels: an explicit contract =========================
+     There was no .sub-panel rule at all — panels were visible only because
+     nothing said otherwise, and hidden only by the generic .hidden. That
+     works until another rule touches display, which is what left Settings
+     blank on a narrow screen. */
+  .sub-panel{ display:block; }
+  .sub-panel.hidden{ display:none !important; }
+
+  /* Eight tabs will not fit across a phone. Wrapping them costs three rows of
+     vertical space before any content; scrolling keeps them on one line and
+     signals there is more by letting the last one bleed off the edge. */
+  @media (max-width: 860px){
+    .sub-tabs{
+      flex-wrap: nowrap !important;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      margin-left: -4px; margin-right: -4px;
+      padding-left: 8px; padding-right: 8px;
+    }
+    #app-root.has-rail .sub-tabs{ flex-wrap: nowrap !important; }
+    .sub-tab{ white-space: nowrap; }
+
+    /* Six items now, so they need to be narrower and the labels smaller. */
+    .bottom-nav{ padding: 6px 2px; }
+    .bn-item{ flex: 1 1 0; min-width: 0; padding: 6px 2px; }
+    .bn-item span{ font-size: 9px; letter-spacing: 0; }
+    .bn-item svg{ width: 18px; height: 18px; }
+
+    /* The galaxy needs real height on a phone, and its rails stack. */
+    #view-galaxy .galaxy-wrap{ height: min(58vh, 460px); }
+    .gx-time{ padding-bottom: 4px; }
+  }
+
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
   .view-head h2{ margin:0; font-size:1.42rem; font-weight:600; letter-spacing:-.01em; }
