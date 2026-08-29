@@ -120,7 +120,7 @@ function statusRank(s){ return s === 'pending' || !s ? 0 : 1; }
 function prioColor(p){ return {urgente:'#e15b4c', alta:'#f2a71b', media:'#4fa3a0', baixa:'#6d7f92'}[p] || '#6d7f92'; }
 function blocoLabel(b){ return {'primeira-hora':'First hour', manha:'Morning', tarde:'Afternoon', 'fim-do-dia':'End of day'}[b] || b; }
 
-function render(){ renderFirstHour(); renderBlocks(); renderArc(); try{ Suggest.render(); }catch(e){} updateHudStrip(); }
+function render(){ renderFirstHour(); try{ renderFirstHourList(); renderStatStrip(); }catch(e){} renderBlocks(); renderArc(); try{ Suggest.render(); }catch(e){} updateHudStrip(); }
 
 function todaysCases(){ const t = todayStr(); return cases.filter(c => (c.case_date || t) === t); }
 // Anything mis-filed under an old default is placed by its clock time instead,
@@ -8531,10 +8531,29 @@ const Dial = {
 
     // hub: what is left, and the time
     const open = mine.filter(x => x.status !== 'resolvido').length;
-    parts.push(`<text x="${this.CX}" y="${this.CY - 6}" text-anchor="middle" class="dial-hub-n">${open}</text>`);
-    parts.push(`<text x="${this.CX}" y="${this.CY + 16}" text-anchor="middle" class="dial-hub-l">${open === 1 ? 'case left' : 'cases left'}</text>`);
-    parts.push(`<text x="${this.CX}" y="${this.CY + 38}" text-anchor="middle" class="dial-hub-t">${
-      String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}</text>`);
+    const total = mine.length;
+    // "On pace" compares what is left against how much of the day is left.
+    // A count alone does not tell you whether you are behind.
+    const dayFrac = Math.min(1, Math.max(0, (nowH - this.H0) / (this.H1 - this.H0)));
+    const expected = Math.round(total * (1 - dayFrac));
+    const pace = !total ? '' : open <= expected ? 'ON PACE'
+               : open - expected === 1 ? 'ONE BEHIND' : `${open - expected} BEHIND`;
+    const paceCol = !pace ? 'var(--muted)'
+      : pace === 'ON PACE' ? 'var(--ok)' : 'var(--alta)';
+
+    parts.push(`<text x="${this.CX}" y="${this.CY - 26}" text-anchor="middle" class="dial-hub-l">remaining</text>`);
+    parts.push(`<text x="${this.CX}" y="${this.CY + 8}" text-anchor="middle" class="dial-hub-n">${open}</text>`);
+    parts.push(`<text x="${this.CX}" y="${this.CY + 30}" text-anchor="middle" class="dial-hub-s">of ${total} case${total === 1 ? '' : 's'} today</text>`);
+    if(pace) parts.push(`<text x="${this.CX}" y="${this.CY + 50}" text-anchor="middle" class="dial-hub-l" fill="${paceCol}">${pace}</text>`);
+
+    // What is next, named — the single most useful thing the wheel can say.
+    const next = mine.filter(x => x.status !== 'resolvido' && isClock(x.horario)
+                   && toMin(x.horario) / 60 > nowH)
+      .sort((a, b) => toMin(a.horario) - toMin(b.horario))[0];
+    if(next){
+      parts.push(`<text x="${this.CX}" y="${this.CY + 118}" text-anchor="middle" class="dial-next-l">next up · ${escapeHtml(next.horario)}</text>`);
+      parts.push(`<text x="${this.CX}" y="${this.CY + 138}" text-anchor="middle" class="dial-next">${escapeHtml(String(next.titulo || '').slice(0, 34))}</text>`);
+    }
 
     // Measured from the geometry, not guessed: hour labels reach x 84-536 and
     // y 20-429, so a shorter box clipped the bottom two.
@@ -8545,7 +8564,7 @@ const Dial = {
     svg.querySelectorAll('.dial-pip').forEach(g => {
       g.addEventListener('click', () => {
         const cs = (cases || []).find(x => String(x.id) === g.dataset.case);
-        if(cs && typeof openCaseModal === 'function') openCaseModal(cs);
+        if(cs && typeof openCase === 'function') openCase(cs);
       });
     });
   },
@@ -9334,6 +9353,74 @@ function pulseChanged(el, value){
     el.classList.add('just-changed');
   }
   el.dataset.prev = next;
+}
+
+
+// ===== Stat strip =====================================================
+// The design's mono row: the numbers you would otherwise have to go and count.
+// All of it comes from the case list already in memory, so it costs nothing
+// and cannot disagree with what is on screen.
+function renderStatStrip(){
+  const el = document.getElementById('stat-strip');
+  if(!el) return;
+  const today = dateStr(new Date());
+  const open = (cases || []).filter(x => x.status !== 'resolvido');
+  const mine = (cases || []).filter(x => x.case_date === today);
+  const done = mine.filter(x => x.status === 'resolvido');
+
+  // Minutes left of the reserved first hour, which is the number that
+  // actually changes behaviour.
+  const start = (typeof firstHourStart === 'number') ? firstHourStart : 7;
+  const now = new Date();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const left = Math.max(0, Math.round(start * 60 + 60 - mins));
+
+  const next = mine.filter(x => x.status !== 'resolvido' && isClock(x.horario)
+                 && toMin(x.horario) > mins)
+    .sort((a, b) => toMin(a.horario) - toMin(b.horario))[0];
+
+  const cell = (label, value, tone) =>
+    `<span class="ss-cell"><i style="background:${tone}"></i>${label}<b>${value}</b></span>`;
+
+  el.innerHTML =
+      cell('OPEN', open.length, 'var(--accent2)')
+    + cell('URGENT', open.filter(x => x.prioridade === 'urgente').length, 'var(--urgente)')
+    + cell('DONE TODAY', done.length, 'var(--ok)')
+    + (left > 0 ? cell('FIRST HOUR', left + ' min', 'var(--amber)') : '')
+    + cell('NOTEBOOKS', (notebooks || []).length, 'var(--accent3)')
+    + cell('KB', (KB || []).length, 'var(--muted)')
+    + (next ? `<span class="ss-next">NEXT · ${escapeHtml(String(next.titulo || '').slice(0, 34))} · ${escapeHtml(next.horario)}</span>` : '');
+}
+
+// ===== First hour, as a list ==========================================
+// It used to be a paragraph explaining the rule. The rule is easy; knowing
+// WHICH cases qualify is the useful part, so it lists them.
+function renderFirstHourList(){
+  const el = document.getElementById('first-hour-list');
+  if(!el) return;
+  const today = dateStr(new Date());
+  const items = (cases || []).filter(x =>
+    x.case_date === today && x.status !== 'resolvido'
+    && (x.prioridade === 'urgente' || x.prioridade === 'alta'))
+    .sort((a, b) => (a.horario || '').localeCompare(b.horario || ''));
+
+  if(!items.length){
+    el.innerHTML = '<div class="fh-empty">Nothing urgent right now. Use the hour to plan.</div>';
+    return;
+  }
+  el.innerHTML = items.map(x => `
+    <button class="fh-row" data-case="${escapeHtml(String(x.id))}">
+      <span class="fh-time">${escapeHtml(x.horario || '--:--')}</span>
+      <span class="fh-body">
+        <span class="fh-title">${escapeHtml(x.titulo || '(untitled)')}</span>
+        <span class="fh-meta">${[x.ticket, x.phone].filter(Boolean).map(escapeHtml).join(' · ')}</span>
+      </span>
+      <span class="fh-badge ${x.prioridade === 'urgente' ? 'urgent' : 'high'}">${prioLabel(x.prioridade)}</span>
+    </button>`).join('');
+  el.querySelectorAll('[data-case]').forEach(b => b.addEventListener('click', () => {
+    const cs = (cases || []).find(x => String(x.id) === b.dataset.case);
+    if(cs && typeof openCase === 'function') openCase(cs);
+  }));
 }
 
 // ===== Screen reading ================================================

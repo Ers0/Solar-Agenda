@@ -118,16 +118,25 @@
       </div>
       <canvas class="rain-layer" id="rain-layer"></canvas>
       <div class="arc-sweep" id="arc-sweep"></div>
-      <svg id="day-arc" viewBox="0 -22 800 232" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="dial-legend">
+          <span><i style="background:var(--urgente)"></i>urgent</span>
+          <span><i style="background:var(--alta)"></i>high</span>
+          <span><i style="background:var(--media)"></i>normal</span>
+          <span><i style="background:var(--ok)"></i>done</span>
+          <span><i class="lg-now"></i>now</span>
+          <span><i class="lg-fh"></i>first hour</span>
+        </div>
+        <svg id="day-arc" viewBox="0 -22 800 232" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
     <div class="view-head" id="view-head"></div>
+    <div class="stat-strip" id="stat-strip"></div>
     <main class="layout">
 
       <div class="col-left">
       <section class="panel first-hour-panel">
         <h2>First hour <span class="badge">priority</span></h2>
-        <p class="hint">From clock-in until 1h later: urgent and high priority only. Everything else waits.</p>
-        <div class="case-list" id="first-hour-list"></div>
+        <p class="hint">Urgent and high priority only — everything else waits.</p>
+        <div class="fh-list" id="first-hour-list"></div>
       </section>
       <section class="panel suggest-panel" id="suggest-panel">
         <div class="sg-title">TARS suggests</div>

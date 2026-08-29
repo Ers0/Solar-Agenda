@@ -1391,6 +1391,52 @@
     .gx-time{ padding-bottom: 4px; }
   }
 
+
+  /* ===== The design's stat strip ===== */
+  .stat-strip{ display:flex; align-items:center; gap:0; flex-wrap:wrap;
+    margin:10px 26px 4px; border:1px solid var(--line); border-radius:11px;
+    background:color-mix(in srgb, var(--panel) 70%, transparent); overflow:hidden; }
+  .ss-cell{ display:flex; align-items:center; gap:7px; padding:9px 15px;
+    font-family:"JetBrains Mono",monospace; font-size:.6rem; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--muted); border-right:1px solid var(--line); }
+  .ss-cell i{ width:6px; height:6px; border-radius:50%; flex:none; }
+  .ss-cell b{ color:var(--text); font-size:.72rem; font-weight:700; letter-spacing:0; }
+  .ss-next{ margin-left:auto; padding:9px 15px; font-family:"JetBrains Mono",monospace;
+    font-size:.6rem; letter-spacing:.11em; color:var(--muted); text-transform:uppercase; }
+
+  /* ===== First hour, as a list of real cases ===== */
+  .fh-list{ display:flex; flex-direction:column; gap:8px; }
+  .fh-row{ display:flex; align-items:center; gap:13px; width:100%; text-align:left;
+    padding:11px 14px; border-radius:11px; cursor:pointer;
+    border:1px solid color-mix(in srgb, var(--urgente) 26%, var(--line));
+    background:linear-gradient(90deg,
+      color-mix(in srgb, var(--urgente) 9%, transparent), transparent 62%);
+    transition:transform var(--quick) var(--ease), border-color var(--quick) var(--ease); }
+  .fh-row:hover{ transform:translateX(2px);
+    border-color:color-mix(in srgb, var(--urgente) 52%, var(--line)); }
+  .fh-time{ font-family:"JetBrains Mono",monospace; font-size:.76rem;
+    color:var(--amber); flex:none; }
+  .fh-body{ flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .fh-title{ font-size:.84rem; font-weight:600; color:var(--text);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fh-meta{ font-size:.66rem; color:var(--muted);
+    font-family:"JetBrains Mono",monospace; }
+  .fh-badge{ flex:none; padding:3px 9px; border-radius:6px; font-size:.58rem;
+    font-weight:700; letter-spacing:.09em; text-transform:uppercase; }
+  .fh-badge.urgent{ color:var(--urgente);
+    border:1px solid color-mix(in srgb, var(--urgente) 55%, transparent);
+    background:color-mix(in srgb, var(--urgente) 14%, transparent); }
+  .fh-badge.high{ color:var(--alta);
+    border:1px solid color-mix(in srgb, var(--alta) 55%, transparent);
+    background:color-mix(in srgb, var(--alta) 13%, transparent); }
+  .fh-empty{ font-size:.76rem; color:var(--muted); padding:6px 2px; }
+
+  @media (max-width: 860px){
+    .stat-strip{ margin:8px 14px 2px; }
+    .ss-cell{ padding:7px 11px; font-size:.55rem; }
+    .ss-next{ display:none; }
+  }
+
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
   .view-head h2{ margin:0; font-size:1.42rem; font-weight:600; letter-spacing:-.01em; }
@@ -1432,6 +1478,20 @@
     #app-root.has-rail .weather-panel,
     #app-root.has-rail .suggest-panel{ grid-column:span 1; }
   }
+
+
+  .dial-hub-s{ fill:var(--muted); font-size:11px; }
+  .dial-next-l{ fill:var(--muted); font-size:9px; letter-spacing:.14em;
+    text-transform:uppercase; font-family:"JetBrains Mono",monospace; }
+  .dial-next{ fill:var(--text); font-size:13px; font-weight:600; }
+  .dial-legend{ display:flex; flex-wrap:wrap; gap:12px; justify-content:center;
+    margin-top:8px; order:2; }
+  .dial-legend span{ display:flex; align-items:center; gap:6px;
+    font-size:.62rem; color:var(--muted); }
+  .dial-legend i{ width:8px; height:8px; border-radius:50%; flex:none; }
+  .lg-now{ background:var(--bg); border:2px solid var(--amber); }
+  .lg-fh{ width:14px !important; height:2px !important; border-radius:0 !important;
+    background:var(--urgente); }
 
   .dial-hour{ fill:var(--muted); font-family:"JetBrains Mono",monospace;
     font-size:10px; letter-spacing:.1em; }
