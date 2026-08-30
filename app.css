@@ -1437,6 +1437,56 @@
     .ss-next{ display:none; }
   }
 
+
+  /* ===== The design's topbar ===== */
+  #app-root.has-rail > .topbar{
+    display:flex; align-items:center; gap:16px; padding:14px 26px;
+  }
+  #app-root.has-rail .brand{ flex:0 0 auto; }
+  #app-root.has-rail .brand-mark{ display:none; }   /* the rail carries it */
+  .tb-title h1{ font-size:1.06rem; margin:0; font-weight:600; letter-spacing:-.01em; }
+  .tb-title .tagline{ margin:2px 0 0; font-size:.6rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--muted); font-family:"JetBrains Mono",monospace; }
+
+  .tb-search{ flex:1 1 420px; max-width:470px; margin:0 auto; position:relative;
+    display:flex; align-items:center; gap:9px; padding:8px 13px; border-radius:10px;
+    border:1px solid var(--line); background:var(--bg);
+    transition:border-color var(--quick) var(--ease); }
+  .tb-search:focus-within{ border-color:var(--amber); }
+  .tb-search svg{ width:15px; height:15px; fill:none; stroke:var(--muted);
+    stroke-width:1.8; stroke-linecap:round; flex:none; }
+  .tb-search input{ flex:1; border:none; background:none; color:var(--text);
+    font-size:.8rem; outline:none; min-width:0; }
+  .tb-search kbd{ font-family:"JetBrains Mono",monospace; font-size:.58rem;
+    color:var(--muted); border:1px solid var(--line); border-radius:5px;
+    padding:2px 5px; flex:none; }
+
+  .tb-status{ display:flex; align-items:center; gap:7px; padding:7px 14px;
+    border-radius:999px; font-size:.74rem; font-weight:600; flex:none;
+    border:1px solid color-mix(in srgb, var(--ok) 45%, transparent);
+    background:color-mix(in srgb, var(--ok) 12%, transparent); color:var(--ok); }
+  .tb-status .dot{ width:6px; height:6px; border-radius:50%; background:var(--ok); }
+  .tb-status.offline{ border-color:color-mix(in srgb, var(--urgente) 45%, transparent);
+    background:color-mix(in srgb, var(--urgente) 12%, transparent); color:var(--urgente); }
+  .tb-status.offline .dot{ background:var(--urgente); }
+
+  .tb-new{ flex:none; padding:8px 17px; border-radius:9px; font-size:.78rem;
+    font-weight:700; border:none; background:var(--amber); color:var(--on-accent); }
+  .tb-new:hover{ filter:brightness(1.08); }
+
+  /* Sign out, HUD and the rest live in the rail; the topbar keeps only what
+     the design shows. */
+  #app-root.has-rail .topbar .user-pill{ display:none; }
+
+  @media (max-width: 1000px){
+    .tb-search{ display:none; }
+  }
+  @media (max-width: 860px){
+    #app-root.has-rail > .topbar{ padding:12px 14px; gap:10px; }
+    .tb-status{ display:none; }
+    .tb-new{ padding:7px 12px; font-size:.72rem; }
+  }
+
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
   .view-head h2{ margin:0; font-size:1.42rem; font-weight:600; letter-spacing:-.01em; }

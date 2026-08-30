@@ -50,11 +50,18 @@
   <header class="topbar">
     <div class="brand">
       <div class="brand-mark"></div>
-      <div>
-        <h1>Solar Agenda</h1>
-        <p class="tagline">Support routine — from the first hour to end of day</p>
+      <div class="tb-title">
+        <h1 id="tb-heading">Solar Agenda</h1>
+        <p class="tagline" id="tb-sub">Support routine — from the first hour to end of day</p>
       </div>
     </div>
+    <div class="tb-search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="global-search" placeholder="Search cases, notes or knowledge…">
+      <kbd>⌘K</kbd>
+    </div>
+    <button class="tb-status" id="tars-status"><span class="dot"></span>TARS online</button>
+    <button class="tb-new" id="tb-new-case">+ New case</button>
     <div class="topbar-actions">
       <div class="nav-tabs" hidden>
         <button class="nav-tab active" id="tab-agenda">Agenda</button>
@@ -128,7 +135,7 @@
         </div>
         <svg id="day-arc" viewBox="0 -22 800 232" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
-    <div class="view-head" id="view-head"></div>
+    <div class="view-head" id="view-head" hidden></div>
     <div class="stat-strip" id="stat-strip"></div>
     <main class="layout">
 

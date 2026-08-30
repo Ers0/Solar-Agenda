@@ -75,7 +75,7 @@ function switchView(view){
   });
   // keep the mobile bottom bar in sync with the desktop pill tabs
   document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  try{ renderViewHead(view); }catch(e){};
+  try{ renderViewHead(view); renderTopbarHead(view); }catch(e){};
   // The canvas has no size until its view is visible, so the engine is
   // mounted on first show rather than at load.
   if(view === 'galaxy') requestAnimationFrame(() => { showGalaxy(); });
@@ -7780,7 +7780,7 @@ const Suggest = {
     const mergeItem = items.find(i => i.merge);
     box.querySelector('[data-merge]')?.addEventListener('click', () => {
       const names = mergeItem.merge.cases.map(x => x.titulo).join(', ');
-      openAiPanel();
+      document.getElementById('ai-toggle')?.click();
       const input = document.getElementById('ai-input');
       if(input){
         input.value = `These cases look like one fault${mergeItem.merge.signal
@@ -9422,6 +9422,60 @@ function renderFirstHourList(){
     if(cs && typeof openCase === 'function') openCase(cs);
   }));
 }
+
+
+// The topbar heading follows the view, so the page always says what it is.
+// The old .view-head block duplicated this, and is retired.
+const TOPBAR_HEAD = {
+  agenda:    () => ['Your day', `SUPPORT ROUTINE · ${new Date().toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'}).toUpperCase()}`],
+  history:   () => ['Case history', `${(cases||[]).filter(x=>x.status==='resolvido').length} CLOSED RECORDS`],
+  calendar:  () => ['Calendar', `${new Date().toLocaleDateString(undefined,{month:'long',year:'numeric'}).toUpperCase()} · ${(cases||[]).length} CASES`],
+  notebooks: () => ['Notebooks', `${(notes||[]).length} NOTES · ${(notebooks||[]).length} NOTEBOOKS`],
+  galaxy:    () => ['Knowledge galaxy', `${(KB||[]).length} ENTRIES · SHARED BASE`],
+  settings:  () => ['Settings', 'ASSISTANT · VOICE · WRITING · KNOWLEDGE · DATA'],
+};
+function renderTopbarHead(view){
+  const h = document.getElementById('tb-heading');
+  const s = document.getElementById('tb-sub');
+  if(!h || !s) return;
+  const fn = TOPBAR_HEAD[view];
+  if(!fn) return;
+  try{ const [title, sub] = fn(); h.textContent = title; s.textContent = sub; }catch(e){}
+}
+
+// The status pill reflects the assistant, not a decoration: it goes red when
+// the last call actually failed.
+function renderTarsStatus(ok){
+  const el = document.getElementById('tars-status');
+  if(!el) return;
+  el.classList.toggle('offline', ok === false);
+  el.lastChild.textContent = ok === false ? 'TARS offline' : 'TARS online';
+}
+
+document.getElementById('tb-new-case')?.addEventListener('click', () =>
+  document.getElementById('add-case-btn')?.click());
+document.getElementById('tars-status')?.addEventListener('click', () =>
+  document.getElementById('ai-toggle')?.click());
+
+// One search box for everything, as the design has it.
+document.getElementById('global-search')?.addEventListener('keydown', async e => {
+  if(e.key !== 'Enter') return;
+  const q = e.target.value.trim();
+  if(!q) return;
+  const hits = NoteSearch.search(q, 1);
+  if(hits.length){ NoteSearch.goTo(hits[0].it); e.target.value = ''; return; }
+  // Nothing in the notebooks — hand it to the assistant rather than shrugging.
+  document.getElementById('ai-toggle')?.click();
+  const input = document.getElementById('ai-input');
+  if(input){ input.value = q; setTimeout(() => document.getElementById('ai-send')?.click(), 60); }
+  e.target.value = '';
+});
+document.addEventListener('keydown', e => {
+  if((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){
+    e.preventDefault();
+    document.getElementById('global-search')?.focus();
+  }
+});
 
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
@@ -12941,11 +12995,6 @@ document.querySelectorAll('.sub-tab').forEach(btn => {
   btn.addEventListener('click', () => {
     const key = btn.dataset.sub;
     document.querySelectorAll('.sub-tab').forEach(b => {
-  b.addEventListener('click', () => {
-    // The pad needs a real size before it can be drawn on, which it only has
-    // once its panel is visible.
-    if(b.dataset.sub === 'writing') setTimeout(() => { HwPad.mount(); HwPad.fit(); }, 60);
-  });
       const on = b === btn;
       b.classList.toggle('active', on);
       b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -12954,7 +13003,10 @@ document.querySelectorAll('.sub-tab').forEach(btn => {
       p.classList.toggle('hidden', p.dataset.subPanel !== key));
     SFX.tick();
     // the galaxy canvas has no size while hidden, so it is measured on reveal
-    if(key === 'knowledge'){ renderTemplates(); requestAnimationFrame(() => { Galaxy.stop(); startKbMap(); }); }
+    if(key === 'knowledge') renderTemplates();
+    // The pad needs a real size before it can be drawn on, which it only has
+    // once its panel is visible.
+    if(key === 'writing') requestAnimationFrame(() => { HwPad.mount(); HwPad.fit(); });
     if(key === 'media' || key === 'appearance') requestAnimationFrame(() => setRain());
   });
 });
