@@ -9477,6 +9477,135 @@ document.addEventListener('keydown', e => {
   }
 });
 
+
+// ===== Settings navigation ============================================
+// The design replaces a row of tabs with a list: each section named, dotted in
+// its own colour, and counted — so you can see where the settings actually are
+// before clicking anything.
+const SET_SECTIONS = [
+  ['assistant',   'Assistant',   'how TARS reasons, speaks and interrupts',        'var(--amber)'],
+  ['voice',       'Voice',       'listening, speaking and vocabulary',             'var(--ok)'],
+  ['writing',     'Writing',     'ink defaults and handwriting training',          'var(--accent3)'],
+  ['knowledge',   'Knowledge',   'entries, the shared base and templates',         'var(--accent2)'],
+  ['connections', 'Connections', 'mail, screen sharing, profiles and Drive',       'var(--dusk)'],
+  ['media',       'Media',       'sound and ambience',                             'var(--media)'],
+  ['appearance',  'Appearance',  'themes, generated and checked for contrast',     'var(--accent3)'],
+  ['data',        'Data',        'export, encryption and backup',                  'var(--muted)'],
+];
+
+function renderSettingsNav(active){
+  const nav = document.getElementById('set-nav');
+  const head = document.getElementById('set-head');
+  if(!nav) return;
+  const cur = active || document.querySelector('.sub-tab.active')?.dataset.sub || 'assistant';
+
+  nav.innerHTML = SET_SECTIONS.map(([key, label, , colour]) => {
+    const panel = document.querySelector(`[data-sub-panel="${key}"]`);
+    // Count what is actually in the panel, so the number cannot drift from
+    // what the section contains.
+    const n = panel ? panel.querySelectorAll('.set-row').length : 0;
+    return `<button class="set-nav-item${key === cur ? ' active' : ''}" data-goto="${key}">
+      <span class="sn-dot" style="background:${colour}"></span>
+      <span class="sn-name">${label}</span>
+      <span class="sn-n">${n || ''}</span></button>`;
+  }).join('');
+
+  nav.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => {
+    document.querySelector(`.sub-tab[data-sub="${b.dataset.goto}"]`)?.click();
+    renderSettingsNav(b.dataset.goto);
+  }));
+
+  if(head){
+    const s = SET_SECTIONS.find(x => x[0] === cur);
+    head.innerHTML = s ? `<h2>${s[1]}</h2><span>${s[2]}</span>` : '';
+  }
+}
+
+// The profile card: whose data this is, and the one thing worth knowing about
+// how it is stored.
+function renderSettingsProfile(){
+  const el = document.getElementById('set-profile');
+  if(!el || !session) return;
+  const name = String(session.name || 'you');
+  const initials = name.slice(0, 2).toUpperCase();
+  el.innerHTML = `<div class="gs-title">Profile</div>
+    <div class="sp-row"><span class="sp-avatar">${escapeHtml(initials)}</span>
+      <span><b>${escapeHtml(name)}</b><span class="sp-sub">${escapeHtml(session.role || 'member')} · own key</span></span></div>
+    <p class="sp-note">Cases and notes are private per profile. The knowledge base is
+      shared — keep client names out of it.</p>`;
+}
+
+
+// ===== Calendar selection =============================================
+// A single click SELECTS a day and fills the rail beside it; opening the day
+// takes a double click. Clicking once used to open the modal, which made
+// browsing the month impossible without dismissing a dialog each time.
+let calSelected = null;
+
+function selectCalDay(dateStr_){
+  calSelected = dateStr_;
+  document.querySelectorAll('.cal-day').forEach(d =>
+    d.classList.toggle('selected', d.dataset.date === dateStr_));
+  renderCalSelected();
+}
+
+function renderCalSelected(){
+  const list = document.getElementById('cal-day-list');
+  const title = document.getElementById('cal-day-title');
+  if(!list || !title) return;
+  if(!calSelected){
+    title.textContent = 'Select a day';
+    list.innerHTML = '<div class="gf-empty">Click a day to see its cases. Double-click to open it.</div>';
+    return;
+  }
+  const d = new Date(calSelected + 'T12:00:00');
+  title.textContent = 'Selected · ' + d.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short' });
+  const items = (cases || []).filter(x => x.case_date === calSelected)
+    .sort((a, b) => (a.horario || '').localeCompare(b.horario || ''));
+  if(!items.length){
+    list.innerHTML = '<div class="gf-empty">Nothing scheduled.</div>';
+    return;
+  }
+  const tone = p => p === 'urgente' ? 'var(--urgente)' : p === 'alta' ? 'var(--alta)'
+              : p === 'media' ? 'var(--media)' : 'var(--ok)';
+  list.innerHTML = items.map(x => `
+    <button class="cd-item" data-case="${escapeHtml(String(x.id))}">
+      <span class="cd-time">${escapeHtml(x.horario || '--:--')}</span>
+      ${escapeHtml(String(x.titulo || '').slice(0, 38))}
+      <span style="float:right;width:7px;height:7px;border-radius:50%;background:${tone(x.prioridade)};margin-top:5px"></span>
+    </button>`).join('');
+  list.querySelectorAll('[data-case]').forEach(b => b.addEventListener('click', () => {
+    const cs = (cases || []).find(x => String(x.id) === b.dataset.case);
+    if(cs) openCase(cs);
+  }));
+}
+
+// How full the month is, against the one before it — the comparison is what
+// makes the number mean anything.
+function renderMonthLoad(){
+  const el = document.getElementById('cal-stats');
+  if(!el) return;
+  const inMonth = (cases || []).filter(x => {
+    if(!x.case_date) return false;
+    const d = new Date(x.case_date + 'T12:00:00');
+    return d.getMonth() === calendarMonth.getMonth() && d.getFullYear() === calendarMonth.getFullYear();
+  });
+  const prev = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1);
+  const inPrev = (cases || []).filter(x => {
+    if(!x.case_date) return false;
+    const d = new Date(x.case_date + 'T12:00:00');
+    return d.getMonth() === prev.getMonth() && d.getFullYear() === prev.getFullYear();
+  }).length;
+  const delta = inPrev ? Math.round((inMonth.length - inPrev) / inPrev * 100) : null;
+  const prevName = prev.toLocaleDateString(undefined, { month:'long' });
+  el.innerHTML = `<div class="cal-load" style="width:100%">
+    <div class="cl-num">${inMonth.length}</div>
+    <div class="cl-sub">cases scheduled${delta === null ? '' :
+      ` · ${Math.abs(delta)}% ${delta >= 0 ? 'above' : 'below'} ${escapeHtml(prevName)}`}</div>
+    <div class="cl-bar"><i style="width:${Math.min(100, Math.round(inMonth.length / 2))}%"></i></div>
+  </div>`;
+}
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -13047,6 +13176,7 @@ function renderSettings(){
     if(el && settings[key] != null) el.value = settings[key];
   });
   organiseSettings();
+  try{ renderSettingsNav(); renderSettingsProfile(); }catch(e){}
   renderVocab();
   Handwriting.load().then(renderHandwritingStatus);
   probeTts(); renderTtsStatus(); renderConfirmStatus(); renderAuditStatus(); renderProviderStatus(); renderAutoListen(); renderProactiveStatus(); renderMicSens(); renderBgListen(); renderPauseTol();
@@ -13508,7 +13638,7 @@ document.getElementById('cal-next').addEventListener('click', () => { calendarMo
 document.getElementById('cal-today').addEventListener('click', () => { calendarMonth = new Date(); calendarMonth.setDate(1); renderCalendar(); });
 
 function renderCalendar(){
-  try{ renderCalendarSide(); }catch(e){}
+  try{ renderMonthLoad(); renderCalSelected(); }catch(e){}
   const wd = document.getElementById('cal-weekdays');
   if(wd.children.length === 0){ WEEKDAYS.forEach(d => { const el = document.createElement('div'); el.className = 'cal-weekday'; el.textContent = d; wd.appendChild(el); }); }
 
@@ -13540,7 +13670,12 @@ function renderCalendar(){
     const dots = dayCases.slice(0,4).map(c => `<span class="cal-dot" style="background:${prioColor(c.prioridade)}"></span>`).join('');
     const noteDot = dayNotes.length ? '<span class="cal-note-dot"></span>' : '';
     cell.innerHTML = `<span class="cal-daynum">${cellDate.getDate()}</span><div class="cal-dots">${dots}${noteDot}</div>`;
-    cell.addEventListener('click', () => openDayModal(dateStr, dayCases, dayNotes));
+    // One click selects and fills the rail beside the grid; two opens the day.
+    // Opening on a single click made browsing a month impossible without
+    // dismissing a dialog on every cell.
+    cell.dataset.date = dateStr;
+    cell.addEventListener('click', () => selectCalDay(dateStr));
+    cell.addEventListener('dblclick', () => openDayModal(dateStr, dayCases, dayNotes));
     grid.appendChild(cell);
   }
 }

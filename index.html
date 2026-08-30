@@ -252,7 +252,14 @@
     </div>
   </div>
   <div id="view-settings" class="hidden">
-    <div class="sub-tabs" role="tablist" aria-label="Settings sections">
+    <div class="set-shell">
+      <aside class="set-nav">
+        <div class="gs-card set-nav-list" id="set-nav"></div>
+        <div class="gs-card set-profile" id="set-profile"></div>
+      </aside>
+      <div class="set-body">
+        <div class="set-head" id="set-head"></div>
+    <div class="sub-tabs" role="tablist" aria-label="Settings sections" hidden>
       <button class="sub-tab active" role="tab" data-sub="assistant" aria-selected="true">Assistant</button>
       <button class="sub-tab" role="tab" data-sub="voice" aria-selected="false">Voice</button>
         <button class="sub-tab" role="tab" data-sub="writing" aria-selected="false">Writing</button>
@@ -588,7 +595,9 @@
     </div>
     <div class="notebooks-grid" id="notebooks-grid"></div>
   </div>
-</div>
+  </div>
+    </div>
+  </div>
 
 <div class="modal-backdrop" id="theme-modal-backdrop">
   <div class="modal">

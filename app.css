@@ -1487,6 +1487,55 @@
     .tb-new{ padding:7px 12px; font-size:.72rem; }
   }
 
+
+  /* ===== Settings: a nav list, not a row of tabs ===== */
+  .set-shell{ display:grid; grid-template-columns:236px minmax(0,1fr); gap:18px; align-items:start; }
+  .set-nav{ display:flex; flex-direction:column; gap:12px; position:sticky; top:14px; }
+  .set-nav-list{ padding:8px; }
+  .set-nav-item{ display:flex; align-items:center; gap:10px; width:100%;
+    padding:9px 11px; border-radius:9px; border:none; background:none;
+    color:var(--muted); font-size:.82rem; text-align:left; cursor:pointer;
+    transition:background var(--quick) var(--ease), color var(--quick) var(--ease); }
+  .set-nav-item:hover{ background:var(--panel2); color:var(--text); }
+  .set-nav-item.active{ background:color-mix(in srgb, var(--amber) 13%, transparent);
+    color:var(--amber); font-weight:600; }
+  .sn-dot{ width:7px; height:7px; border-radius:50%; flex:none; }
+  .sn-name{ flex:1; }
+  .sn-n{ font-family:"JetBrains Mono",monospace; font-size:.64rem; opacity:.75; }
+
+  .set-profile{ padding:14px; }
+  .sp-row{ display:flex; align-items:center; gap:11px; margin-bottom:10px; }
+  .sp-avatar{ width:34px; height:34px; border-radius:9px; flex:none;
+    display:grid; place-items:center; font-size:.72rem; font-weight:700;
+    background:color-mix(in srgb, var(--accent3) 22%, transparent); color:var(--accent3); }
+  .sp-row b{ display:block; font-size:.84rem; color:var(--text); }
+  .sp-sub{ font-size:.64rem; color:var(--muted); font-family:"JetBrains Mono",monospace; }
+  .sp-note{ margin:0; font-size:.7rem; line-height:1.5; color:var(--muted); }
+
+  .set-head{ margin-bottom:14px; display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .set-head h2{ margin:0; font-size:1.15rem; font-weight:600; }
+  .set-head span{ font-size:.74rem; color:var(--muted); }
+
+  @media (max-width: 900px){
+    .set-shell{ grid-template-columns:1fr; }
+    .set-nav{ position:static; }
+    .set-nav-list{ display:flex; flex-wrap:wrap; gap:4px; }
+    .set-nav-item{ width:auto; }
+    .set-profile{ order:2; }
+  }
+
+  /* ===== Calendar: a selected day, and month load ===== */
+  .cal-day{ cursor:pointer; }
+  .cal-day.selected{ border-color:var(--amber) !important;
+    box-shadow:0 0 0 1px var(--amber) inset; }
+  .cal-load{ margin-top:4px; }
+  .cl-num{ font-family:"JetBrains Mono",monospace; font-size:1.9rem;
+    font-weight:700; line-height:1; color:var(--text); }
+  .cl-sub{ font-size:.7rem; color:var(--muted); margin:6px 0 9px; }
+  .cl-bar{ height:5px; border-radius:3px; background:var(--line); overflow:hidden; }
+  .cl-bar i{ display:block; height:100%;
+    background:linear-gradient(90deg, var(--ok), var(--amber)); }
+
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
   .view-head h2{ margin:0; font-size:1.42rem; font-weight:600; letter-spacing:-.01em; }
