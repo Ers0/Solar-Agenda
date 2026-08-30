@@ -1228,9 +1228,18 @@
 
   .cal-day-list{ max-height:340px; overflow:auto; display:flex;
     flex-direction:column; gap:7px; }
-  .cd-item{ padding:7px 9px; border-left:2px solid var(--line); font-size:.73rem; cursor:pointer; }
-  .cd-item:hover{ background:var(--panel2); }
-  .cd-time{ font-family:"JetBrains Mono",monospace; font-size:.62rem; color:var(--muted); }
+  /* These are <button> elements, so they need the default appearance removed
+     before any styling shows — otherwise the browser's light chrome wins. */
+  .cd-item{ display:flex; align-items:center; gap:9px; width:100%;
+    padding:8px 10px; margin:0; font:inherit; font-size:.74rem; text-align:left;
+    color:var(--text); cursor:pointer; border-radius:8px;
+    background:none; border:none; border-left:2px solid var(--line);
+    transition:background var(--quick) var(--ease), border-color var(--quick) var(--ease); }
+  .cd-item:hover{ background:var(--panel2); border-left-color:var(--amber); }
+  .cd-time{ font-family:"JetBrains Mono",monospace; font-size:.64rem;
+    color:var(--muted); flex:none; }
+  .cd-name{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cd-dot{ width:7px; height:7px; border-radius:50%; flex:none; }
 
   @media (max-width: 1100px){
     .hist-shell, .cal-shell{ grid-template-columns:1fr; }
@@ -1536,6 +1545,34 @@
   .cl-bar i{ display:block; height:100%;
     background:linear-gradient(90deg, var(--ok), var(--amber)); }
 
+
+  .nb-filters{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+  .nb-kind{ display:flex; align-items:center; gap:6px; font-size:.58rem;
+    font-weight:700; letter-spacing:.11em; text-transform:uppercase;
+    font-family:"JetBrains Mono",monospace; }
+  .nb-kind i{ width:7px; height:7px; border-radius:2px; flex:none; }
+  .nb-grid-card-top{ display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:9px; }
+  .nb-when{ font-size:.62rem; color:var(--muted); font-family:"JetBrains Mono",monospace; }
+
+
+  .hr-bars{ display:flex; align-items:flex-end; gap:3px; height:64px; }
+  .hr-bar{ flex:1; display:flex; align-items:flex-end; height:100%; }
+  .hr-bar i{ display:block; width:100%; border-radius:2px 2px 0 0; }
+  .hr-axis{ display:flex; justify-content:space-between; margin-top:7px;
+    font-size:.56rem; letter-spacing:.1em; color:var(--muted);
+    font-family:"JetBrains Mono",monospace; text-transform:uppercase; }
+
+
+  .day-filters{ display:flex; gap:5px; margin-left:auto; }
+  .day-filters .hist-f{ padding:4px 11px; font-size:.68rem; }
+  .day-panel-header{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .blk-head{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px; }
+  .blk-head h3{ margin:0; font-size:.62rem; letter-spacing:.15em; text-transform:uppercase;
+    color:var(--amber); font-family:"JetBrains Mono",monospace; }
+  .blk-time{ color:var(--muted); }
+  .blk-count{ font-size:.6rem; color:var(--muted); font-family:"JetBrains Mono",monospace; }
+
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
   .view-head h2{ margin:0; font-size:1.42rem; font-weight:600; letter-spacing:-.01em; }
@@ -1649,6 +1686,7 @@
     border-color:var(--amber);
     background: color-mix(in srgb, var(--amber) 11%, transparent);
   }
+  #app-root.has-rail .calendar-nav{ display:flex; align-items:center; gap:7px; }
   #app-root.has-rail .calendar-nav button{
     width:30px; height:30px; border:1px solid var(--line); border-radius:8px;
     display:grid; place-items:center; color:var(--muted); background:none;

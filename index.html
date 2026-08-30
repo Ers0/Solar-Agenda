@@ -158,7 +158,13 @@
       </section>
       </div>
       <section class="panel day-panel">
-        <div class="day-panel-header"><h2>Today's cases</h2><button id="add-case-btn">+ New case</button></div>
+        <div class="day-panel-header"><h2>Today's cases</h2>
+          <div class="day-filters" id="day-filters">
+            <button class="hist-f active" data-df="all">All</button>
+            <button class="hist-f" data-df="urgente">Urgent</button>
+            <button class="hist-f" data-df="open">Open</button>
+            <button class="hist-f" data-df="done">Done</button>
+          </div><button id="add-case-btn">+ New case</button></div>
         <div id="blocks-container"></div>
       </section>
     </main>
@@ -181,6 +187,10 @@
       <aside class="hist-side">
         <div class="gs-card"><div class="gs-title">Totals</div>
           <div class="hist-stats" id="hist-stats"></div></div>
+        <div class="gs-card"><div class="gs-title">Resolution rate</div>
+          <div id="hist-rate"></div></div>
+        <div class="gs-card"><div class="gs-title">Recurring faults</div>
+          <div id="hist-faults"></div></div>
         <div class="gs-card"><div class="gs-title">By manufacturer</div>
           <div id="hist-makers"></div></div>
       </aside>
@@ -204,10 +214,10 @@
     </section>
   </section>
       <aside class="cal-side">
-        <div class="gs-card"><div class="gs-title">This month</div>
-          <div class="cal-stats" id="cal-stats"></div></div>
         <div class="gs-card"><div class="gs-title" id="cal-day-title">Select a day</div>
           <div id="cal-day-list" class="cal-day-list"></div></div>
+        <div class="gs-card"><div class="gs-title">This month</div>
+          <div class="cal-stats" id="cal-stats"></div></div>
       </aside>
     </div>
   </div>
@@ -241,7 +251,7 @@
       </div>
 
       <aside class="gx-col-right">
-        <div class="gs-card"><div class="gs-title">Overview</div>
+        <div class="gs-card"><div class="gs-title">This week</div>
           <div class="gx-overview" id="gx-overview"></div>
           <div class="gx-focus">Focus: <b id="gx-focus-label">the whole map</b></div>
           <button class="btn-ghost" id="gx-clear-focus">Clear focus</button>
@@ -577,7 +587,14 @@
     </div>
   </div>
   <div id="view-notebooks" class="hidden">
-    <div class="notebooks-toolbar">
+    <div class="nb-filters" id="nb-filters">
+        <button class="hist-f active" data-nbf="all">All notes</button>
+        <button class="hist-f" data-nbf="runbook">Runbooks</button>
+        <button class="hist-f" data-nbf="client">Clients</button>
+        <button class="hist-f" data-nbf="ink">Ink</button>
+        <button class="hist-f" data-nbf="tars">From TARS</button>
+      </div>
+      <div class="notebooks-toolbar">
       <div class="search-shell" id="search-shell">
         <button class="search-btn" id="search-btn" aria-label="Search notes">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>

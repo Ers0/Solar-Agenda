@@ -255,10 +255,18 @@ function renderBlocks(){
   container.innerHTML = '';
   const today = pendingTodaysCases();
   ['manha', 'tarde', 'fim-do-dia'].forEach(b => {
-    const items = today.filter(c => effectiveBloco(c) === b).sort((a,b2) => (a.horario||'').localeCompare(b2.horario||''));
+    const items = today.filter(c => effectiveBloco(c) === b)
+      .filter(c => dayFilter === 'all'
+        || (dayFilter === 'urgente' && c.prioridade === 'urgente')
+        || (dayFilter === 'open' && c.status !== 'resolvido')
+        || (dayFilter === 'done' && c.status === 'resolvido'))
+      .sort((a,b2) => (a.horario||'').localeCompare(b2.horario||''));
     const group = document.createElement('div');
     group.className = 'block-group';
-    group.innerHTML = `<h3>${blocoLabel(b)}</h3>`;
+    // The design labels each block with the hour it starts and how many cases
+    // it holds — the two things you want before reading the list.
+    const startH = { manha:'08:00', tarde:'13:00', 'fim-do-dia':'17:00' }[b] || '';
+    group.innerHTML = `<div class="blk-head"><h3>${blocoLabel(b)}${startH ? ` <span class="blk-time">· ${startH}</span>` : ''}</h3><span class="blk-count">${items.length} ${items.length === 1 ? 'case' : 'cases'}</span></div>`;
     const list = document.createElement('div');
     list.className = 'case-list';
     if(items.length === 0){ list.innerHTML = '<div class="empty">No cases in this block.</div>'; }
@@ -289,7 +297,7 @@ function hourToAngle(h){
 function arcPoint(angle, r){ const cx = 400, cy = 190; return { x: cx + r * Math.cos(angle), y: cy - r * Math.sin(angle) }; }
 
 function renderHistory(){
-  try{ renderHistorySide(); }catch(e){}
+  try{ renderHistorySide(); renderHistoryRate(); renderRecurringFaults(); }catch(e){}
   const container = document.getElementById('history-container');
   container.innerHTML = '';
   // The register shows closed cases by default; the filter bar can widen it
@@ -8628,9 +8636,14 @@ function renderGalaxyOverview(){
   const linked = nodes.filter(n => (n.deg || 0) > 0).length;
   const health = nodes.length ? Math.round(linked / nodes.length * 100) : 0;
   const tone = health >= 80 ? 'var(--ok)' : health >= 55 ? 'var(--amber)' : 'var(--urgente)';
+  // The design reads entries · new this week · linked. "New" is the number
+  // that shows the base is growing; "linked" shows it is being connected,
+  // which is the harder and more useful habit.
+  const WEEK = 7 * 86400000;
+  const fresh = (KB || []).filter(e => Date.parse(e.created_at || 0) > Date.now() - WEEK).length;
   box.innerHTML = `<div class="gx-num">${nodes.length}<span>entries</span></div>`
-    + `<div class="gx-num">${links}<span>links</span></div>`
-    + `<div class="gx-num" style="color:${tone}">${health}%<span>health</span></div>`;
+    + `<div class="gx-num" style="color:var(--ok)">+${fresh}<span>new</span></div>`
+    + `<div class="gx-num" style="color:${tone}">${health}%<span>linked</span></div>`;
   const lab = document.getElementById('gx-focus-label');
   if(lab) lab.textContent = Galaxy.focus ? (Galaxy.focus.title || Galaxy.focus.folder || 'one entry')
                                          : 'the whole map';
@@ -9571,8 +9584,8 @@ function renderCalSelected(){
   list.innerHTML = items.map(x => `
     <button class="cd-item" data-case="${escapeHtml(String(x.id))}">
       <span class="cd-time">${escapeHtml(x.horario || '--:--')}</span>
-      ${escapeHtml(String(x.titulo || '').slice(0, 38))}
-      <span style="float:right;width:7px;height:7px;border-radius:50%;background:${tone(x.prioridade)};margin-top:5px"></span>
+      <span class="cd-name">${escapeHtml(String(x.titulo || '(untitled)'))}</span>
+      <span class="cd-dot" style="background:${tone(x.prioridade)}"></span>
     </button>`).join('');
   list.querySelectorAll('[data-case]').forEach(b => b.addEventListener('click', () => {
     const cs = (cases || []).find(x => String(x.id) === b.dataset.case);
@@ -9605,6 +9618,122 @@ function renderMonthLoad(){
     <div class="cl-bar"><i style="width:${Math.min(100, Math.round(inMonth.length / 2))}%"></i></div>
   </div>`;
 }
+
+
+// ===== Notebook filters ===============================================
+// The design sorts notes by what they ARE — a runbook, a client file, ink, or
+// something TARS wrote. None of that is a stored field, so it is derived from
+// what each note actually contains rather than asking you to tag everything.
+let nbFilter = 'all';
+
+function noteKind(n){
+  const tags = (n.tags || []).map(t => String(t).toLowerCase());
+  if(tags.includes('study') || tags.includes('cleaned') || tags.includes('tars')) return 'tars';
+  if(n.ink && String(n.ink).length > 40) return 'ink';
+  if(tags.some(t => ['client','cliente','site','vinhedo'].includes(t))) return 'client';
+  if(tags.some(t => ['runbook','process','procedimento','faults','safety'].includes(t))) return 'runbook';
+  // A note about a manufacturer is, in practice, a runbook.
+  const cl = Clusters.forEntry({ id:n.id, title:n.title, tags:n.tags || [], source:'' });
+  if(cl && cl !== 'Others') return 'runbook';
+  return 'client';
+}
+
+const KIND_LABEL = { runbook:'RUNBOOK', client:'CLIENT', ink:'INK', tars:'FROM TARS' };
+const KIND_COLOUR = { runbook:'var(--amber)', client:'var(--accent2)',
+                      ink:'var(--accent3)', tars:'var(--ok)' };
+
+// "2 h", "yesterday", "3 d" — the design's relative stamps. Exact dates are
+// noise on a list you scan.
+function relTime(iso){
+  const t = Date.parse(iso || 0);
+  if(!t) return '';
+  const mins = Math.round((Date.now() - t) / 60000);
+  if(mins < 60) return mins <= 1 ? 'now' : mins + ' m';
+  const hrs = Math.round(mins / 60);
+  if(hrs < 24) return hrs + ' h';
+  const days = Math.round(hrs / 24);
+  if(days === 1) return 'yesterday';
+  if(days < 7) return days + ' d';
+  const wks = Math.round(days / 7);
+  return wks < 5 ? wks + ' w' : Math.round(days / 30) + ' mo';
+}
+
+document.getElementById('nb-filters')?.addEventListener('click', e => {
+  const b = e.target.closest('[data-nbf]');
+  if(!b) return;
+  nbFilter = b.dataset.nbf;
+  document.querySelectorAll('[data-nbf]').forEach(x => x.classList.toggle('active', x === b));
+  renderNotebooksGrid();
+});
+
+
+// ===== Log: rate and recurring faults =================================
+// Two questions the register cannot answer by itself: is the backlog moving,
+// and what keeps coming back.
+function renderHistoryRate(){
+  const el = document.getElementById('hist-rate');
+  if(!el) return;
+  // Fourteen days of closures, as bars. Red where nothing was closed, because
+  // a gap in the run is the thing worth seeing.
+  const days = [];
+  for(let i = 13; i >= 0; i--){
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = dateStr(d);
+    const closed = (cases || []).filter(x =>
+      x.status === 'resolvido' && String(x.updated_at || '').slice(0, 10) === key).length;
+    days.push({ key, closed });
+  }
+  const peak = Math.max(1, ...days.map(d => d.closed));
+  el.innerHTML = `<div class="hr-bars">`
+    + days.map(d => {
+        const h = Math.round(d.closed / peak * 100);
+        const tone = d.closed === 0 ? 'var(--urgente)'
+                   : d.closed >= peak * 0.7 ? 'var(--ok)' : 'var(--amber)';
+        return `<span class="hr-bar" title="${d.key}: ${d.closed} closed">`
+          + `<i style="height:${Math.max(6, h)}%;background:${tone}"></i></span>`;
+      }).join('')
+    + `</div><div class="hr-axis"><span>2 weeks ago</span><span>today</span></div>`;
+}
+
+function renderRecurringFaults(){
+  const el = document.getElementById('hist-faults');
+  if(!el) return;
+  // Fault codes are the honest unit here: two cases with the same code are the
+  // same problem, whoever the client was.
+  const counts = {};
+  (cases || []).forEach(cs => {
+    const text = `${cs.titulo || ''} ${(cs.tags || []).join(' ')} ${
+      (cs.notes_log || []).map(n => (n && n.text) || '').join(' ')}`;
+    const seen = new Set();
+    (text.match(/\b(F\d{2,3}|E\d{2,3}|OV-?G-?V|UV-?G-?V|ERR\d+|\d{3}(?= ?(sobretens|overvolt)))/gi) || [])
+      .forEach(m => seen.add(m.toUpperCase().replace(/[^A-Z0-9]/g, '')));
+    seen.forEach(code => { counts[code] = (counts[code] || 0) + 1; });
+  });
+  const rows = Object.entries(counts).filter(([, n]) => n >= 2)
+    .sort((a, b) => b[1] - a[1]).slice(0, 6);
+  if(!rows.length){
+    el.innerHTML = '<div class="gf-empty">No fault code appears twice yet.</div>';
+    return;
+  }
+  const pal = ['var(--amber)','var(--accent2)','var(--ok)','var(--accent3)','var(--urgente)','var(--dusk)'];
+  el.innerHTML = rows.map(([code, n], i) =>
+    `<div class="hm-row"><span class="cd-dot" style="background:${pal[i % pal.length]}"></span>`
+    + `<span style="flex:1">${escapeHtml(code)}</span>`
+    + `<span class="hm-n">${n}</span></div>`).join('');
+}
+
+
+// Today's cases can be narrowed the way the design allows. The blocks stay,
+// because the shape of the day is the point — only their contents change.
+let dayFilter = 'all';
+document.getElementById('day-filters')?.addEventListener('click', e => {
+  const b = e.target.closest('[data-df]');
+  if(!b) return;
+  dayFilter = b.dataset.df;
+  document.querySelectorAll('[data-df]').forEach(x => x.classList.toggle('active', x === b));
+  renderBlocks();
+});
 
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
@@ -11836,10 +11965,14 @@ function renderNotebooksGrid(){
         return { n, nbTitle, score };
       })
       .filter(x => x.score !== null)
+      // The design's pills narrow by what a note IS, derived from its content.
+      .filter(x => nbFilter === 'all' || noteKind(x.n) === nbFilter)
       .sort((a,b) => b.score - a.score);
 
     if(scored.length === 0){
-      grid.innerHTML = '<div class="nb-grid-empty">No notes match your search.</div>';
+      grid.innerHTML = `<div class="nb-grid-empty">${nbFilter === 'all'
+        ? 'No notes match your search.'
+        : 'No notes of that kind. Try “All notes”.'}</div>`;
       return;
     }
     scored.forEach(({ n, nbTitle }) => {
@@ -11848,6 +11981,11 @@ function renderNotebooksGrid(){
       card.className = 'nb-grid-card';
       card.innerHTML = `
         <div class="nb-grid-card-top">
+          <span class="nb-kind" style="color:${KIND_COLOUR[noteKind(n)]}">
+            <i style="background:${KIND_COLOUR[noteKind(n)]}"></i>${KIND_LABEL[noteKind(n)]}</span>
+          <span class="nb-when">${relTime(n.updated_at || n.created_at)}</span>
+        </div>
+        <div class="nb-grid-card-top" style="display:block;margin-bottom:6px">
           <div class="nb-grid-card-title">${escapeHtml(n.title || 'Untitled')}</div>
           <div class="nb-grid-card-date">${escapeHtml(nbTitle)}${n.linked_date ? ' · ' + n.linked_date : ''}</div>
         </div>
