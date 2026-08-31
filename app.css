@@ -1573,6 +1573,28 @@
   .blk-time{ color:var(--muted); }
   .blk-count{ font-size:.6rem; color:var(--muted); font-family:"JetBrains Mono",monospace; }
 
+
+  .tb-results{ position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:60;
+    background:var(--panel); border:1px solid var(--line); border-radius:11px;
+    box-shadow:0 12px 34px -12px rgba(0,0,0,.6); overflow:hidden; max-height:60vh;
+    overflow-y:auto; }
+  .tr-row{ display:flex; align-items:center; gap:10px; width:100%; padding:9px 12px;
+    background:none; border:none; border-bottom:1px solid var(--line);
+    text-align:left; cursor:pointer; color:var(--text); }
+  .tr-row:last-child{ border-bottom:none; }
+  .tr-row:hover, .tr-row.on{ background:var(--panel2); }
+  .tr-kind{ width:6px; height:6px; border-radius:50%; flex:none; }
+  .tr-body{ flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+  .tr-label{ font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tr-meta{ font-size:.64rem; color:var(--muted); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .tr-tag{ font-size:.55rem; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); font-family:"JetBrains Mono",monospace; flex:none; }
+  .tr-ask .tr-label{ color:var(--accent3); }
+  .tr-none{ padding:13px; font-size:.76rem; color:var(--muted); }
+  .tr-link{ background:none; border:none; color:var(--amber); cursor:pointer;
+    text-decoration:underline; font-size:inherit; padding:0; }
+
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
   .view-head h2{ margin:0; font-size:1.42rem; font-weight:600; letter-spacing:-.01em; }

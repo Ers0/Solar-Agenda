@@ -59,6 +59,7 @@
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
       <input id="global-search" placeholder="Search cases, notes or knowledge…">
       <kbd>⌘K</kbd>
+      <div class="tb-results" id="tb-results" hidden></div>
     </div>
     <button class="tb-status" id="tars-status"><span class="dot"></span>TARS online</button>
     <button class="tb-new" id="tb-new-case">+ New case</button>
@@ -246,9 +247,10 @@
         <div class="galaxy-hint">drag · zoom · click to focus</div>
         
         <div class="kb-map-empty" id="kb-map-empty">Nothing mapped yet — scan a folder of markdown notes to build the galaxy.</div>
+        </div><!-- /.galaxy-wrap -->
         <div class="gx-time"><input type="range" id="gx-time" min="0" max="100" value="100">
           <span>all time</span></div>
-      </div>
+      </div><!-- /.gx-stage -->
 
       <aside class="gx-col-right">
         <div class="gs-card"><div class="gs-title">This week</div>
@@ -257,7 +259,9 @@
           <button class="btn-ghost" id="gx-clear-focus">Clear focus</button>
         </div>
         <div class="gs-card"><div class="gs-title"><span class="gs-live"></span>TARS live</div>
-          <div class="galaxy-feed" id="galaxy-feed"></div></div>
+          </div>
+
+  <div class="galaxy-feed" id="galaxy-feed"></div></div>
       </aside>
     </div>
   </div>

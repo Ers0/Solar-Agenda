@@ -7369,6 +7369,42 @@ const GalaxyFeed = {
     record_outcome:    ['close',q => `recorded an outcome`],
   },
 
+  // The feed only ever held this session's tool calls, so it was empty on every
+  // reload and looked broken. It now starts from what actually happened
+  // recently — cases closed, notes written, rules learned — and live events
+  // append to that.
+  seed(){
+    if(this._seeded) return;
+    this._seeded = true;
+    const events = [];
+    (cases || []).forEach(x => {
+      const t = Date.parse(x.updated_at || x.created_at || 0);
+      if(!t) return;
+      if(x.status === 'resolvido') events.push({ t, kind:'close', text:`closed “${x.titulo || 'a case'}”` });
+      else if(Date.parse(x.created_at || 0) === t) events.push({ t, kind:'case', text:`new case “${x.titulo || 'untitled'}”` });
+      else events.push({ t, kind:'case', text:`updated “${x.titulo || 'a case'}”` });
+    });
+    (notes || []).forEach(n => {
+      const t = Date.parse(n.updated_at || n.created_at || 0);
+      if(t) events.push({ t, kind:'kb', text:`note “${n.title || 'untitled'}”` });
+    });
+    ((Learn && Learn.rules) || []).forEach(r => {
+      const t = Date.parse(r.created_at || 0);
+      if(t) events.push({ t, kind:'rule', text:`learned: ${String(r.statement || '').slice(0, 60)}` });
+    });
+    ((Learn && Learn.episodes) || []).forEach(e => {
+      const t = Date.parse(e.created_at || 0);
+      if(t) events.push({ t, kind:'tars', text: String(e.summary || 'a conversation').slice(0, 70) });
+    });
+
+    // Newest first, and only what a person would still call recent.
+    const cut = Date.now() - 14 * 86400000;
+    this.items = events.filter(e => e.t > cut)
+      .sort((a, b) => b.t - a.t).slice(0, this.MAX)
+      .map(e => ({ kind: e.kind, text: e.text, t: e.t }));
+    this.render();
+  },
+
   tool(name, args, result){
     const a = args || {};
     // The most descriptive argument, whatever the tool calls it.
@@ -7401,7 +7437,8 @@ const GalaxyFeed = {
       const when = mins < 1 ? 'now' : mins < 60 ? mins + 'm' : Math.round(mins / 60) + 'h';
       return `<div class="gf-row"><span class="gf-dot" style="background:${colour[i.kind] || 'var(--muted)'}"></span>`
         + `<span class="gf-text">${escapeHtml(i.text)}</span><span class="gf-when">${when}</span></div>`;
-    }).join('') || '<div class="gf-empty">Nothing yet today.</div>';
+    }).join('') || '<div class="gf-empty">No activity in the last two weeks. '
+       + 'Cases, notes and anything TARS does will appear here.</div>';
   },
 };
 
@@ -8688,7 +8725,7 @@ async function showGalaxy(force){
   }catch(e){
     console.warn('[galaxy] build failed', e);
   }
-  try{ renderGalaxySide(); renderGalaxyOverview(); GalaxyFeed.render(); }catch(e){}
+  try{ GalaxyFeed.seed(); renderGalaxySide(); renderGalaxyOverview(); GalaxyFeed.render(); }catch(e){}
 }
 
 // Keep it current while it is on screen, without rebuilding a map nobody is
@@ -9471,17 +9508,109 @@ document.getElementById('tars-status')?.addEventListener('click', () =>
   document.getElementById('ai-toggle')?.click());
 
 // One search box for everything, as the design has it.
-document.getElementById('global-search')?.addEventListener('keydown', async e => {
-  if(e.key !== 'Enter') return;
-  const q = e.target.value.trim();
-  if(!q) return;
-  const hits = NoteSearch.search(q, 1);
-  if(hits.length){ NoteSearch.goTo(hits[0].it); e.target.value = ''; return; }
-  // Nothing in the notebooks — hand it to the assistant rather than shrugging.
-  document.getElementById('ai-toggle')?.click();
-  const input = document.getElementById('ai-input');
-  if(input){ input.value = q; setTimeout(() => document.getElementById('ai-send')?.click(), 60); }
-  e.target.value = '';
+// Search shows what it found and lets you choose. Jumping straight to the best
+// guess, or handing the question to the assistant, both took the decision away
+// from you — and neither showed what else matched.
+const Search_ = {
+  hits: [], open: false, sel: -1,
+
+  run(q){
+    const query = String(q || '').trim();
+    const box = document.getElementById('tb-results');
+    if(!box) return;
+    if(query.length < 2){ this.close(); return; }
+
+    const seen = new Set();
+    const out = [];
+    // Cases first: they are what the day is made of.
+    (cases || []).forEach(x => {
+      const hay = `${x.titulo || ''} ${x.ticket || ''} ${(x.tags || []).join(' ')}`.toLowerCase();
+      if(hay.includes(query.toLowerCase()) && !seen.has('c' + x.id)){
+        seen.add('c' + x.id);
+        out.push({ kind:'case', label: x.titulo || '(untitled)',
+                   meta: [x.case_date, x.horario, x.ticket].filter(Boolean).join(' · '),
+                   go: () => openCase(x) });
+      }
+    });
+    NoteSearch.search(query, 5).forEach(hh => {
+      out.push({ kind: hh.it.kind === 'handwriting' ? 'ink' : 'note',
+                 label: hh.it.noteTitle,
+                 meta: NoteSearch.snippet(hh.it.content, query, 52),
+                 go: () => NoteSearch.goTo(hh.it) });
+    });
+    (KB || []).forEach(e => {
+      if(String(e.title || '').toLowerCase().includes(query.toLowerCase()))
+        out.push({ kind:'kb', label: e.title, meta: e.source || 'knowledge',
+                   go: () => { switchView('galaxy'); showGalaxy(); } });
+    });
+
+    this.hits = out.slice(0, 7);
+    this.sel = -1;
+    const icon = { case:'var(--amber)', note:'var(--accent2)', ink:'var(--accent3)', kb:'var(--ok)' };
+    box.innerHTML = this.hits.length
+      ? this.hits.map((r, i) => `<button class="tr-row" data-i="${i}">
+          <span class="tr-kind" style="background:${icon[r.kind]}"></span>
+          <span class="tr-body"><span class="tr-label">${escapeHtml(r.label)}</span>
+          <span class="tr-meta">${escapeHtml(r.meta || '')}</span></span>
+          <span class="tr-tag">${r.kind}</span></button>`).join('')
+        + `<button class="tr-row tr-ask" data-ask="1">
+             <span class="tr-kind" style="background:var(--accent3)"></span>
+             <span class="tr-body"><span class="tr-label">Ask TARS about “${escapeHtml(query)}”</span></span></button>`
+      : `<div class="tr-none">Nothing found. <button data-ask="1" class="tr-link">Ask TARS instead</button></div>`;
+
+    box.hidden = false; this.open = true;
+    box.querySelectorAll('[data-i]').forEach(b =>
+      b.addEventListener('click', () => this.pick(+b.dataset.i)));
+    box.querySelectorAll('[data-ask]').forEach(b =>
+      b.addEventListener('click', () => this.ask(query)));
+  },
+
+  pick(i){
+    const r = this.hits[i];
+    this.close();
+    document.getElementById('global-search').value = '';
+    if(r) try{ r.go(); }catch(e){}
+  },
+  ask(q){
+    this.close();
+    document.getElementById('global-search').value = '';
+    document.getElementById('ai-toggle')?.click();
+    const input = document.getElementById('ai-input');
+    if(input){ input.value = q; setTimeout(() => document.getElementById('ai-send')?.click(), 60); }
+  },
+  close(){
+    const box = document.getElementById('tb-results');
+    if(box){ box.hidden = true; box.innerHTML = ''; }
+    this.open = false; this.sel = -1;
+  },
+  move(step){
+    if(!this.open || !this.hits.length) return;
+    this.sel = (this.sel + step + this.hits.length) % this.hits.length;
+    document.querySelectorAll('.tr-row').forEach((r, i) =>
+      r.classList.toggle('on', i === this.sel));
+  },
+};
+
+const searchEl = document.getElementById('global-search');
+let searchTimer = null;
+searchEl?.addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value;
+  searchTimer = setTimeout(() => Search_.run(q), 140);
+});
+searchEl?.addEventListener('keydown', e => {
+  if(e.key === 'ArrowDown'){ e.preventDefault(); Search_.move(1); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); Search_.move(-1); }
+  else if(e.key === 'Escape'){ Search_.close(); e.target.blur(); }
+  else if(e.key === 'Enter'){
+    e.preventDefault();
+    if(Search_.sel >= 0) Search_.pick(Search_.sel);
+    else if(Search_.hits.length) Search_.pick(0);
+    else Search_.ask(e.target.value.trim());
+  }
+});
+document.addEventListener('click', e => {
+  if(!e.target.closest('.tb-search')) Search_.close();
 });
 document.addEventListener('keydown', e => {
   if((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){
