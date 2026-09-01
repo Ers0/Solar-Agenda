@@ -10123,9 +10123,36 @@ const VisionBridge = {
     // tool loop never ran. It now goes through runAssistantTurn, the same
     // path a typed message takes, with the frame waiting for look_at_screen.
     try{
-      const asked = msg.question && msg.question.trim()
-        ? msg.question.trim()
-        : 'Look at my screen and tell me what is on it.';
+      // Chrome will not give a popup the microphone, and even if it did, the
+      // browser's own recogniser knows nothing of the vocabulary calibrated
+      // here — "Deye" would come back as "D-E" again. So the extension asks
+      // the app to listen, and the app uses the pipeline it already has:
+      // Whisper, the vocabulary corrections, and the quality gate.
+      let spoken = null;
+      if(msg.voice){
+        try{
+          setVoiceState(VSTATE.LISTENING);
+          const clip = await recordClip(4500);
+          const raw = await transcribeClip(clip);
+          spoken = Vocab.correct(String(raw || '').trim());
+          setVoiceState(VSTATE.IDLE);
+        }catch(e){
+          setVoiceState(VSTATE.IDLE);
+          respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
+                    ok:false, reply:null, error:'no_mic' });
+          this.pending = null;
+          return;
+        }
+        if(!spoken){
+          respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
+                    ok:false, reply:null, error:'no_speech' });
+          this.pending = null;
+          return;
+        }
+      }
+
+      const asked = (spoken || (msg.question && msg.question.trim()))
+        || 'Look at my screen and tell me what is on it.';
 
       // The page's own text is exact where reading pixels is a guess, so it
       // is given to the assistant directly rather than left for vision alone.
@@ -10139,7 +10166,8 @@ const VisionBridge = {
       }
       const full = ctx.length ? `${asked}\n\n---\n${ctx.join('\n')}` : asked;
 
-      addAiMessage('user', msg.question || `Look at this page — ${this.pending.title || 'shared tab'}`);
+      addAiMessage('user', spoken || msg.question
+        || `Look at this page — ${this.pending.title || 'shared tab'}`);
       const loading = addAiMessage('assistant', '…');
       document.getElementById('ai-toggle')?.click();
 
