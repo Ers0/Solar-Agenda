@@ -2970,6 +2970,8 @@ const TOOL_HINTS = {
   create_case:     /\b(case|ticket|schedule|appointment|caso|agend|chamado|abrir)\b/i,
   // Must not fire when the sentence is about FINISHING; "finished studying"
   // contains "studying" and was matching start.
+  capture_screen:  /\b(screenshot|screen shot|capture (this|the screen)|tira? um print|printa|captura a tela)\b/i,
+  read_screen_map: /\b(first one|second one|last one|the one at the top|primeir[oa] da lista|no topo|on screen|na tela)\b/i,
   start_study:     /^(?!.*\b(finish\w*|done|stop|end|termin\w*|acab\w*)\b).*\b(study|studying|estudar|revisar|revis[ãa]o|let'?s learn)\b/i,
   // No trailing \b after "stud": the word continues as "studying", so the
   // boundary never matched and the phrase fell through to nothing.
@@ -3943,6 +3945,34 @@ const TOOLS = [
     }
     return `Case created: "${created.titulo}" on ${created.case_date}`
       + (created.horario ? ` at ${created.horario}.` : '.') + extra;
+    },
+  },
+  {
+    name: 'capture_screen',
+    permission: PERM.LOW,
+    description: "Take a screenshot of the shared screen and file it as a note that can be annotated. Use for 'take a screenshot', 'capture this', 'tira um print'.",
+    schema: { type:'object', properties:{
+      label:{ type:'string', description:'What this screen is, e.g. "Hyperflow case list".' } } },
+    async execute(args){
+      const r = await Shots.capture(args.label);
+      return r.msg;
+    },
+  },
+  {
+    name: 'read_screen_map',
+    permission: PERM.LOW,
+    description: "Recall what parts of previously captured screens mean, from the labels drawn on them. Use before acting on an instruction that refers to a position on screen, like 'the first one in the list'.",
+    schema: { type:'object', properties:{
+      about:{ type:'string', description:'Which screen or element, e.g. "case list".' } } },
+    async execute(args){
+      const brief = Shots.brief();
+      if(!brief) return 'No screens have been annotated yet. Capture one and label its parts, '
+        + 'and I will be able to use those names afterwards.';
+      const want = String(args.about || '').toLowerCase();
+      if(!want) return brief;
+      const lines = brief.split('\n').filter(l => l.toLowerCase().includes(want));
+      return lines.length ? lines.join('\n')
+        : `Nothing labelled matches "${args.about}". What I do have:\n` + brief;
     },
   },
   {
@@ -4927,6 +4957,9 @@ const Ink = {
       this.ctx.drawImage(this.cache, 0, 0);
       this.selectedElements().forEach(o => this.drawObject(o));
     } else {
+      // A captured screen sits under the annotations, so a box drawn round
+      // something stays on that thing.
+      this.drawBackdrop();
       // A stroke replaced by a shape is hidden, never deleted.
       this.doc.strokes.forEach(s => { if(!s.hidden) this.drawStroke(s, 1); });
       this.doc.objects.forEach(o => this.drawObject(o));
@@ -4938,6 +4971,27 @@ const Ink = {
     this.drawSelectionUI();
   },
 
+
+  // The backdrop image, drawn to fit the page in document space so that
+  // panning and zooming move the picture with the ink on top of it.
+  drawBackdrop(){
+    const src = this.doc && this.doc.backdrop;
+    if(!src) return;
+    if(!this._bd || this._bdSrc !== src){
+      this._bdSrc = src;
+      const img = new Image();
+      img.onload = () => { this._bd = img; this.redraw(); };
+      img.src = src;
+      return;                       // drawn on the next frame, once loaded
+    }
+    const img = this._bd;
+    if(!img.width) return;
+    this.ctx.save();
+    this.applyView();
+    this.ctx.globalAlpha = 0.95;
+    this.ctx.drawImage(img, 0, 0, img.width, img.height);
+    this.ctx.restore();
+  },
 
   // Text objects were only ever data before; a diagram needs them drawn.
   drawTextObject(o){
@@ -7339,6 +7393,14 @@ const Session = {
 };
 
 
+
+// The day boundary the feed works to. Local midnight, not 24 hours ago.
+function startOfToday(){
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
 // ===== Galaxy life =====================================================
 // The map was accurate but inert. These four things make it show where the
 // work IS, not merely what exists: a running feed, motion that decays with
@@ -7397,9 +7459,11 @@ const GalaxyFeed = {
       if(t) events.push({ t, kind:'tars', text: String(e.summary || 'a conversation').slice(0, 70) });
     });
 
-    // Newest first, and only what a person would still call recent.
-    const cut = Date.now() - 14 * 86400000;
-    this.items = events.filter(e => e.t > cut)
+    // Today only. A running log of everything TARS ever consulted is a
+    // transcript, not a feed — what is useful is what has happened since you
+    // sat down.
+    const cut = startOfToday();
+    this.items = events.filter(e => e.t >= cut)
       .sort((a, b) => b.t - a.t).slice(0, this.MAX)
       .map(e => ({ kind: e.kind, text: e.text, t: e.t }));
     this.render();
@@ -7421,6 +7485,9 @@ const GalaxyFeed = {
   push(kind, text){
     if(!text) return;
     this.items.unshift({ kind, text: String(text).slice(0, 90), t: Date.now() });
+    // Yesterday's entries fall away rather than accumulating.
+    const cut = startOfToday();
+    this.items = this.items.filter(i => i.t >= cut);
     if(this.items.length > this.MAX) this.items.pop();
     this.render();
     // A freshly touched subject glows and drifts for a while.
@@ -7430,14 +7497,23 @@ const GalaxyFeed = {
   render(){
     const el = document.getElementById('galaxy-feed');
     if(!el) return;
+    // A tab left open past midnight should show today, not last night.
+    const cut = startOfToday();
+    if(this.items.some(i => i.t < cut)){
+      this.items = this.items.filter(i => i.t >= cut);
+      this._seeded = false;              // let the new day seed itself
+    }
     const colour = { tars:'var(--accent3)', case:'var(--amber)', kb:'var(--accent2)',
                      rule:'var(--ok)', web:'var(--accent3)', close:'var(--muted)' };
     el.innerHTML = this.items.slice(0, 12).map(i => {
       const mins = Math.round((Date.now() - i.t) / 60000);
-      const when = mins < 1 ? 'now' : mins < 60 ? mins + 'm' : Math.round(mins / 60) + 'h';
+      // Everything here happened today, so a clock time reads better than
+      // "7h ago" — you know when your own morning was.
+      const when = mins < 1 ? 'now' : mins < 60 ? mins + 'm'
+        : new Date(i.t).toTimeString().slice(0, 5);
       return `<div class="gf-row"><span class="gf-dot" style="background:${colour[i.kind] || 'var(--muted)'}"></span>`
         + `<span class="gf-text">${escapeHtml(i.text)}</span><span class="gf-when">${when}</span></div>`;
-    }).join('') || '<div class="gf-empty">No activity in the last two weeks. '
+    }).join('') || '<div class="gf-empty">Nothing yet today. '
        + 'Cases, notes and anything TARS does will appear here.</div>';
   },
 };
@@ -9864,6 +9940,220 @@ document.getElementById('day-filters')?.addEventListener('click', e => {
   renderBlocks();
 });
 
+
+// ===== Screenshots you can teach from =================================
+// A screenshot on its own is a picture. What makes it useful later is the
+// annotation: "this box is the case list", "the first row is the oldest".
+// So a capture becomes an ordinary note with the image as a backdrop, and the
+// ink tools already there — arrows, boxes, text — do the marking. The labels
+// are then stored as regions, which is what lets TARS resolve "the first one
+// in the list" months later.
+const Shots = {
+  // Regions live with the note, so the picture and its meaning never separate.
+  async capture(label){
+    if(!Screen_.stream || !Screen_.stream.active){
+      const ok = await Screen_.open();
+      if(!ok) return { ok:false, msg:'Screen sharing did not start: ' + (Screen_.lastReason || 'unknown') };
+      Screen_.keepOpen = true;
+    }
+    const v = Screen_.video;
+    if(!v || !v.videoWidth) return { ok:false, msg:'No frame yet — give the share a moment.' };
+
+    const cv = document.createElement('canvas');
+    // Cap the long edge: a 4K grab is slow to store and no more legible.
+    const scale = Math.min(1, 1600 / Math.max(v.videoWidth, v.videoHeight));
+    cv.width = Math.round(v.videoWidth * scale);
+    cv.height = Math.round(v.videoHeight * scale);
+    cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+    const url = cv.toDataURL('image/jpeg', 0.82);
+    cv.width = cv.height = 0;
+
+    const title = String(label || '').trim()
+      || `Screen — ${new Date().toLocaleString(undefined, { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })}`;
+    try{
+      let nb = (notebooks || []).find(n => /screens?|capturas?/i.test(n.title || ''));
+      if(!nb){ nb = await createNotebookApi({ title:'Screens' }); notebooks.unshift(nb); }
+      const note = await createNoteApi({
+        notebook_id: nb.id,
+        title,
+        content: `<p><img src="${url}" style="max-width:100%"></p>`,
+        tags: ['screen'],
+      });
+      // The backdrop is what the ink canvas draws under, so annotations line
+      // up with the picture rather than floating over a blank page.
+      note.ink = JSON.stringify({ v:1, strokes:[], objects:[], view:{ zoom:1, panX:0, panY:0 },
+                                  backdrop: url, regions: [] });
+      notes.unshift(note);
+      try{ await updateNoteApi(note.id, { ink: note.ink }); }catch(e){}
+      renderNotebooksGrid();
+      return { ok:true, note, msg:`Captured as “${title}”. Open it and mark it up — `
+        + 'anything you label becomes something I can find later.' };
+    }catch(e){
+      return { ok:false, msg:'Could not save the capture: ' + errText(e) };
+    }
+  },
+
+  // Turn the ink on a shot into named regions. A labelled box is a region; a
+  // label with no box is a note about the whole screen.
+  harvest(doc){
+    const out = [];
+    const objs = doc.objects || [];
+    const texts = objs.filter(o => o.type === 'text' && String(o.text || '').trim());
+    const boxes = objs.filter(o => o.type === 'shape' && o.geom);
+
+    texts.forEach(t => {
+      // The box a label belongs to is the nearest one that contains or touches
+      // it — the same judgement a person makes reading the drawing.
+      const tx = t.geom ? t.geom.x : t.x, ty = t.geom ? t.geom.y : t.y;
+      let best = null, bestScore = -1;
+      boxes.forEach(b => {
+        const g = b.geom, w = g.w || 0, h = g.h || 0;
+        // Containment first, and among containing boxes the SMALLEST wins —
+        // a label inside a row belongs to that row, not to the panel the row
+        // sits in. Largest-first was picking the outer box every time.
+        const inside = tx >= g.x - 8 && tx <= g.x + w + 8
+                    && ty >= g.y - 26 && ty <= g.y + h + 8;
+        if(inside){
+          const score = 1e6 - (w * h) / 1000;      // smaller area scores higher
+          if(score > bestScore){ bestScore = score; best = b; }
+          return;
+        }
+        if(bestScore >= 1e5) return;               // a containing box already won
+        // Otherwise the nearest box, but only if it is genuinely near: a note
+        // written in the margin is about the screen, not about a distant box.
+        const cx = g.x + w / 2, cy = g.y + h / 2;
+        const dist = Math.hypot(tx - cx, ty - cy);
+        const reach = Math.max(w, h) / 2 + 90;
+        if(dist <= reach){
+          const score = 1e4 - dist;
+          if(score > bestScore){ bestScore = score; best = b; }
+        }
+      });
+      out.push({
+        label: String(t.text).trim().slice(0, 80),
+        rect: best ? { x:Math.round(best.geom.x), y:Math.round(best.geom.y),
+                       w:Math.round(best.geom.w || 0), h:Math.round(best.geom.h || 0) } : null,
+      });
+    });
+    return out;
+  },
+
+  // Everything TARS knows about this account's screens, as plain text it can
+  // reason over. Deliberately terse: this goes into a prompt.
+  brief(){
+    const shots = (notes || []).filter(n => (n.tags || []).includes('screen') && n.ink);
+    const lines = [];
+    shots.slice(0, 8).forEach(n => {
+      let doc;
+      try{ doc = JSON.parse(n.ink); }catch(e){ return; }
+      const regions = doc.regions || this.harvest(doc);
+      if(!regions.length) return;
+      lines.push(`“${n.title}”: ` + regions.map(r =>
+        r.rect ? `${r.label} (box at ${r.rect.x},${r.rect.y} ${r.rect.w}x${r.rect.h})` : r.label
+      ).join('; '));
+    });
+    return lines.join('\n');
+  },
+};
+
+
+// ===== Extension bridge ===============================================
+// The extension is a courier, not a second brain. It hands over a frame and
+// page context; everything that decides anything — the 44 tools, Galaxy,
+// memory, confidence — stays here, unchanged. This module is the whole of the
+// app's side of that contract.
+const VisionBridge = {
+  PROTOCOL: 1,
+  ACCEPTS: [1],
+  pending: null,        // at most one, deliberately
+  waiting: new Map(),   // id -> resolve, for replies the extension is awaiting
+
+  // Validation is strict and silent: anything that does not match the contract
+  // is not a bridge message and must not be acted on.
+  valid(m){
+    if(!m || typeof m !== 'object') return false;
+    if(m.v !== this.PROTOCOL) return false;
+    return m.type === 'HELLO' || m.type === 'VISION_REQUEST';
+  },
+
+  // Consumed by Screen_.ask(). One frame, once — a stale screenshot answered
+  // later is worse than none.
+  takeFrame(){
+    const p = this.pending;
+    this.pending = null;
+    return p;
+  },
+
+  async handle(msg, respond){
+    if(!this.valid(msg)){
+      respond({ v: this.PROTOCOL, type:'ERROR', error:'bad_message' });
+      return;
+    }
+
+    if(msg.type === 'HELLO'){
+      respond({ v: this.PROTOCOL, type:'HELLO_ACK', accepts: this.ACCEPTS,
+                app: 'solar-agenda' });
+      return;
+    }
+
+    // VISION_REQUEST
+    if(!session){
+      respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
+                ok:false, reply:null, error:'no_session' });
+      return;
+    }
+    if(!msg.image){
+      respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
+                ok:false, reply:null, error:'no_frame' });
+      return;
+    }
+
+    // A newer payload replaces an unconsumed older one rather than queueing.
+    this.pending = {
+      image: msg.image,
+      url: String(msg.url || '').slice(0, 400),
+      title: String(msg.title || '').slice(0, 200),
+      selection: msg.selection ? String(msg.selection).slice(0, 2000) : null,
+      domText: msg.domText ? String(msg.domText).slice(0, 12000) : null,
+    };
+
+    // The reply is produced by the ordinary pipeline, not a special path, so
+    // the answer the extension gets is the answer the app would have given.
+    try{
+      const res = await Screen_.ask(msg.question || undefined);
+      respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
+                ok: res.ok !== false,
+                reply: res.reply || null,
+                error: res.ok === false ? (res.error || 'vision_failed') : null });
+    }catch(e){
+      respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
+                ok:false, reply:null, error:'vision_failed' });
+    }finally{
+      this.pending = null;      // never leave a frame for the next caller
+    }
+  },
+
+  install(){
+    // The extension cannot message a page directly: onMessageExternal is
+    // page-to-extension, and tabs.sendMessage reaches a content script rather
+    // than page JavaScript. So the extension's content script relays over
+    // window.postMessage, and this is the page's end of that relay.
+    window.addEventListener('message', ev => {
+      // Same-window only. A message from an iframe or another origin is not
+      // the bridge, whatever it claims to be.
+      if(ev.source !== window) return;
+      const m = ev.data;
+      if(!m || m.channel !== 'tars-bridge' || m.dir !== 'to-app') return;
+
+      this.handle(m.payload, reply => {
+        window.postMessage({ channel:'tars-bridge', dir:'to-ext', payload: reply }, window.location.origin);
+      });
+    });
+    console.log('[bridge] listening on window.postMessage');
+  },
+};
+VisionBridge.install();
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -9983,7 +10273,12 @@ const Screen_ = {
       const secs = Math.ceil((this.cooldownUntil - Date.now()) / 1000);
       return { ok:false, error:'cooling', detail:`${secs}s` };
     }
-    const img = await this.grab();
+    // A frame handed over by the browser extension takes precedence over the
+    // local share for exactly one call. Everything after this line — the
+    // vision request, the cooldown, the tool loop — is unchanged, which is the
+    // point: the bridge supplies eyes, not a second pipeline.
+    const bridged = VisionBridge.takeFrame();
+    const img = bridged ? bridged.image : await this.grab();
     if(!img){
       // Keep the share open: closing it here is what made a failed first
       // capture look like the user's sharing had stopped.
@@ -9992,7 +10287,12 @@ const Screen_ = {
     try{
       const r = await fetch(FN_URL + "/agenda-vision", {
         method:'POST', headers: authHeaders(),
-        body: JSON.stringify({ image: img, question }),
+        // domText is supplemental: the model reads the page's own text instead
+        // of inferring it from pixels. Absent for a local share, which behaves
+        // exactly as before.
+        body: JSON.stringify({ image: img, question,
+          context: bridged ? { url: bridged.url, title: bridged.title,
+                               selection: bridged.selection, domText: bridged.domText } : undefined }),
       });
       const out = await readJson(r);
       if(!out.ok){
@@ -12321,6 +12621,12 @@ document.getElementById('nb-delete-btn').addEventListener('click', async () => {
 
 let nbSaveTimer = null;
 function scheduleNotebookSave(){
+  // A shot's labels are its meaning; keep them with the drawing rather than
+  // re-deriving them every time something asks.
+  try{
+    if(Ink.doc && Ink.doc.backdrop) Ink.doc.regions = Shots.harvest(Ink.doc);
+  }catch(e){}
+
   const title = document.getElementById('nb-title-input').value.trim();
   const content = document.getElementById('notebook-canvas').innerHTML.trim()
     || (Ink.doc.strokes.length ? '<p><em>Handwritten note</em></p>' : '');
@@ -13374,7 +13680,7 @@ function initCustomThemeUI(){
     alert('Custom theme applied. It also appears in the Theme menu.');
   });
   document.getElementById('ct-copy').addEventListener('click', () => {
-    const cur = THEMES[localStorage.getItem(THEME_KEY) || 'slate'] || THEMES.slate;
+    const cur = THEMES[localStorage.getItem(THEME_KEY) || 'solar'] || THEMES.slate;
     settings.customTheme = Object.assign({}, cur, { name:'Custom' });
     saveSettings(); THEMES.custom = customTheme(); renderCustomTheme();
   });
@@ -13821,6 +14127,7 @@ function fileToBase64(file){
 // Each theme carries a second accent so gradients, glows and the day wheel
 // have somewhere to travel to instead of sitting on one flat hue.
 const THEMES = {
+  solar:        { name: 'Solar',          bg:'#0b1118', bg2:'#080c12', panel:'#111b25', panel2:'#1c2836', line:'#23323f', text:'#cad9e7', muted:'#7d8fa1', amber:'#f2a71b', accent2:'#4f9fd8', accent3:'#7be0c4', dusk:'#4fa3a0' },
   slate:        { name: 'Slate',          bg:'#0d151e', bg2:'#070b11', panel:'#16212c', panel2:'#1e2d3c', line:'#2b3d4f', text:'#eaf1f8', muted:'#8fa3b5', amber:'#f2a71b', accent2:'#4f9fd8', accent3:'#7be0c4', dusk:'#4f6b8f' },
   oceansunset:  { name: 'Ocean Sunset',   bg:'#0e1626', bg2:'#070b14', panel:'#17243a', panel2:'#20304b', line:'#2f4468', text:'#eaf2ff', muted:'#93a8c9', amber:'#ffb340', accent2:'#4aa3e8', accent3:'#a071e8', dusk:'#f2775a' },
   sunset:       { name: 'Sunset',         bg:'#1d1310', bg2:'#0f0806', panel:'#2c1e17', panel2:'#3b281d', line:'#553c2b', text:'#fbeade', muted:'#c9a892', amber:'#ff9f5a', accent2:'#e8556f', accent3:'#ffd76e', dusk:'#c17a52' },
@@ -13889,13 +14196,13 @@ function renderThemeGrid(activeKey){
 }
 const themeModalBackdrop = document.getElementById('theme-modal-backdrop');
 document.getElementById('theme-toggle').addEventListener('click', () => {
-  renderThemeGrid(localStorage.getItem(THEME_KEY) || 'slate');
+  renderThemeGrid(localStorage.getItem(THEME_KEY) || 'solar');
   themeModalBackdrop.classList.add('open');
 });
 document.getElementById('theme-close-btn').addEventListener('click', () => themeModalBackdrop.classList.remove('open'));
 themeModalBackdrop.addEventListener('click', (e) => { if(e.target === themeModalBackdrop) themeModalBackdrop.classList.remove('open'); });
 THEMES.custom = Object.assign({}, THEMES.slate, (JSON.parse(localStorage.getItem(SET_KEY) || '{}').customTheme) || {}, { name:'Custom' });
-applyTheme(localStorage.getItem(THEME_KEY) || 'slate');
+applyTheme(localStorage.getItem(THEME_KEY) || 'solar');
 initCustomThemeUI();
 
 // --- Calendar ---

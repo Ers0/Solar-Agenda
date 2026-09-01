@@ -1,11 +1,12 @@
 :root{
-    --bg: #0f1720;
-    --bg2: #0a0f16;
-    --panel: #16212c;
-    --panel-2: #1c2938;
-    --line: #263544;
-    --text: #e7edf3;
-    --muted: #8a9bab;
+    --bg: #0b1118;
+    --bg2: #080c12;
+    --panel: #111b25;
+    --panel-2: #1c2836;
+    --panel2: #1c2836;
+    --line: #23323f;
+    --text: #cad9e7;
+    --muted: #7d8fa1;
     --amber: #f2a71b;
     --amber-soft: #f2a71b33;
     --accent2: #4f9fd8;
@@ -265,7 +266,7 @@
   #notebook-search:focus{ outline:none; border-color: var(--amber); box-shadow: inset 0 1px 3px rgba(0,0,0,0.35), 0 0 0 3px var(--amber-soft); }
   #new-notebook-btn{ background: var(--amber); color:var(--on-accent); border:none; font-weight:700; padding:0 18px; border-radius:9px; font-size:0.85rem; white-space:nowrap; }
   .notebooks-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:14px; }
-  .nb-grid-card{ background: linear-gradient(160deg, var(--panel), var(--panel-2)); border:1px solid var(--line); border-radius:12px; aspect-ratio:1; display:flex; flex-direction:column; overflow:hidden; cursor:pointer; transition: border-color .15s, transform .12s; }
+  .nb-grid-card{ background: linear-gradient(160deg, var(--panel), var(--panel-2)); border:1px solid var(--line); border-radius:14px; aspect-ratio:1; display:flex; flex-direction:column; overflow:hidden; cursor:pointer; transition: border-color .15s, transform .12s; }
   .nb-grid-card:hover{ border-color: var(--amber); transform: translateY(-2px); }
   .nb-grid-card-top{ padding:10px 12px 8px; border-bottom:1px solid var(--line); background: var(--panel-2); }
   .nb-grid-card-title{ font-weight:700; font-size:0.85rem; font-family:"Space Grotesk",sans-serif; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -677,7 +678,7 @@
   .galaxy-time-row input{ flex:1; }
   #galaxy-time-lab{ font-family:"JetBrains Mono",monospace; font-size:.6rem; color:var(--muted); min-width:96px; text-align:right; }
 
-  .galaxy-wrap{ position:relative; height:300px; border-radius:12px; overflow:hidden; margin:6px 0 8px;
+  .galaxy-wrap{ position:relative; height:300px; border-radius:9px; overflow:hidden; margin:6px 0 8px;
     border:1px solid var(--line);
     background: radial-gradient(130% 100% at 50% 15%, var(--panel-2), var(--bg) 60%, var(--bg2)); }
   .galaxy-wrap.big{ height:min(72vh, 640px); }
@@ -704,7 +705,7 @@
     background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:4px 8px; color:var(--text); }
 
 
-  .sub-tabs{ display:flex; gap:4px; margin-bottom:16px; padding:4px; border-radius:12px;
+  .sub-tabs{ display:flex; gap:4px; margin-bottom:16px; padding:4px; border-radius:9px;
     border:1px solid var(--line); background: var(--panel-2); overflow-x:auto; scrollbar-width:none; }
   .sub-tabs::-webkit-scrollbar{ display:none; }
   .sub-tab{ flex:1; white-space:nowrap; background:none; border:none; color:var(--muted);
@@ -826,7 +827,7 @@
 
 
   /* Ink layer sits under the text editor, sharing the note's visual language. */
-  #ink-wrap{ margin-top:10px; border:1px solid var(--line); border-radius:12px;
+  #ink-wrap{ margin-top:10px; border:1px solid var(--line); border-radius:14px;
     background: var(--bg); overflow:hidden; }
   .ink-bar{ display:flex; align-items:center; gap:6px; flex-wrap:wrap;
     padding:7px 9px; border-bottom:1px solid var(--line); background:var(--panel-2); }
@@ -1012,10 +1013,11 @@
   .galaxy-side{ position:absolute; right:14px; top:14px; width:236px; display:flex;
     flex-direction:column; gap:10px; z-index:4; pointer-events:none; }
   .gs-card{ background:color-mix(in srgb, var(--panel) 88%, transparent);
-    border:1px solid var(--line); border-radius:12px; padding:11px 12px;
+    border:1px solid var(--line); border-radius:14px; padding:11px 12px;
     backdrop-filter: blur(7px); pointer-events:auto; }
   .gs-title{ font-size:.6rem; letter-spacing:.13em; text-transform:uppercase;
     color:var(--muted); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .gs-since{ margin-left:auto; color:var(--muted); letter-spacing:.1em; }
   .gs-live{ width:6px; height:6px; border-radius:50%; background:var(--ok);
     animation: gsPulse 2s ease-in-out infinite; }
   @keyframes gsPulse{ 0%,100%{ opacity:1 } 50%{ opacity:.25 } }
@@ -1067,7 +1069,7 @@
       var(--accent3) 96%, var(--accent2) 150%);
     box-shadow: 0 0 22px color-mix(in srgb, var(--amber) 45%, transparent); }
   .rail-item{ width:52px; flex:none; display:flex; flex-direction:column;
-    align-items:center; gap:5px; padding:9px 0; border-radius:12px; cursor:pointer;
+    align-items:center; gap:5px; padding:9px 0; border-radius:9px; cursor:pointer;
     background:none; color:var(--muted); border:1px solid transparent;
     transition:background .16s, color .16s; }
   .rail-item svg{ width:19px; height:19px; fill:none; stroke:currentColor;
@@ -1403,7 +1405,7 @@
 
   /* ===== The design's stat strip ===== */
   .stat-strip{ display:flex; align-items:center; gap:0; flex-wrap:wrap;
-    margin:10px 26px 4px; border:1px solid var(--line); border-radius:11px;
+    margin:10px 26px 4px; border:1px solid var(--line); border-radius:14px;
     background:color-mix(in srgb, var(--panel) 70%, transparent); overflow:hidden; }
   .ss-cell{ display:flex; align-items:center; gap:7px; padding:9px 15px;
     font-family:"JetBrains Mono",monospace; font-size:.6rem; letter-spacing:.11em;
@@ -1575,7 +1577,7 @@
 
 
   .tb-results{ position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:60;
-    background:var(--panel); border:1px solid var(--line); border-radius:11px;
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
     box-shadow:0 12px 34px -12px rgba(0,0,0,.6); overflow:hidden; max-height:60vh;
     overflow-y:auto; }
   .tr-row{ display:flex; align-items:center; gap:10px; width:100%; padding:9px 12px;
@@ -1670,7 +1672,7 @@
   #app-root.has-rail .panel,
   #app-root.has-rail .calendar-panel,
   #app-root.has-rail .nb-grid-card{
-    border:1px solid var(--line); border-radius:16px;
+    border:1px solid var(--line); border-radius:14px;
     background: color-mix(in srgb, var(--panel) 92%, var(--bg));
   }
   #app-root.has-rail .panel > h2{
@@ -1699,7 +1701,7 @@
   /* --- Calendar: taller cells with room for pips --- */
   #app-root.has-rail .cal-grid{ gap:8px; }
   #app-root.has-rail .cal-day{
-    border:1px solid var(--line); border-radius:11px; min-height:76px;
+    border:1px solid var(--line); border-radius:14px; min-height:76px;
     background: color-mix(in srgb, var(--panel) 70%, transparent);
     transition:border-color .14s, background .14s;
   }
@@ -1794,7 +1796,7 @@
   .slash-menu{
     position:fixed; z-index:120; display:none; width:210px; max-height:270px; overflow-y:auto;
     background: linear-gradient(160deg, var(--panel), var(--panel-2));
-    border:1px solid var(--line); border-radius:11px; box-shadow: 0 18px 40px rgba(0,0,0,0.55);
+    border:1px solid var(--line); border-radius:14px; box-shadow: 0 18px 40px rgba(0,0,0,0.55);
     padding:6px;
   }
   .slash-menu.open{ display:block; }
