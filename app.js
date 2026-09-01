@@ -10154,6 +10154,27 @@ const VisionBridge = {
 };
 VisionBridge.install();
 
+
+// Page context, expressed as part of the question. Kept small: a whole page of
+// text would crowd out the instruction, and the parts that matter for a
+// support screen are near the top or in the selection.
+function withPageContext(question, bridged){
+  const base = question || 'Describe what is on this screen.';
+  if(!bridged) return base;
+
+  const bits = [];
+  if(bridged.title) bits.push(`Page: ${bridged.title}`);
+  if(bridged.url) bits.push(`URL: ${String(bridged.url).slice(0, 120)}`);
+  if(bridged.selection) bits.push(`The user selected: "${String(bridged.selection).slice(0, 400)}"`);
+  if(bridged.domText){
+    bits.push('Text read directly from the page (accurate — prefer this over '
+      + 'reading the image where they disagree):\n'
+      + String(bridged.domText).slice(0, 4000));
+  }
+  if(!bits.length) return base;
+  return base + '\n\n---\n' + bits.join('\n');
+}
+
 // ===== Screen reading ================================================
 // Captures a single frame from a window you choose and sends it for reading.
 // Deliberate constraints:
@@ -10287,12 +10308,12 @@ const Screen_ = {
     try{
       const r = await fetch(FN_URL + "/agenda-vision", {
         method:'POST', headers: authHeaders(),
-        // domText is supplemental: the model reads the page's own text instead
-        // of inferring it from pixels. Absent for a local share, which behaves
-        // exactly as before.
-        body: JSON.stringify({ image: img, question,
-          context: bridged ? { url: bridged.url, title: bridged.title,
-                               selection: bridged.selection, domText: bridged.domText } : undefined }),
+        // The page's own text is folded into the question rather than sent as a
+        // separate field: agenda-vision has provider fallback logic that would
+        // have to learn about a new field, and this needs no change there.
+        // Reading supplied text beats inferring it from pixels, so it is given
+        // priority in the instruction.
+        body: JSON.stringify({ image: img, question: withPageContext(question, bridged) }),
       });
       const out = await readJson(r);
       if(!out.ok){
