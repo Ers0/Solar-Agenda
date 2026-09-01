@@ -10121,6 +10121,21 @@ const VisionBridge = {
     // the answer the extension gets is the answer the app would have given.
     try{
       const res = await Screen_.ask(msg.question || undefined);
+
+      // The extension only reports status; the answer belongs in the app's
+      // own conversation. Without this the bridge said "Done" and nothing
+      // appeared anywhere — a reply returned to a popup that does not show it.
+      if(res.ok !== false && res.reply){
+        try{
+          const asked = msg.question
+            ? `${msg.question}\n\n(about ${msg.title || msg.url || 'a page'})`
+            : `Look at this page — ${msg.title || msg.url || 'shared from the browser'}`;
+          addAiMessage('user', asked);
+          addAiMessage('assistant', res.reply);
+          document.getElementById('ai-toggle')?.click();
+        }catch(e){ console.warn('[bridge] could not render the reply', e); }
+      }
+
       respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
                 ok: res.ok !== false,
                 reply: res.reply || null,
