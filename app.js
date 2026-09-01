@@ -10117,29 +10117,42 @@ const VisionBridge = {
       domText: msg.domText ? String(msg.domText).slice(0, 12000) : null,
     };
 
-    // The reply is produced by the ordinary pipeline, not a special path, so
-    // the answer the extension gets is the answer the app would have given.
+    // Previously this called Screen_.ask() directly, which returns a
+    // DESCRIPTION and nothing else — no tools, no grounding, no confidence.
+    // That is why "create a case for this SN" only read the screen back: the
+    // tool loop never ran. It now goes through runAssistantTurn, the same
+    // path a typed message takes, with the frame waiting for look_at_screen.
     try{
-      const res = await Screen_.ask(msg.question || undefined);
+      const asked = msg.question && msg.question.trim()
+        ? msg.question.trim()
+        : 'Look at my screen and tell me what is on it.';
 
-      // The extension only reports status; the answer belongs in the app's
-      // own conversation. Without this the bridge said "Done" and nothing
-      // appeared anywhere — a reply returned to a popup that does not show it.
-      if(res.ok !== false && res.reply){
-        try{
-          const asked = msg.question
-            ? `${msg.question}\n\n(about ${msg.title || msg.url || 'a page'})`
-            : `Look at this page — ${msg.title || msg.url || 'shared from the browser'}`;
-          addAiMessage('user', asked);
-          addAiMessage('assistant', res.reply);
-          document.getElementById('ai-toggle')?.click();
-        }catch(e){ console.warn('[bridge] could not render the reply', e); }
+      // The page's own text is exact where reading pixels is a guess, so it
+      // is given to the assistant directly rather than left for vision alone.
+      const ctx = [];
+      if(this.pending.title) ctx.push(`Page: ${this.pending.title}`);
+      if(this.pending.url) ctx.push(`URL: ${String(this.pending.url).slice(0, 140)}`);
+      if(this.pending.selection) ctx.push(`Selected: "${String(this.pending.selection).slice(0, 400)}"`);
+      if(this.pending.domText){
+        ctx.push('Text read from the page (accurate — prefer it over the image):\n'
+          + String(this.pending.domText).slice(0, 5000));
       }
+      const full = ctx.length ? `${asked}\n\n---\n${ctx.join('\n')}` : asked;
+
+      addAiMessage('user', msg.question || `Look at this page — ${this.pending.title || 'shared tab'}`);
+      const loading = addAiMessage('assistant', '…');
+      document.getElementById('ai-toggle')?.click();
+
+      let reply;
+      try{
+        reply = await runAssistantTurn(full, false);
+      }finally{
+        loading.remove();
+      }
+      addAiMessage('assistant', reply || 'No reply.');
 
       respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
-                ok: res.ok !== false,
-                reply: res.reply || null,
-                error: res.ok === false ? (res.error || 'vision_failed') : null });
+                ok: true, reply: reply || null, error: null });
     }catch(e){
       respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
                 ok:false, reply:null, error:'vision_failed' });
