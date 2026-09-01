@@ -10171,16 +10171,20 @@ const VisionBridge = {
       const loading = addAiMessage('assistant', '…');
       document.getElementById('ai-toggle')?.click();
 
-      let reply;
+      // runAssistantTurn returns a turn object, not a string — it carries the
+      // reply, its sources and its confidence. Passing it to addAiMessage
+      // printed "[object Object]"; renderTurn is what the app itself uses,
+      // and it draws the source cards too.
+      let res;
       try{
-        reply = await runAssistantTurn(full, false);
+        res = await runAssistantTurn(full, false);
       }finally{
         loading.remove();
       }
-      addAiMessage('assistant', reply || 'No reply.');
+      renderTurn(res);
 
       respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
-                ok: true, reply: reply || null, error: null });
+                ok: true, reply: (res && (res.display || res.text)) || null, error: null });
     }catch(e){
       respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
                 ok:false, reply:null, error:'vision_failed' });
