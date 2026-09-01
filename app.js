@@ -12367,11 +12367,12 @@ const CARD_COLORS = [
 let dragCard = null, dragHoldTimer = null, dragKind = null;
 
 function applyCardColor(el, color){
-  if(color){
-    el.style.borderColor = color;
-    el.style.boxShadow = `inset 3px 0 0 ${color}`;
-    el.style.background = `linear-gradient(160deg, ${color}22, var(--panel) 62%, var(--bg))`;
-  }
+  if(!color) return;
+  // A full coloured border and a tinted gradient made every card shout. The
+  // redesign keeps one calm surface and lets a single accent edge carry the
+  // colour, so a wall of notes reads as a grid rather than a paint chart.
+  el.style.setProperty('--card-accent', color);
+  el.classList.add('has-accent');
 }
 
 function openColorPicker(kind, id, anchor){

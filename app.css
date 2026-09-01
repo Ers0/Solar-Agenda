@@ -1093,7 +1093,7 @@
   #app-root.has-rail .rail{ padding-top:14px; }
   #app-root.has-rail .topbar .tagline{ display:none; }
 
-  #app-root.has-rail .sub-tabs{ gap:6px; flex-wrap:wrap; }
+  #app-root.has-rail .sub-tabs{ display:none !important; }
   #app-root.has-rail .sub-tab{ flex:0 0 auto; padding:8px 16px; }
 
 
@@ -1388,7 +1388,7 @@
       margin-left: -4px; margin-right: -4px;
       padding-left: 8px; padding-right: 8px;
     }
-    #app-root.has-rail .sub-tabs{ flex-wrap: nowrap !important; }
+    #app-root.has-rail .sub-tabs{ display:none !important; }
     .sub-tab{ white-space: nowrap; }
 
     /* Six items now, so they need to be narrower and the labels smaller. */
@@ -1500,8 +1500,13 @@
 
 
   /* ===== Settings: a nav list, not a row of tabs ===== */
-  .set-shell{ display:grid; grid-template-columns:236px minmax(0,1fr); gap:18px; align-items:start; }
-  .set-nav{ display:flex; flex-direction:column; gap:12px; position:sticky; top:14px; }
+  .set-shell{ display:grid; grid-template-columns:236px minmax(0,1fr);
+    gap:18px; align-items:start; padding:0 26px 24px; }
+  /* sticky needs a scroll container it belongs to; inside this grid it lifted
+     the rail out of place and over the app's own rail. Plain flow is correct
+     here — the column is short enough not to need pinning. */
+  .set-nav{ display:flex; flex-direction:column; gap:12px; align-self:start;
+    min-width:0; }
   .set-nav-list{ padding:8px; }
   .set-nav-item{ display:flex; align-items:center; gap:10px; width:100%;
     padding:9px 11px; border-radius:9px; border:none; background:none;
@@ -1528,8 +1533,7 @@
   .set-head span{ font-size:.74rem; color:var(--muted); }
 
   @media (max-width: 900px){
-    .set-shell{ grid-template-columns:1fr; }
-    .set-nav{ position:static; }
+    .set-shell{ grid-template-columns:1fr; padding:0 14px 20px; }
     .set-nav-list{ display:flex; flex-wrap:wrap; gap:4px; }
     .set-nav-item{ width:auto; }
     .set-profile{ order:2; }
@@ -1596,6 +1600,15 @@
   .tr-none{ padding:13px; font-size:.76rem; color:var(--muted); }
   .tr-link{ background:none; border:none; color:var(--amber); cursor:pointer;
     text-decoration:underline; font-size:inherit; padding:0; }
+
+
+  /* A quiet 3px edge instead of a coloured frame */
+  .nb-grid-card.has-accent{ position:relative; overflow:hidden; }
+  .nb-grid-card.has-accent::before{
+    content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
+    background:var(--card-accent); border-radius:3px 0 0 3px; }
+  .nb-grid-card.has-accent:hover{
+    border-color:color-mix(in srgb, var(--card-accent) 45%, var(--line)); }
 
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
