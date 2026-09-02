@@ -37,7 +37,12 @@ async function login(name, password){
   if(!resp.ok) throw new Error(data.error || "Login failed.");
   return data;
 }
-function showApp(){ document.getElementById("login-screen").classList.add("hidden"); document.getElementById("app-root").classList.remove("hidden"); document.getElementById("user-pill").textContent = session.name; }
+function showApp(){ document.getElementById("login-screen").classList.add("hidden"); document.getElementById("app-root").classList.remove("hidden"); document.getElementById("user-pill").textContent = session.name;
+  // Layout belongs to showing the app, not to one route into it: a saved
+  // session got the rail and a fresh sign-in did not, so content sat under
+  // it. Here, every route in behaves the same — including any added later.
+  try{ applyLayoutOnce(); }catch(e){ console.warn('[layout]', e); }
+}
 function showLogin(){ document.getElementById("login-screen").classList.remove("hidden"); document.getElementById("app-root").classList.add("hidden"); }
 
 document.getElementById("login-btn").addEventListener("click", doLogin);
@@ -14804,7 +14809,7 @@ function applyLayoutOnce(){
 async function bootApp(){
   if(session){
     showApp();
-    applyLayoutOnce();                     // before the first render, not after
+    applyLayoutOnce();                     // no-op if showApp already did it
     // Report broken wiring immediately rather than letting it hide.
     setTimeout(() => { try{ SelfCheck.run(); }catch(e){ console.warn('[self-check]', e); } }, 800);
     await fetchVaultKey();                 // unlock first, then fetch
