@@ -4743,10 +4743,20 @@ const Ink = {
   // "the drawing vanished" problems rather than guessing at their timing.
   watchSize(){
     if(this._sizeWatch || !this.cv || typeof ResizeObserver === 'undefined') return;
+    // The observer watched the canvas, and resize() writes to that same
+    // canvas's width and height — so each resize triggered the observer again.
+    // Watching the PARENT breaks the cycle: the wrapper's size is set by CSS
+    // and is not touched by anything here.
+    const box = this.cv.parentElement || this.cv;
     this._sizeWatch = new ResizeObserver(() => {
-      if(this.active) this.resize();
+      if(!this.active) return;
+      // Coalesce to one resize per frame; a burst of observations during a
+      // layout change would otherwise redraw the page repeatedly.
+      if(this._sizePending) return;
+      this._sizePending = true;
+      requestAnimationFrame(() => { this._sizePending = false; this.resize(); });
     });
-    this._sizeWatch.observe(this.cv);
+    this._sizeWatch.observe(box);
   },
 
   // --- coordinate space ---------------------------------------------
@@ -14674,7 +14684,11 @@ function rainSize(){
     const p = el.parentElement;
     const w = p?.clientWidth || el.clientWidth || 0;
     const h = p?.clientHeight || el.clientHeight || 0;
-    if(w > 0 && h > 0){ el.width = w; el.height = h; }   // skip while hidden
+    // Writing width or height clears the canvas even when the value is the
+    // same, so an unchanged size should touch nothing at all.
+    if(w > 0 && h > 0 && (el.width !== w || el.height !== h)){
+      el.width = w; el.height = h;
+    }
   });
 }
 function rainSeed(){
