@@ -8575,12 +8575,15 @@ document.getElementById('vocab-train')?.addEventListener('click', async () => {
 // existing buttons are MOVED rather than rebuilt, so every handler, label and
 // state update already bound to them keeps working untouched.
 function buildRail(){
+  // The class goes on FIRST and unconditionally. It used to sit after an early
+  // return, so anything that made buildRail bail — a missing tools container,
+  // a second call — left the rail drawn with no space cleared for it.
+  const root = document.getElementById('app-root');
+  const rail = document.getElementById('app-rail');
+  if(root && rail) root.classList.add('has-rail');
+
   const tools = document.getElementById('rail-tools');
   if(!tools || tools._built) return;
-  // The class is only applied once the rail exists, so a failure here leaves
-  // the previous layout working rather than a broken half-state.
-  const root = document.getElementById('app-root');
-  if(root) root.classList.add('has-rail');
   tools._built = true;
   ['hud-toggle','theme-toggle','voice-toggle','ai-toggle','logout-btn'].forEach(id => {
     const el = document.getElementById(id);
