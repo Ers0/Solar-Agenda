@@ -38,7 +38,7 @@
   h1,h2,h3{ font-family:"Space Grotesk", "Inter", sans-serif; margin:0; letter-spacing:-0.01em;}
   button{ font-family:inherit; cursor:pointer; }
   .mono{ font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace; }
-  .hidden{ display:none !important; }
+  
 
   .app{ max-width:1180px; margin:0 auto; padding:24px 20px 80px; }
 
@@ -1050,7 +1050,6 @@
   #app-root.has-rail > .topbar{ padding:16px 26px; }
   /* Every view is spaced the same. Previously only the two views that happened
      to carry their own padding cleared the rail; the others were flush to it. */
-  #app-root.has-rail > [id^="view-"]{ padding-left:26px; padding-right:26px; }
   #app-root.has-rail > main{ padding-left:26px; padding-right:26px; }
 
   body:has(#app-root.has-rail){
@@ -1059,7 +1058,6 @@
       var(--bg2) 44%, var(--bg) 100%);
   }
 
-  .rail{ display:none; }
   #app-root.has-rail .rail{ position:fixed; left:0; top:0; bottom:0; width:82px;
     display:flex; flex-direction:column; align-items:center; gap:6px;
     padding:18px 0 14px; border-right:1px solid var(--line);
