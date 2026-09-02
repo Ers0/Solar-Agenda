@@ -10210,7 +10210,9 @@ const VisionBridge = {
       url: String(msg.url || '').slice(0, 400),
       title: String(msg.title || '').slice(0, 200),
       selection: msg.selection ? String(msg.selection).slice(0, 2000) : null,
-      domText: msg.domText ? String(msg.domText).slice(0, 12000) : null,
+      domText: msg.domText ? String(msg.domText).slice(0, 40000) : null,
+      thread: msg.thread || null,
+      domLength: msg.domLength || 0,
       at: Date.now(),
     };
 
@@ -10258,8 +10260,19 @@ const VisionBridge = {
       if(this.pending.url) ctx.push(`URL: ${String(this.pending.url).slice(0, 140)}`);
       if(this.pending.selection) ctx.push(`Selected: "${String(this.pending.selection).slice(0, 400)}"`);
       if(this.pending.domText){
-        ctx.push('Text read from the page (accurate — prefer it over the image):\n'
-          + String(this.pending.domText).slice(0, 5000));
+        const full = String(this.pending.domText);
+        const sent = full.slice(0, 5000);
+        // A partial capture reads exactly like a complete one, which is the
+        // dangerous part: a summary of a third of a conversation looks
+        // confident and complete. So the limit is stated, and the assistant is
+        // told to say so rather than pretend to the whole picture.
+        const truncated = sent.length < full.length;
+        ctx.push('Text read from the page (accurate — prefer it over the image):\n' + sent);
+        if(truncated){
+          ctx.push(`NOTE: this is the first ${sent.length} characters of ${this.pending.domLength || full.length}. `
+            + 'You are seeing part of the page, not all of it. If asked about the whole '
+            + 'conversation or anything that may be earlier, say plainly which part you saw.');
+        }
       }
       // Without this the model often answered from the text alone and said it
       // had no image, because nothing told it one was there to look at.
