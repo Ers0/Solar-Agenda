@@ -2972,6 +2972,7 @@ const TOOL_HINTS = {
   // contains "studying" and was matching start.
   capture_screen:  /\b(screenshot|screen shot|capture (this|the screen)|tira? um print|printa|captura a tela)\b/i,
   read_screen_map: /\b(first one|second one|last one|the one at the top|primeir[oa] da lista|no topo|on screen|na tela)\b/i,
+  merge_cases:     /\b(merge|unir|unifica|juntar|consolidar|combine|same fault|mesma falha)\b/i,
   start_study:     /^(?!.*\b(finish\w*|done|stop|end|termin\w*|acab\w*)\b).*\b(study|studying|estudar|revisar|revis[ãa]o|let'?s learn)\b/i,
   // No trailing \b after "stud": the word continues as "studying", so the
   // boundary never matched and the phrase fell through to nothing.
@@ -3973,6 +3974,74 @@ const TOOLS = [
       const lines = brief.split('\n').filter(l => l.toLowerCase().includes(want));
       return lines.length ? lines.join('\n')
         : `Nothing labelled matches "${args.about}". What I do have:\n` + brief;
+    },
+  },
+  {
+    name: 'merge_cases',
+    permission: PERM.HIGH,
+    description: "Combine several cases that are the same underlying fault into one, keeping every case's notes as separate entries. Use when the user agrees to merge duplicates. Destructive — always confirm first.",
+    schema: { type:'object', properties:{
+      query:{ type:'string', description:'What identifies the cases, e.g. "Paulo Deye F14" or a fault code.' },
+      keep:{ type:'string', description:'Optional: the title to keep. Defaults to the oldest.' },
+    }, required:['query'] },
+    async execute(args){
+      const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const open = (cases || []).filter(x => statusRank(x.status) !== 1);
+      // Stripping the query to one blob meant "Paulo Deye F14" had to appear
+      // as a single run of characters, which it never does. Match on the words
+      // instead: every word must be present somewhere in the case.
+      const words = String(args.query).toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u).filter(w => w.length > 1).map(norm).filter(Boolean);
+      if(!words.length) return 'Say which cases to merge — a name or a fault code.';
+      const hits = open.filter(x => {
+        const hay = norm(`${x.titulo} ${(x.tags || []).join(' ')} ${x.ticket || ''}`);
+        return words.every(w => hay.includes(w));
+      });
+      if(hits.length < 2) return `Only ${hits.length} case matches "${args.query}" — nothing to merge.`;
+      if(hits.length > 12) return `${hits.length} cases match "${args.query}" — too many to merge safely. Narrow it down.`;
+
+      // The oldest is kept: it carries the original ticket and the history.
+      const sorted = hits.slice().sort((a, b) =>
+        String(a.case_date || '').localeCompare(String(b.case_date || '')));
+      const keep = (args.keep && sorted.find(x => norm(x.titulo) === norm(args.keep))) || sorted[0];
+      const gone = sorted.filter(x => x !== keep);
+
+      // Every note is carried across with its origin, so nothing a technician
+      // wrote is lost and each visit stays legible as a separate visit.
+      const notesLog = Array.isArray(keep.notes_log) ? keep.notes_log.slice() : [];
+      gone.forEach(x => {
+        const when = x.case_date || 'undated';
+        (x.notes_log || []).forEach(n => {
+          notesLog.push({ ...n, text: `[${when}] ${(n && n.text) || ''}`.trim() });
+        });
+        if(!(x.notes_log || []).length){
+          notesLog.push({ text: `[${when}] merged from "${x.titulo}" — no notes recorded.`,
+                          at: Date.now(), status: x.status });
+        }
+      });
+
+      const tags = [...new Set([...(keep.tags || []), ...gone.flatMap(x => x.tags || [])])];
+      const worst = ['urgente','alta','media','baixa']
+        .find(p => sorted.some(x => x.prioridade === p)) || keep.prioridade;
+
+      try{
+        await updateCase(keep.id, { notes_log: notesLog, tags, prioridade: worst });
+        Object.assign(keep, { notes_log: notesLog, tags, prioridade: worst });
+        for(const x of gone){
+          await deleteCaseApi(x.id);
+          cases = cases.filter(y => y.id !== x.id);
+        }
+      }catch(e){
+        return 'The merge failed part-way: ' + errText(e) + '. Check the list before retrying.';
+      }
+
+      // Undoable like any other change TARS makes by voice.
+      try{ Spoken.remember('merge_cases', { id: keep.id, titulo: keep.titulo }); }catch(e){}
+      render(); renderCalendar(); renderHistory();
+      GalaxyFeed.push('case', `merged ${gone.length + 1} cases into "${keep.titulo}"`);
+      return `Merged ${gone.length + 1} cases into "${keep.titulo}" — `
+        + `${notesLog.length} notes kept, priority ${prioLabel(worst)}. `
+        + `Removed: ${gone.map(x => `"${x.titulo}"`).join(', ')}.`;
     },
   },
   {
@@ -10078,10 +10147,19 @@ const VisionBridge = {
 
   // Consumed by Screen_.ask(). One frame, once — a stale screenshot answered
   // later is worse than none.
+  // The frame used to be destroyed on first read, so "what else is in this
+  // image?" had nothing to look at — the follow-up saw a blank. It now stays
+  // for the conversation, and ages out rather than being consumed.
+  KEEP_MS: 5 * 60000,
+
   takeFrame(){
     const p = this.pending;
-    this.pending = null;
-    return p;
+    if(!p) return null;
+    if(Date.now() - (p.at || 0) > this.KEEP_MS){
+      this.pending = null;              // stale: a screen from five minutes ago
+      return null;                      // is not what "this page" means now
+    }
+    return p;                           // deliberately not cleared
   },
 
   async handle(msg, respond){
@@ -10115,6 +10193,7 @@ const VisionBridge = {
       title: String(msg.title || '').slice(0, 200),
       selection: msg.selection ? String(msg.selection).slice(0, 2000) : null,
       domText: msg.domText ? String(msg.domText).slice(0, 12000) : null,
+      at: Date.now(),
     };
 
     // Previously this called Screen_.ask() directly, which returns a
@@ -10164,7 +10243,12 @@ const VisionBridge = {
         ctx.push('Text read from the page (accurate — prefer it over the image):\n'
           + String(this.pending.domText).slice(0, 5000));
       }
-      const full = ctx.length ? `${asked}\n\n---\n${ctx.join('\n')}` : asked;
+      // Without this the model often answered from the text alone and said it
+      // had no image, because nothing told it one was there to look at.
+      ctx.push('A screenshot of this page is available. Use look_at_screen to '
+        + 'see it whenever the question is about what something looks like, or '
+        + 'about anything not covered by the text above.');
+      const full = `${asked}\n\n---\n${ctx.join('\n')}`;
 
       addAiMessage('user', spoken || msg.question
         || `Look at this page — ${this.pending.title || 'shared tab'}`);
@@ -10188,9 +10272,9 @@ const VisionBridge = {
     }catch(e){
       respond({ v: this.PROTOCOL, type:'VISION_RESULT', id: msg.id,
                 ok:false, reply:null, error:'vision_failed' });
-    }finally{
-      this.pending = null;      // never leave a frame for the next caller
     }
+    // The frame is intentionally left in place: follow-up questions about the
+    // same screen are the common case, and takeFrame() ages it out.
   },
 
   install(){

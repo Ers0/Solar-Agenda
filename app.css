@@ -1093,7 +1093,9 @@
   #app-root.has-rail .rail{ padding-top:14px; }
   #app-root.has-rail .topbar .tagline{ display:none; }
 
-  #app-root.has-rail .sub-tabs{ display:none !important; }
+  /* The nav list in the left column replaces this row entirely. Unscoped on
+     purpose: if it renders at all, both navigations are visible at once. */
+  .set-shell .sub-tabs{ display:none !important; }
   #app-root.has-rail .sub-tab{ flex:0 0 auto; padding:8px 16px; }
 
 
@@ -1388,7 +1390,7 @@
       margin-left: -4px; margin-right: -4px;
       padding-left: 8px; padding-right: 8px;
     }
-    #app-root.has-rail .sub-tabs{ display:none !important; }
+    .set-shell .sub-tabs{ display:none !important; }
     .sub-tab{ white-space: nowrap; }
 
     /* Six items now, so they need to be narrower and the labels smaller. */
@@ -1609,6 +1611,10 @@
     background:var(--card-accent); border-radius:3px 0 0 3px; }
   .nb-grid-card.has-accent:hover{
     border-color:color-mix(in srgb, var(--card-accent) 45%, var(--line)); }
+
+  /* The hidden attribute loses to any class rule that sets display, which has
+     silently kept four different elements on screen. Settle it once. */
+  [hidden]{ display:none !important; }
 
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
