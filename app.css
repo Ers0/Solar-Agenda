@@ -38,11 +38,13 @@
   h1,h2,h3{ font-family:"Space Grotesk", "Inter", sans-serif; margin:0; letter-spacing:-0.01em;}
   button{ font-family:inherit; cursor:pointer; }
   .mono{ font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace; }
-  
+  .hidden{ display:none !important; }
 
   .app{ max-width:1180px; margin:0 auto; padding:24px 20px 80px; }
 
-  .login-screen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  /* The login card centres on the viewport, never on the space beside a rail
+     that should not be visible yet. */
+  .login-screen{ position:relative; z-index:60; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
   .login-card{ background: linear-gradient(158deg, var(--panel-2) 0%, var(--panel) 55%, var(--bg) 140%); border:1px solid var(--line); border-radius:18px; padding:36px 32px; width:100%; max-width:360px; }
   .login-card .brand-mark{ width:48px; height:48px; border-radius:50%; margin-bottom:16px; background: radial-gradient(circle at 35% 30%, #ffd680, var(--amber) 60%, #b9750c); box-shadow: 0 0 24px var(--amber-soft); }
   .login-card h1{ font-size:1.3rem; margin-bottom:4px; }
@@ -1050,6 +1052,7 @@
   #app-root.has-rail > .topbar{ padding:16px 26px; }
   /* Every view is spaced the same. Previously only the two views that happened
      to carry their own padding cleared the rail; the others were flush to it. */
+  #app-root.has-rail > [id^="view-"]{ padding-left:26px; padding-right:26px; }
   #app-root.has-rail > main{ padding-left:26px; padding-right:26px; }
 
   body:has(#app-root.has-rail){
@@ -1058,7 +1061,8 @@
       var(--bg2) 44%, var(--bg) 100%);
   }
 
-  #app-root.has-rail .rail{ position:fixed; left:0; top:0; bottom:0; width:82px;
+  .rail{ display:none; }
+  #app-root:not(.hidden).has-rail .rail{ position:fixed; left:0; top:0; bottom:0; width:82px;
     display:flex; flex-direction:column; align-items:center; gap:6px;
     padding:18px 0 14px; border-right:1px solid var(--line);
     background: linear-gradient(180deg,
