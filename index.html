@@ -587,9 +587,11 @@
     </section>
     </div>
   </div>
+
+      </div><!-- /.set-shell -->
   </div><!-- /#view-settings -->
 
-    <div id="view-notebooks" class="hidden">
+  <div id="view-notebooks" class="hidden">
     <div class="nb-filters" id="nb-filters">
         <button class="hist-f active" data-nbf="all">All notes</button>
         <button class="hist-f" data-nbf="runbook">Runbooks</button>
@@ -616,7 +618,55 @@
     <div class="notebooks-grid" id="notebooks-grid"></div>
   </div>
 
-<div class="modal-backdrop" id="theme-modal-backdrop">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<button class="tars-dock" id="tars-dock" data-state="off" title="TARS — say “Hey TARS”" aria-label="TARS assistant">
+  <span class="dock-core"></span>
+  <span class="dock-ring"></span>
+  <span class="dock-badge" id="tars-badge" hidden></span>
+</button>
+
+<div class="voice-panel" id="voice-panel">
+  <button class="voice-close" id="voice-close" aria-label="Close voice">×</button>
+  <div class="voice-orb" id="voice-orb" data-state="off" role="button" tabindex="0"
+       aria-label="Talk to TARS. Press Enter to speak without the wake phrase.">
+    <canvas id="voice-canvas" aria-hidden="true"></canvas>
+    <span class="orb-dot" aria-hidden="true"></span>
+  </div>
+  <div class="voice-state" id="voice-state" role="status" aria-live="polite">Voice off</div>
+  <div class="voice-level" role="meter" aria-label="Microphone level" aria-hidden="true"><span id="voice-level-fill"></span></div>
+  <div class="voice-lvlnum" id="voice-lvlnum"></div>
+  <div class="voice-heard" id="voice-heard" aria-live="polite"></div>
+  <div class="voice-hint">Say <b>“Hey TARS”</b>, or tap the orb to talk without it.</div>
+  <select class="voice-select" id="voice-select" title="Speaking voice"></select>
+  <button class="btn-ghost voice-mute" id="voice-mute">Mute replies</button>
+</div>
+
+<div class="ai-panel" id="ai-panel">
+  <div class="ai-panel-header"><span>Assistant</span><button id="ai-close">×</button></div>
+  <div class="ai-messages" id="ai-messages">
+    <div class="ai-msg hint">Ask about today's agenda, or say what to create — e.g. "add an urgent case for Integrator XPTO at 14:00".</div>
+  </div>
+  <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button class="ai-share" id="ai-share" title="Share a window so TARS can read it">⧉</button><button id="ai-send">Send</button></div>
+</div>
+
+  <!-- Modals live at the top level: inside a view they inherit its hidden
+       state and open invisibly. -->
+  <div class="modal-backdrop" id="theme-modal-backdrop">
   <div class="modal">
     <h2>Choose a theme</h2>
     <div class="theme-grid" id="theme-grid"></div>
@@ -625,8 +675,7 @@
     </div>
   </div>
 </div>
-
-<div class="modal-backdrop" id="new-notebook-modal-backdrop">
+  <div class="modal-backdrop" id="new-notebook-modal-backdrop">
   <div class="modal">
     <h2>New notebook</h2>
     <div class="field"><label>Name</label><input type="text" id="new-notebook-title" placeholder="e.g. Client sites, Ideas, Troubleshooting log"></div>
@@ -636,8 +685,7 @@
     </div>
   </div>
 </div>
-
-<div class="modal-backdrop notebook-modal" id="notebook-modal-backdrop">
+  <div class="modal-backdrop notebook-modal" id="notebook-modal-backdrop">
   <div class="modal">
     <div class="notebook-editor-header">
       <input type="text" id="nb-title-input" placeholder="Untitled">
@@ -748,8 +796,7 @@
     </div>
   </div>
 </div>
-
-<div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal-backdrop" id="modal-backdrop">
   <div class="modal">
     <h2 id="modal-title">New case</h2>
     <div class="closed-banner" id="closed-banner" style="display:none">
@@ -838,8 +885,7 @@
     </div>
   </div>
 </div>
-
-<div class="modal-backdrop" id="sticky-modal-backdrop" style="z-index:130">
+  <div class="modal-backdrop" id="sticky-modal-backdrop" style="z-index:130">
   <div class="modal" style="max-width:440px">
     <h2>Case note</h2>
     <p class="sticky-stamp mono" id="sticky-time"></p>
@@ -852,8 +898,7 @@
     </div>
   </div>
 </div>
-
-<div class="modal-backdrop" id="star-backdrop" style="z-index:160">
+  <div class="modal-backdrop" id="star-backdrop" style="z-index:160">
   <div class="modal star-modal">
     <div class="star-head">
       <span class="star-kind" id="star-kind">NODE</span>
@@ -869,8 +914,7 @@
     </div>
   </div>
 </div>
-
-<div class="modal-backdrop" id="compose-backdrop" style="z-index:150">
+  <div class="modal-backdrop" id="compose-backdrop" style="z-index:150">
   <div class="modal" style="max-width:560px">
     <h2 id="compose-title">Message</h2>
     <p class="hint" id="compose-missing"></p>
@@ -885,8 +929,7 @@
     </div>
   </div>
 </div>
-
-<div class="modal-backdrop" id="day-modal-backdrop">
+  <div class="modal-backdrop" id="day-modal-backdrop">
   <div class="modal">
     <h2 id="day-modal-title">Day</h2>
     <div class="day-modal-section">
@@ -902,38 +945,7 @@
     </div>
   </div>
 </div>
-
-<button class="tars-dock" id="tars-dock" data-state="off" title="TARS — say “Hey TARS”" aria-label="TARS assistant">
-  <span class="dock-core"></span>
-  <span class="dock-ring"></span>
-  <span class="dock-badge" id="tars-badge" hidden></span>
-</button>
-
-<div class="voice-panel" id="voice-panel">
-  <button class="voice-close" id="voice-close" aria-label="Close voice">×</button>
-  <div class="voice-orb" id="voice-orb" data-state="off" role="button" tabindex="0"
-       aria-label="Talk to TARS. Press Enter to speak without the wake phrase.">
-    <canvas id="voice-canvas" aria-hidden="true"></canvas>
-    <span class="orb-dot" aria-hidden="true"></span>
-  </div>
-  <div class="voice-state" id="voice-state" role="status" aria-live="polite">Voice off</div>
-  <div class="voice-level" role="meter" aria-label="Microphone level" aria-hidden="true"><span id="voice-level-fill"></span></div>
-  <div class="voice-lvlnum" id="voice-lvlnum"></div>
-  <div class="voice-heard" id="voice-heard" aria-live="polite"></div>
-  <div class="voice-hint">Say <b>“Hey TARS”</b>, or tap the orb to talk without it.</div>
-  <select class="voice-select" id="voice-select" title="Speaking voice"></select>
-  <button class="btn-ghost voice-mute" id="voice-mute">Mute replies</button>
-</div>
-
-<div class="ai-panel" id="ai-panel">
-  <div class="ai-panel-header"><span>Assistant</span><button id="ai-close">×</button></div>
-  <div class="ai-messages" id="ai-messages">
-    <div class="ai-msg hint">Ask about today's agenda, or say what to create — e.g. "add an urgent case for Integrator XPTO at 14:00".</div>
-  </div>
-  <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask something..."></textarea><button class="ai-share" id="ai-share" title="Share a window so TARS can read it">⧉</button><button id="ai-send">Send</button></div>
-</div>
 </div><!-- /#app-root -->
-</div>
 
 <script src="/app.js"></script>
 </body>
