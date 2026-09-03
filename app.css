@@ -1618,9 +1618,10 @@
   .nb-grid-card.has-accent:hover{
     border-color:color-mix(in srgb, var(--card-accent) 45%, var(--line)); }
 
-  /* The hidden attribute loses to any class rule that sets display, which has
-     silently kept four different elements on screen. Settle it once. */
-  [hidden]{ display:none !important; }
+  /* Two elements are replaced by newer navigation and must stay down. Named
+     explicitly rather than with a global [hidden] rule — that reached every
+     element in the app to solve a problem with two of them. */
+  .nav-tabs[hidden], .sub-tabs[hidden]{ display:none !important; }
 
   /* ===== Redesign: view heading ===== */
   .view-head{ padding:18px 26px 4px; }
