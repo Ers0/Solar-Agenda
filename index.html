@@ -83,6 +83,11 @@
       <div class="tb-results" id="tb-results" hidden></div>
     </div>
     <button class="tb-status" id="tars-status"><span class="dot"></span>TARS online</button>
+    <div class="lang-switch" id="lang-toggle-btn" role="button" tabindex="0" title="Switch language / Mudar idioma (US ⇄ BR)">
+      <span class="lang-opt lang-opt-us" data-lang="en" title="English">🇺🇸 <span class="lang-code">EN</span></span>
+      <span class="lang-divider">/</span>
+      <span class="lang-opt lang-opt-br" data-lang="pt" title="Português (Brasil)">🇧🇷 <span class="lang-code">PT</span></span>
+    </div>
     <button class="tb-new" id="tb-new-case">+ New case</button>
     <div class="topbar-actions">
       <div class="nav-tabs" hidden>
@@ -2155,6 +2160,7 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
 
 </div><!-- /#app-root -->
 
+<script src="/i18n.js"></script>
 <script src="/sla-hub.js"></script>
 <script src="/app.js"></script>
 </body>

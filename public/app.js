@@ -10418,13 +10418,15 @@ function renderFirstHourList(){
 // The topbar heading follows the view, so the page always says what it is.
 // The old .view-head block duplicated this, and is retired.
 const TOPBAR_HEAD = {
-  agenda:    () => ['Your day', `SUPPORT ROUTINE · ${new Date().toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'}).toUpperCase()}`],
-  history:   () => ['Case history', `${(cases||[]).filter(x=>x.status==='resolvido').length} CLOSED RECORDS`],
-  calendar:  () => ['Calendar', `${new Date().toLocaleDateString(undefined,{month:'long',year:'numeric'}).toUpperCase()} · ${(cases||[]).length} CASES`],
-  notebooks: () => ['Notebooks', `${(notes||[]).length} NOTES · ${(notebooks||[]).length} NOTEBOOKS`],
-  galaxy:    () => ['Knowledge galaxy', `${(KB||[]).length} ENTRIES · SHARED BASE`],
-  settings:  () => ['Settings', 'ASSISTANT · VOICE · WRITING · KNOWLEDGE · DATA'],
+  agenda:    () => [window.I18n ? window.I18n.t('your_day') : 'Your day', `${window.I18n ? window.I18n.t('sub_support_routine') : 'SUPPORT ROUTINE'} · ${new Date().toLocaleDateString(window.I18n && window.I18n.lang === 'pt' ? 'pt-BR' : 'en-US',{weekday:'short',day:'numeric',month:'short'}).toUpperCase()}`],
+  history:   () => [window.I18n ? window.I18n.t('case_history') : 'Case history', `${(cases||[]).filter(x=>x.status==='resolvido').length} ${window.I18n ? window.I18n.t('sub_closed_records') : 'CLOSED RECORDS'}`],
+  calendar:  () => [window.I18n ? window.I18n.t('calendar') : 'Calendar', `${new Date().toLocaleDateString(window.I18n && window.I18n.lang === 'pt' ? 'pt-BR' : 'en-US',{month:'long',year:'numeric'}).toUpperCase()} · ${(cases||[]).length} CASES`],
+  sla:       () => [window.I18n ? window.I18n.t('sla_hub') : 'SLA Hub', `${(Array.isArray(window.slaCases) ? window.slaCases : []).filter(x=>!['RESOLVED','CLOSED','CANCELED'].includes(x.status)).length} ${window.I18n ? window.I18n.t('sub_active_cases') : 'ACTIVE CASES · PERSISTENT CONTROL LAYER'}`],
+  notebooks: () => [window.I18n ? window.I18n.t('notebooks') : 'Notebooks', `${(notes||[]).length} NOTES · ${(notebooks||[]).length} NOTEBOOKS`],
+  galaxy:    () => [window.I18n ? window.I18n.t('galaxy') : 'Knowledge galaxy', `${(KB||[]).length} ${window.I18n ? window.I18n.t('sub_knowledge_entries') : 'ENTRIES · SHARED BASE'}`],
+  settings:  () => [window.I18n ? window.I18n.t('settings') : 'Settings', window.I18n ? window.I18n.t('sub_settings') : 'ASSISTANT · VOICE · WRITING · KNOWLEDGE · DATA'],
 };
+window.renderTopbarHead = renderTopbarHead;
 function renderTopbarHead(view){
   const h = document.getElementById('tb-heading');
   const s = document.getElementById('tb-sub');
@@ -10440,7 +10442,9 @@ function renderTarsStatus(ok){
   const el = document.getElementById('tars-status');
   if(!el) return;
   el.classList.toggle('offline', ok === false);
-  el.lastChild.textContent = ok === false ? 'TARS offline' : 'TARS online';
+  const onlineText = window.I18n ? window.I18n.t('tars_online') : 'TARS online';
+  const offlineText = window.I18n ? window.I18n.t('tars_offline') : 'TARS offline';
+  el.lastChild.textContent = ok === false ? offlineText : onlineText;
 }
 
 document.getElementById('tb-new-case')?.addEventListener('click', () =>
@@ -17648,6 +17652,7 @@ async function bootApp(){
   if(typeof loadMailcorpSettings === 'function') loadMailcorpSettings();
   if(typeof loadJiraSettings === 'function') loadJiraSettings();
   if(typeof initSlaWebhookUI === 'function') initSlaWebhookUI();
+  if(window.I18n) window.I18n.apply();
   Learn.load();
   Handwriting.load();
   Proactive.start();

@@ -1538,6 +1538,34 @@
     background:color-mix(in srgb, var(--urgente) 12%, transparent); color:var(--urgente); }
   .tb-status.offline .dot{ background:var(--urgente); }
 
+  /* Bilingual switch: US flag and Brazil flag beside TARS status */
+  .lang-switch{
+    display:inline-flex; align-items:center; gap:6px; padding:5px 10px;
+    border-radius:999px; font-size:.78rem; font-weight:600; flex:none;
+    border:1px solid var(--line); background:var(--panel-2); color:var(--text);
+    cursor:pointer; user-select:none; transition:all var(--quick) var(--ease);
+  }
+  .lang-switch:hover{
+    border-color:var(--amber); background:var(--panel);
+    box-shadow:0 0 10px -4px var(--amber);
+  }
+  .lang-switch:focus-visible{
+    outline:2px solid var(--amber); outline-offset:2px;
+  }
+  .lang-opt{
+    display:inline-flex; align-items:center; gap:3px; opacity:0.5;
+    transition:opacity var(--quick) var(--ease), transform var(--quick) var(--ease);
+  }
+  .lang-opt.active{
+    opacity:1; font-weight:700; transform:scale(1.04);
+  }
+  .lang-opt .lang-code{
+    font-size:0.65rem; font-family:"JetBrains Mono",monospace; letter-spacing:0.04em;
+  }
+  .lang-divider{
+    opacity:0.35; font-size:0.68rem; margin:0 1px;
+  }
+
   .tb-new{ flex:none; padding:8px 17px; border-radius:9px; font-size:.78rem;
     font-weight:700; border:none; background:var(--amber); color:var(--on-accent); }
   .tb-new:hover{ filter:brightness(1.08); }
