@@ -2618,6 +2618,8 @@
     load: loadSLACases,
     refresh: loadSLACases,
     render: renderSLACasesGrid,
+    renderSLACasesGrid: renderSLACasesGrid,
+    updateSLAStats: updateSLAStats,
     openCase: openSLACaseModal,
     openNew: openNewSLAModal,
     openIntake: openBridgeIntakeModal,
