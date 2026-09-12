@@ -1,0 +1,11 @@
+{
+  "name": "Solar Agenda",
+  "description": "Support routine interface, knowledge base, inverter diagnostics, and workflow management for solar technicians with TARS assistant.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
+

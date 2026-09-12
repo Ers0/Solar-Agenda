@@ -1,0 +1,2161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Solar Agenda — Support Routine & Inverter Diagnostics</title>
+<meta name="description" content="Support routine interface, knowledge base, inverter diagnostics, and workflow management for solar technicians with TARS assistant.">
+<meta property="og:title" content="Solar Agenda — Support Routine & Inverter Diagnostics">
+<meta property="og:description" content="Support routine interface, knowledge base, inverter diagnostics, and workflow management for solar technicians with TARS assistant.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CradialGradient id='g' cx='35%25' cy='30%25'%3E%3Cstop offset='0' stop-color='%23fff2cc'/%3E%3Cstop offset='.5' stop-color='%23f2a71b'/%3E%3Cstop offset='1' stop-color='%234f9fd8'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='13' fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/app.css">
+<script src="/purify.min.js"></script>
+</head>
+<body>
+
+<div class="boot" id="boot-overlay">
+  <div class="boot-grid"></div>
+  <div class="boot-scan"></div>
+  <div class="boot-core">
+    <div class="boot-ring"><i></i><i></i><i></i><u></u><b></b></div>
+    <div class="boot-title" data-txt="SOLAR AGENDA">SOLAR AGENDA</div>
+    <div class="boot-sub">SUPPORT ROUTINE INTERFACE</div>
+  </div>
+  <div class="boot-bar"><span id="boot-bar-fill"></span></div>
+  <div class="boot-lines" id="boot-lines"></div>
+  <button type="button" class="boot-skip-btn" id="boot-skip-btn">Skip Intro ➔</button>
+</div>
+
+<div class="login-screen" id="login-screen">
+  <div class="login-card">
+    <div class="brand-mark"></div>
+    <h1>Solar Agenda</h1>
+    <p class="sub">Technician workspace & routine interface for solar support operations.</p>
+    
+    <div class="cloud-status-badge">
+      <span class="pulse-dot"></span>
+      <span>Cloud Ready • Offline Resilient</span>
+    </div>
+
+    <button type="button" id="demo-instant-btn" class="demo-btn">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Instant Demo Access (Technician)
+    </button>
+
+    <div class="login-divider"><span>or sign in manually</span></div>
+
+    <div class="field"><label>Username</label><input type="text" id="login-name" autocomplete="username" placeholder="admin"></div>
+    <div class="field"><label>Password</label><input type="password" id="login-password" autocomplete="current-password" placeholder="••••••••"></div>
+    <button id="login-btn">Sign in</button>
+    <div class="login-error" id="login-error"></div>
+    <div class="login-hint"><button type="button" id="fill-demo-btn" class="hint-link">Auto-fill demo credentials (admin / admin)</button></div>
+  </div>
+</div>
+
+<div class="app hidden" id="app-root">
+  <nav class="rail" id="app-rail">
+    <div class="rail-mark"></div>
+    <button class="bn-item rail-item active" data-view="agenda" title="Agenda"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9M12 7v5l3 2"/></svg><span>Day</span></button>
+    <button class="bn-item rail-item" data-view="history" title="History"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 8v4l3 2"/></svg><span>Log</span></button>
+    <button class="bn-item rail-item" data-view="calendar" title="Calendar"><svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM4 10h16M8 4v4M16 4v4"/></svg><span>Cal</span></button>
+    <button class="bn-item rail-item" data-view="sla" title="SLA Hub" id="rail-sla-btn"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="3"/><path d="M12 10v2l1 1"/></svg><span>SLA</span></button>
+    <button class="bn-item rail-item" data-view="galaxy" title="Knowledge galaxy"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M6 6l12 12M18 6L6 18"/></svg><span>Galaxy</span></button>
+    <button class="bn-item rail-item" data-view="settings" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6M12 2v3M12 19v3M4 4l2 2M18 18l2 2M2 12h3M19 12h3M4 20l2-2M18 6l2-2"/></svg><span>Set</span></button>
+    <div class="rail-gap"></div>
+    <div class="rail-tools" id="rail-tools"></div>
+  </nav>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="tb-title">
+        <h1 id="tb-heading">Solar Agenda</h1>
+        <p class="tagline" id="tb-sub">Support routine — from the first hour to end of day</p>
+      </div>
+    </div>
+    <div class="tb-search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="global-search" placeholder="Search cases, notes or knowledge…">
+      <kbd>⌘K</kbd>
+      <div class="tb-results" id="tb-results" hidden></div>
+    </div>
+    <button class="tb-status" id="tars-status"><span class="dot"></span>TARS online</button>
+    <button class="tb-new" id="tb-new-case">+ New case</button>
+    <div class="topbar-actions">
+      <div class="nav-tabs" hidden>
+        <button class="nav-tab active" id="tab-agenda">Agenda</button>
+        <button class="nav-tab" id="tab-history">History</button>
+        <button class="nav-tab" id="tab-calendar">Calendar</button>
+        <button class="nav-tab" id="tab-sla">SLA</button>
+        <button class="nav-tab" id="tab-settings">Settings</button>
+      </div>
+      <span class="user-pill" id="user-pill"></span>
+      <button class="ai-toggle" id="hud-toggle" title="Fullscreen HUD (F11 also works)"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg><span class="btn-lab">HUD</span></button>
+      <button class="ai-toggle" id="theme-toggle"><svg class="btn-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="9.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="14.5" cy="14.5" r="1.2" fill="currentColor" stroke="none"/></svg><span class="btn-lab">Theme</span></button>
+      <button class="ai-toggle" id="voice-toggle" title="Voice — say &quot;Hey TARS&quot;"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 11a7 7 0 0 1-14 0M12 18v4"/></svg><span class="btn-lab">Voice</span></button>
+      <button class="ai-toggle" id="ai-toggle"><span class="dot"></span><span class="btn-lab">Assistant</span></button>
+      <button class="logout-btn" id="logout-btn"><svg class="btn-ico" viewBox="0 0 24 24"><path d="M15 17l5-5-5-5M20 12H9M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></svg><span class="btn-lab">Sign out</span></button>
+    </div>
+  </header>
+
+  <nav class="bottom-nav" id="bottom-nav">
+    <button class="bn-item active" data-view="agenda">
+      <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/></svg><span>Agenda</span>
+    </button>
+    <button class="bn-item" data-view="history">
+      <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg><span>History</span>
+    </button>
+    <button class="bn-item" data-view="calendar">
+      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><span>Calendar</span>
+    </button>
+    <button class="bn-item" data-view="sla">
+      <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="3"/><path d="M12 10v2l1 1"/></svg><span>SLA</span>
+    </button>
+    <button class="bn-item" data-view="galaxy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 3v18M3 12h18M6 6l12 12M18 6L6 18"/></svg><span>Galaxy</span></button><button class="bn-item" data-view="settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.6 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 8 2.6h.1A2 2 0 1 1 12 2.6"/></svg><span>Settings</span>
+    </button>
+  </nav>
+
+  <div class="focus-bar hidden" id="focus-bar"></div>
+
+  <div class="hud-strip hud-only" id="hud-strip">
+    <div class="hud-stat"><span class="dotmark" style="background:var(--ok);color:var(--ok)"></span> <span class="hud-live">LIVE</span></div>
+    <div class="hud-stat">DATE <b id="hud-date">—</b></div>
+    <div class="hud-stat">OPEN <b id="hud-open">0</b></div>
+    <div class="hud-stat"><span class="dotmark" style="background:var(--urgente);color:var(--urgente)"></span> URGENT <b id="hud-urgent">0</b></div>
+    <div class="hud-stat">DONE TODAY <b id="hud-done">0</b></div>
+    <div class="hud-stat">NOTEBOOKS <b id="hud-nb">0</b></div>
+    <div class="hud-sep"></div>
+    <div class="hud-stat" id="hud-next">NEXT —</div>
+  </div>
+
+  <div id="view-agenda">
+    <div class="arc-wrap">
+      <div class="arc-caption">
+        <h2>Your day</h2>
+        <div class="arc-caption-right">
+          <button class="phase-pill" id="phase-pill" title="Click to preview the other phase">
+            <svg class="phase-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          <span id="phase-label">DAY</span></button>
+          <span class="face-count" id="face-count"></span><button style="display:none">
+          </button>
+          <span class="clock mono" id="clock-label">--:--</span>
+        </div>
+      </div>
+      <canvas class="rain-layer" id="rain-layer"></canvas>
+      <div class="arc-sweep" id="arc-sweep"></div>
+      <div class="dial-legend">
+          <span><i style="background:var(--urgente)"></i>urgent</span>
+          <span><i style="background:var(--alta)"></i>high</span>
+          <span><i style="background:var(--media)"></i>normal</span>
+          <span><i style="background:var(--ok)"></i>done</span>
+          <span><i class="lg-now"></i>now</span>
+          <span><i class="lg-fh"></i>first hour</span>
+        </div>
+        <svg id="day-arc" viewBox="0 -22 800 232" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="view-head" id="view-head" hidden></div>
+    <div class="stat-strip" id="stat-strip"></div>
+    <main class="layout">
+
+      <div class="col-left">
+      <section class="panel first-hour-panel">
+        <h2>First hour <span class="badge">priority</span></h2>
+        <p class="hint">Urgent and high priority only — everything else waits.</p>
+        <div class="fh-list" id="first-hour-list"></div>
+      </section>
+      <section class="panel suggest-panel" id="suggest-panel">
+        <div class="sg-title">TARS suggests</div>
+        <div id="suggest-box"></div>
+      </section>
+      <section class="panel weather-panel" id="weather-panel">
+        <div class="wx-head"><span class="wx-title">Vinhedo today</span><span class="wx-temp mono" id="wx-temp">—</span></div>
+        <div class="wx-row" id="wx-local"><span class="wx-load">loading forecast…</span></div>
+        <div class="wx-div"></div>
+        <div class="wx-head"><span class="wx-title">Roughest in Brazil</span></div>
+        <div class="wx-row" id="wx-brazil"></div>
+      </section>
+      </div>
+      <section class="panel day-panel">
+        <div class="day-panel-header"><h2>Today's cases</h2>
+          <div class="day-filters" id="day-filters">
+            <button class="hist-f active" data-df="all">All</button>
+            <button class="hist-f" data-df="urgente">Urgent</button>
+            <button class="hist-f" data-df="open">Open</button>
+            <button class="hist-f" data-df="done">Done</button>
+          </div><button id="add-case-btn">+ New case</button></div>
+        <div id="blocks-container"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="view-history" class="hidden">
+    <div class="hist-shell">
+      <section class="panel hist-main">
+        <div class="hist-bar">
+          <div class="hist-filters" id="hist-filters">
+            <button class="hist-f active" data-hf="all">All</button>
+            <button class="hist-f" data-hf="urgente">Urgent</button>
+            <button class="hist-f" data-hf="alta">High</button>
+            <button class="hist-f" data-hf="resolvido">Closed</button>
+          </div>
+          <input class="hist-search" id="hist-search" placeholder="Filter by title, client or ticket…">
+        </div>
+        <div id="history-container"></div>
+      </section>
+      <aside class="hist-side">
+        <div class="gs-card"><div class="gs-title">Totals</div>
+          <div class="hist-stats" id="hist-stats"></div></div>
+        <div class="gs-card"><div class="gs-title">Resolution rate</div>
+          <div id="hist-rate"></div></div>
+        <div class="gs-card"><div class="gs-title">Recurring faults</div>
+          <div id="hist-faults"></div></div>
+        <div class="gs-card"><div class="gs-title">By manufacturer</div>
+          <div id="hist-makers"></div></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="view-calendar" class="hidden">
+    <div class="cal-shell">
+      <section class="panel cal-main">
+    <section class="calendar-panel">
+      <div class="calendar-header">
+        <h2 id="cal-month-label">Month</h2>
+        <div class="calendar-nav">
+          <button id="cal-prev">‹</button>
+          <button id="cal-today">Today</button>
+          <button id="cal-next">›</button>
+        </div>
+      </div>
+      <div class="cal-grid" id="cal-weekdays"></div>
+      <div class="cal-grid" id="cal-grid" style="margin-top:6px;"></div>
+    </section>
+  </section>
+      <aside class="cal-side">
+        <div class="gs-card"><div class="gs-title" id="cal-day-title">Select a day</div>
+          <div id="cal-day-list" class="cal-day-list"></div></div>
+        <div class="gs-card"><div class="gs-title">This month</div>
+          <div class="cal-stats" id="cal-stats"></div></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="view-galaxy" class="hidden">
+    <div class="gx-shell">
+      <aside class="gx-col-left">
+        <div class="gs-card"><div class="gs-title">Clusters
+            <button class="gx-new" id="gx-new-cluster" title="Create a cluster">+</button></div>
+          <div id="gl-clusters"></div></div>
+        <div class="gs-card"><div class="gs-title">Legend</div>
+          <div class="gx-legend">
+            <span><i class="lg-ring"></i>Entry</span>
+            <span><i class="lg-sun"></i>Cluster hub</span>
+            <span><i class="lg-orphan"></i>Unlinked</span>
+            <span><i class="lg-line"></i>Link between clusters</span>
+          </div></div>
+      </aside>
+
+      <div class="gx-stage">
+        <div class="galaxy-wrap" id="galaxy-wrap">
+        <canvas id="kb-map" aria-label="3D knowledge galaxy"></canvas>
+        <div class="galaxy-stats" id="galaxy-stats"></div>
+        <div class="galaxy-tip" id="galaxy-tip"></div>
+        <div class="galaxy-mini-frame"><canvas id="galaxy-mini"></canvas></div>
+        <div class="galaxy-hint">drag · zoom · click to focus</div>
+        
+        <div class="kb-map-empty" id="kb-map-empty">Nothing mapped yet — scan a folder of markdown notes to build the galaxy.</div>
+        </div><!-- /.galaxy-wrap -->
+        <div class="gx-time"><input type="range" id="gx-time" min="0" max="100" value="100">
+          <span>all time</span></div>
+      </div><!-- /.gx-stage -->
+
+      <aside class="gx-col-right">
+        <div class="gs-card"><div class="gs-title">This week</div>
+          <div class="gx-overview" id="gx-overview"></div>
+          <div class="gx-focus">Focus: <b id="gx-focus-label">the whole map</b></div>
+          <button class="btn-ghost" id="gx-clear-focus">Clear focus</button>
+        </div>
+        <div class="gs-card"><div class="gs-title"><span class="gs-live"></span>TARS live <span class="gs-since">today</span></div>
+          <div class="galaxy-feed" id="galaxy-feed"></div></div>
+      </aside>
+    </div>
+  </div>
+  <div id="view-settings" class="hidden">
+    <div class="set-shell">
+      <aside class="set-nav">
+        <div class="gs-card set-nav-list" id="set-nav"></div>
+        <div class="gs-card set-profile" id="set-profile"></div>
+      </aside>
+      <div class="set-body">
+        <div class="set-head" id="set-head"></div>
+        <div class="set-search-wrap">
+          <span class="set-search-icon">🔍</span>
+          <input type="text" id="set-search-input" class="set-search-input" placeholder="Search settings (e.g. SMTP, voice, model, contacts, backup)...">
+          <button type="button" id="set-search-clear" class="set-search-clear" title="Clear search">✕</button>
+        </div>
+    <div class="sub-tabs" role="tablist" aria-label="Settings sections" hidden>
+      <button class="sub-tab active" role="tab" data-sub="ai" aria-selected="true">AI & TARS</button>
+      <button class="sub-tab" role="tab" data-sub="integrations" aria-selected="false">Integrations</button>
+      <button class="sub-tab" role="tab" data-sub="knowledge" aria-selected="false">Knowledge</button>
+      <button class="sub-tab" role="tab" data-sub="system" aria-selected="false">System</button>
+      <!-- Aliases for backward compatibility with existing shortcuts -->
+      <button class="sub-tab" role="tab" data-sub="assistant" hidden></button>
+      <button class="sub-tab" role="tab" data-sub="voice" hidden></button>
+      <button class="sub-tab" role="tab" data-sub="connections" hidden></button>
+      <button class="sub-tab" role="tab" data-sub="media" hidden></button>
+      <button class="sub-tab" role="tab" data-sub="writing" hidden></button>
+      <button class="sub-tab" role="tab" data-sub="appearance" hidden></button>
+      <button class="sub-tab" role="tab" data-sub="data" hidden></button>
+    </div>
+
+    <!-- HUB 1: AI & TARS -->
+    <div class="sub-panel" data-sub-panel="ai">
+      <!-- Quick Email Setup Jump Banner -->
+      <div class="set-row" style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,179,0,0.06); border:1px solid rgba(255,179,0,0.25); border-radius:12px; padding:12px 14px; margin-bottom:16px;">
+        <div class="set-info" style="margin-right:12px;">
+          <b>✉️ Email Dispatcher (Gmail for Testing & Mailcorp)</b>
+          <span id="smtp-assistant-status" style="color:var(--amber); font-weight:600;">Configure test email for automated case reports</span>
+        </div>
+        <button class="btn-primary" id="goto-connections-email" style="white-space:nowrap; padding:7px 16px; font-size:0.82rem; cursor:pointer;">Go to Email Settings →</button>
+      </div>
+
+      <!-- Card: Model & Intelligence -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🧠 Reasoning Model &amp; Intelligence</h3>
+            <div class="set-card-sub">Choose LLM provider, personality parameters, and tool audits</div>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Reasoning model</b><span id="prov-status">checking…</span></div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <select class="voice-select" id="prov-select" style="max-width:160px"></select>
+            <button class="btn-ghost" id="ai-reset" title="Clear the temporary model blocklist">Reset models</button>
+            <button class="btn-ghost" id="self-check" title="Verify every control is wired">Self-check</button>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Service check</b><span id="diag-status">Not run</span></div>
+          <button class="btn-ghost" id="diag-run">Run check</button>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Tool activity</b><span id="audit-status">No tools run yet</span></div>
+          <button class="btn-ghost" id="audit-show">View log</button>
+        </div>
+
+        <p class="hint">Say “TARS, switch to Cerebras” to change model by voice. Keys live in Supabase → Edge Functions → Secrets:
+        <b>CEREBRAS_API_KEY</b>, <b>NVIDIA_API_KEY</b>, <b>GEMINI_API_KEY</b>, <b>OPENAI_API_KEY</b>, <b>DEEPSEEK_API_KEY</b>, <b>OPENROUTER_API_KEY</b>. Groq works out of the box.</p>
+
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:8px"><b>Humour</b><span id="humour-val">70%</span></div>
+          <input type="range" id="humour-slider" class="rain-range" min="0" max="100" step="5" value="70">
+        </div>
+
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:8px"><b>Honesty</b><span id="honesty-val">95%</span></div>
+          <input type="range" id="honesty-slider" class="rain-range" min="40" max="100" step="5" value="95">
+          <p class="hint" style="margin:6px 0 0">At maximum, TARS will tell you when a plan is unsound rather than simply agreeing.</p>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Interruptions</b><span id="proactive-status">normal</span></div>
+          <select class="voice-select" id="proactive-select" style="max-width:150px">
+            <option value="off">Never</option>
+            <option value="quiet">Urgent only</option>
+            <option value="normal">Normal</option>
+            <option value="high">Everything</option>
+          </select>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Learned experience</b><span id="learn-status">loading…</span></div>
+          <button class="btn-ghost" id="learn-review">Review rules</button>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Confirm spoken actions</b><span id="confirm-status">On — asks before creating anything by voice</span></div>
+          <button class="btn-ghost" id="confirm-toggle">Toggle</button>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Desktop alerts</b><span id="notify-status">off</span></div>
+          <button class="btn-ghost" id="notify-toggle">Turn on</button>
+        </div>
+      </div>
+
+      <!-- Card: Voice, Listening & Speech -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🎙️ Voice &amp; Listening</h3>
+            <div class="set-card-sub">Microphone thresholds, hotword listening, custom vocabulary and ElevenLabs speech</div>
+          </div>
+        </div>
+
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:8px"><b>Microphone sensitivity</b><span id="mic-sens-val">normal</span></div>
+          <input type="range" id="mic-sens" class="rain-range" min="60" max="160" step="10" value="100">
+          <p class="hint" style="margin:6px 0 0">Lower in a noisy room so TARS only reacts when you speak directly.</p>
+        </div>
+
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:8px"><b>Pause tolerance</b><span id="pause-val">normal</span></div>
+          <input type="range" id="pause-tol" class="rain-range" min="700" max="2600" step="100" value="1300">
+          <p class="hint" style="margin:6px 0 0">How long a gap can be before TARS treats your sentence as finished. Raise it if you pause while thinking.</p>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Always listening</b><span id="autolisten-status">On — TARS waits for “Hey TARS”</span></div>
+          <button class="btn-ghost" id="autolisten-toggle">Toggle</button>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Listen in background tabs</b><span id="bglisten-status">On — keeps working when tab is hidden</span></div>
+          <button class="btn-ghost" id="bglisten-toggle">Toggle</button>
+        </div>
+
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:7px"><b>Spoken vocabulary</b><span id="vocab-count"></span></div>
+          <p class="hint" style="margin:0 0 8px">Words that get misheard — "Deye" arriving as "D-E", for instance. These are handed to the recogniser before it listens.</p>
+          <div class="vocab-add">
+            <input id="vocab-input" placeholder="Add a word or model name">
+            <button class="btn-ghost" id="vocab-save">Add</button>
+            <button class="btn-primary" id="vocab-train">Say it</button>
+          </div>
+          <div class="vocab-train" id="vocab-train-box" style="display:none"></div>
+          <div class="vocab-list" id="vocab-list"></div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>TARS speech synthesis</b><span id="tts-status">Checking…</span></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-ghost" id="tts-test">Test voice</button>
+            <button class="btn-ghost" id="tts-diag">Voice check</button>
+          </div>
+        </div>
+
+        <div class="field" style="margin-top:10px;"><label>ElevenLabs voice ID</label><input type="text" id="tts-voice" placeholder="Leave blank for server default"></div>
+        <div class="field"><label>ElevenLabs model ID</label><input type="text" id="tts-model" placeholder="eleven_turbo_v2_5"></div>
+        <p class="hint compose-warn" id="tts-warn" style="display:none"></p>
+        <p class="hint">API key configured as <b>ELEVENLABS_API_KEY</b> in Supabase secrets. Voice ID is ~20 alphanumeric characters.</p>
+      </div>
+
+      <!-- Card: Vision & Screen Reading -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">👁️ Vision &amp; Screen Reading</h3>
+            <div class="set-card-sub">Window capture for inverter portals, technical diagrams, and diagnostic vision</div>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Screen reading</b><span id="screen-status">not sharing</span></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-ghost" id="screen-share">Share a window</button>
+            <button class="btn-ghost" id="vision-test">Check vision</button>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Keep sharing between questions</b><span id="screen-keep-status">Off — asks each time</span></div>
+          <button class="btn-ghost" id="screen-keep">Toggle</button>
+        </div>
+        <p class="hint"><b>Pick the window, not the whole screen.</b> A single frame is read and discarded — nothing is saved to this machine or kept on the server. Say “TARS, look at my screen” anytime.</p>
+      </div>
+    </div>
+
+    <!-- HUB 2: INTEGRATIONS & COMMUNICATIONS -->
+    <div class="sub-panel hidden" data-sub-panel="integrations">
+      <!-- Card: Email Dispatcher -->
+      <div class="set-card" style="background:rgba(255,179,0,0.03); border:1px solid rgba(255,179,0,0.22);">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">✉️ Email Dispatcher (Gmail for Testing &amp; Mailcorp)</h3>
+            <div class="set-card-sub">Automated case summaries, technical reports, and inverter warranty emails</div>
+          </div>
+          <span id="smtp-status-badge" style="color:var(--amber); font-weight:600; font-size:0.82rem;">Checking configuration...</span>
+        </div>
+
+        <p class="hint" style="margin:0 0 12px">Send automated diagnostic summaries, PAC reports, and warranty dispatch emails directly using your testing Gmail account or Mailcorp domain.</p>
+        
+        <div class="field" style="margin-bottom:14px;">
+          <label>Email Service / Preset</label>
+          <div class="select-wrap" id="smtp-provider-wrap">
+            <button type="button" class="select-trigger" id="smtp-provider-trigger">
+              <span class="select-trigger-label">🚀 Gmail (Testing - Quick Setup with Email + Password)</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <div class="select-panel" id="smtp-provider-panel">
+              <div class="select-option selected" data-value="gmail">🚀 Gmail (Testing - Quick Setup with Email + Password)</div>
+              <div class="select-option" data-value="mailcorp">🏢 Mailcorp (Production Domain: mail.mailcorp.com.br)</div>
+              <div class="select-option" data-value="custom">⚙️ Custom SMTP Server</div>
+            </div>
+            <input type="hidden" id="smtp-provider" name="smtp-provider" value="gmail">
+            <input type="hidden" id="smtp-provider-preset" name="smtp-provider-preset" value="gmail">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field" style="flex:2"><label id="smtp-email-label">Gmail Address</label><input type="email" id="smtp-email" placeholder="e.g. mytestai@gmail.com"></div>
+          <div class="field" style="flex:2"><label id="smtp-pass-label">Password / App Password</label><input type="password" id="smtp-pass" placeholder="••••••••••••••••"></div>
+        </div>
+
+        <div id="smtp-gmail-tip" style="background:rgba(255,179,0,0.08); border-left:3px solid var(--amber); padding:8px 12px; border-radius:6px; font-size:0.78rem; margin:6px 0 12px; line-height:1.45;">
+          💡 <b>Gmail Testing Tip:</b> Enter your testing email and password. If your Google account has <b>2-Step Verification</b> enabled, generate a 16-character App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:var(--amber); font-weight:bold; text-decoration:underline;">myaccount.google.com/apppasswords</a> and paste it into the password field above.
+        </div>
+
+        <div class="field-row" id="smtp-server-details-row">
+          <div class="field" style="flex:2"><label>SMTP Host</label><input type="text" id="smtp-host" placeholder="smtp.gmail.com" value="smtp.gmail.com"></div>
+          <div class="field" style="flex:1"><label>Port</label><input type="number" id="smtp-port" placeholder="465" value="465"></div>
+          <div class="field" style="flex:1"><label>Security</label>
+            <div class="select-wrap" id="smtp-secure-wrap">
+              <button type="button" class="select-trigger" id="smtp-secure-trigger">
+                <span class="select-trigger-label">SSL/TLS (465)</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              <div class="select-panel" id="smtp-secure-panel">
+                <div class="select-option selected" data-value="true">SSL/TLS (465)</div>
+                <div class="select-option" data-value="false">STARTTLS (587)</div>
+              </div>
+              <input type="hidden" id="smtp-secure" value="true">
+            </div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:2"><label>Sender Display Name</label><input type="text" id="smtp-from-name" placeholder="Solar Operations AI"></div>
+          <div class="field" style="flex:2"><label>Test Recipient</label><input type="email" id="smtp-test-to" placeholder="yourpersonal@email.com"></div>
+        </div>
+        <div class="set-actions" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn-primary" id="smtp-save-btn">Save Credentials</button>
+          <button class="btn-ghost" id="smtp-test-btn">Verify Connection</button>
+          <button class="btn-ghost" id="smtp-send-test-btn">Send Test Email</button>
+        </div>
+        <div id="smtp-feedback" style="font-size:0.8rem; margin-top:8px; font-weight:500;"></div>
+      </div>
+
+      <!-- Card: Atlassian Jira Integration -->
+      <div class="set-card" id="jira-integration-card" style="background:rgba(0,82,204,0.04); border:1px solid rgba(0,82,204,0.25);">
+        <div class="set-card-head">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="width:32px; height:32px; border-radius:6px; background:#0052cc; display:flex; align-items:center; justify-content:center; color:#fff; flex-shrink:0;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11.53 2c0 5.25 4.28 9.51 9.53 9.51v.96c-5.25 0-9.53 4.26-9.53 9.51h-.96c0-5.25-4.26-9.51-9.51-9.51v-.96c5.25 0 9.51-4.26 9.51-9.51h.96z"/></svg>
+            </div>
+            <div>
+              <h3 class="set-card-title">📋 Atlassian Jira Cloud Integration</h3>
+              <div class="set-card-sub">Formal warranty claims, board dispatching (ADB, GABEF, AGH, CIDG), and issue synchronization</div>
+            </div>
+          </div>
+          <span id="jira-status-badge" style="color:var(--muted); font-weight:600; font-size:0.82rem; padding:3px 8px; border-radius:6px; background:rgba(255,255,255,0.05); border:1px solid var(--line);">Checking status...</span>
+        </div>
+
+        <p class="hint" style="margin:0 0 12px">Connect your Atlassian Jira Cloud instance to automatically create warranty tickets, sync ticket statuses, and link formal manufacturer RMA protocols directly from SLA cases.</p>
+
+        <div class="field-row">
+          <div class="field" style="flex:2">
+            <label id="jira-host-label">Jira Cloud Host / Domain</label>
+            <input type="text" id="jira-host" placeholder="e.g. your-company.atlassian.net">
+          </div>
+          <div class="field" style="flex:2">
+            <label id="jira-email-label">Atlassian Account Email</label>
+            <input type="email" id="jira-email" placeholder="e.g. tech.support@company.com">
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom:12px;">
+          <label id="jira-api-token-label">Atlassian API Token</label>
+          <div style="display:flex; gap:8px;">
+            <input type="password" id="jira-api-token" placeholder="••••••••••••••••••••••••" style="flex:1;">
+            <button type="button" class="btn-ghost" id="jira-toggle-token-btn" style="padding:0 12px; font-size:0.8rem;">👁️ Show</button>
+          </div>
+        </div>
+
+        <div id="jira-token-tip" style="background:rgba(0,82,204,0.08); border-left:3px solid #0052cc; padding:8px 12px; border-radius:6px; font-size:0.78rem; margin:0 0 12px; line-height:1.45;">
+          💡 <b>How to get an API Token:</b> Log in to your Atlassian account and generate a token at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" style="color:#38bdf8; font-weight:bold; text-decoration:underline;">id.atlassian.com/manage-profile/security/api-tokens</a>. Copy and paste it into the field above.
+        </div>
+
+        <div class="field-row">
+          <div class="field" style="flex:1">
+            <label id="jira-project-label">Default Project Key</label>
+            <input type="text" id="jira-default-project" placeholder="e.g. ADB, SOL, GABEF" value="ADB">
+          </div>
+          <div class="field" style="flex:1">
+            <label id="jira-issue-type-label">Default Issue Type</label>
+            <input type="text" id="jira-default-issue-type" placeholder="e.g. Task, Bug, Support" value="Task">
+          </div>
+        </div>
+
+        <div class="set-actions" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn-primary" id="jira-save-btn">Save Jira Settings</button>
+          <button class="btn-ghost" id="jira-test-btn">Verify Connection</button>
+          <button class="btn-ghost" id="jira-fetch-projects-btn">Fetch Projects</button>
+        </div>
+
+        <div id="jira-feedback" style="font-size:0.8rem; margin-top:8px; font-weight:500;"></div>
+        <div id="jira-projects-container" style="margin-top:10px; padding:10px 12px; background:rgba(0,0,0,0.2); border:1px solid var(--line); border-radius:8px; display:none;">
+          <div style="font-size:0.76rem; font-weight:600; color:var(--muted); text-transform:uppercase; margin-bottom:6px;">Available Jira Projects (Click to select as default):</div>
+          <div id="jira-projects-list" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+        </div>
+
+        <!-- Jira Webhook Section -->
+        <div style="margin-top:16px; padding-top:14px; border-top:1px dashed rgba(0,82,204,0.3);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+            <div style="font-size:0.88rem; font-weight:600; color:var(--text); display:flex; align-items:center; gap:6px;">
+              <span>⚡ Automated Webhook Synchronization</span>
+              <span id="jira-webhook-status" style="font-size:0.72rem; padding:2px 6px; border-radius:4px; background:rgba(34,197,94,0.15); color:#4ade80; border:1px solid rgba(34,197,94,0.3);">Active Endpoint</span>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button type="button" class="btn-ghost" id="jira-copy-webhook-btn" style="padding:4px 10px; font-size:0.75rem;">📋 Copy Webhook URL</button>
+              <button type="button" class="btn-ghost" id="jira-test-webhook-btn" style="padding:4px 10px; font-size:0.75rem; color:#38bdf8;">🔄 Test Webhook Ping</button>
+            </div>
+          </div>
+          <p class="hint" style="margin-bottom:8px;">
+            Configure this Webhook URL inside Jira Cloud (<b>Settings &gt; System &gt; WebHooks</b>) to automatically update Solar Agenda case timelines and statuses whenever ticket statuses change in Jira.
+          </p>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="jira-webhook-url" readonly style="font-family:monospace; font-size:0.78rem; background:rgba(0,0,0,0.3); color:var(--amber); flex:1; padding:8px 10px;" value="/api/jira/webhook">
+          </div>
+          <div id="jira-webhook-feedback" style="font-size:0.78rem; margin-top:6px; font-weight:500;"></div>
+          <!-- Webhook Activity Log Drawer -->
+          <div id="jira-webhook-log-box" style="margin-top:8px; padding:8px 10px; background:rgba(0,0,0,0.25); border:1px solid var(--line); border-radius:6px; font-size:0.74rem; font-family:monospace; max-height:90px; overflow-y:auto; display:none;">
+            <div id="jira-webhook-log-entries" style="color:var(--muted); line-height:1.4;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card: Solar Agenda SLA Webhook & TARS Vision Bridge Extension -->
+      <div class="set-card" id="sla-webhook-row" style="background:rgba(242,167,27,0.04); border:1px solid rgba(242,167,27,0.25);">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🛡️ Solar Agenda SLA Webhook &amp; TARS Vision Bridge</h3>
+            <div class="set-card-sub">Layer de eventos em tempo real recebendo notificações não-bloqueantes da extensão TARS v1.2.37 (contas Hoymiles, atendimentos Hyperflow)</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span id="sla-webhook-status" style="font-size:0.72rem; padding:2px 8px; border-radius:4px; background:rgba(34,197,94,0.15); color:#4ade80; border:1px solid rgba(34,197,94,0.3); font-weight:600;">Active Endpoint</span>
+            <a href="/tars-vision-bridge.zip" download class="btn-primary" style="padding:5px 12px; font-size:0.78rem; text-decoration:none; display:inline-flex; align-items:center; gap:5px;">
+              📦 Download Extensão v1.2.37
+            </a>
+          </div>
+        </div>
+
+        <p class="hint" style="margin-bottom:10px;">
+          Após a criação de conta no portal Hoymiles, a extensão TARS dispara um HTTP POST seguro para este endpoint. O sistema vincula o evento ao caso de SLA correspondente por conversa Hyperflow, e-mail ou telefone. Credenciais são protegidas (não transmitidas ou armazenadas no SLA).
+        </p>
+
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+          <input type="text" id="sla-webhook-url" readonly style="font-family:monospace; font-size:0.78rem; background:rgba(0,0,0,0.3); color:var(--amber); flex:1; min-width:280px; padding:8px 10px; border-radius:6px; border:1px solid var(--line);" value="https://solar-agenda.vercel.app/api/sla/webhook">
+          <button type="button" class="btn-ghost" id="sla-copy-webhook-btn" style="padding:6px 12px; font-size:0.78rem;">📋 Copiar URL</button>
+          <button type="button" class="btn-ghost" id="sla-test-webhook-btn" style="padding:6px 12px; font-size:0.78rem; color:#38bdf8;">⚡ Testar Ping Webhook</button>
+        </div>
+
+        <div id="sla-webhook-feedback" style="font-size:0.8rem; margin-bottom:8px; font-weight:500;"></div>
+
+        <!-- SLA Webhook Activity Log Drawer -->
+        <div id="sla-webhook-log-box" style="padding:10px 12px; background:rgba(0,0,0,0.3); border:1px solid var(--line); border-radius:8px; font-size:0.75rem; font-family:monospace; max-height:120px; overflow-y:auto; display:none;">
+          <div style="font-size:0.72rem; text-transform:uppercase; color:var(--muted); font-weight:700; margin-bottom:6px;">Eventos Recentes do SLA Webhook:</div>
+          <div id="sla-webhook-log-entries" style="color:var(--text); line-height:1.5;"></div>
+        </div>
+      </div>
+
+      <!-- Card: Saved Contacts Directory -->
+      <div class="set-card" id="contacts-directory-row" style="background:rgba(79,163,160,0.04); border:1px solid rgba(79,163,160,0.22);">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">👥 Saved Contacts &amp; Technical Directory</h3>
+            <div class="set-card-sub">Technical contacts with topics &amp; templates; TARS adapts context from screen vision to draft emails with client in copy</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span id="contacts-count-badge" style="color:var(--teal); font-weight:600; font-size:0.82rem;">Loading contacts...</span>
+            <button type="button" class="btn-primary" id="contacts-add-btn" style="padding:6px 14px; font-size:0.8rem; cursor:pointer;">➕ Add Contact</button>
+          </div>
+        </div>
+        <p class="hint" style="margin:0 0 10px;">Associate contacts with manufacturers, support topics (e.g. <i>password conflict</i>, <i>RMA</i>), and reusable email templates for instant vision-to-email drafting.</p>
+        
+        <div style="margin-bottom:8px;">
+          <input type="text" id="contacts-search-input" placeholder="Search contacts by name, email, role, or topic (e.g. hoymiles, password conflict)..." style="width:100%; height:36px; padding:0 10px; font-size:0.85rem; border-radius:6px; border:1px solid var(--border);">
+        </div>
+        <div id="contacts-topic-filter-chips" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;"></div>
+
+        <div id="contacts-list" style="display:flex; flex-direction:column; gap:8px; max-height:380px; overflow-y:auto; padding-right:4px;"></div>
+      </div>
+
+      <!-- Card: Thunderbird Mail -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">📬 Thunderbird Mail Integration</h3>
+            <div class="set-card-sub">Index local .eml / .mbox archives for offline technical troubleshooting</div>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Thunderbird mailbox folder</b><span id="mail-status">no folder selected</span></div>
+          <button class="btn-ghost" id="mail-pick">Choose folder</button>
+        </div>
+        <div class="set-actions" style="margin:8px 0;">
+          <button class="btn-ghost" id="mail-scan" style="flex:1">Scan mailbox</button>
+          <button class="btn-ghost" id="mail-files" style="flex:1">Add mail files…</button>
+          <button class="btn-ghost" id="mail-forget" style="flex:1">Forget folder</button>
+        </div>
+        <input type="file" id="mail-file-input" multiple accept=".eml,.mbox,message/rfc822" style="display:none">
+        <p class="hint" style="margin:4px 0 10px"><b>Can't find the profile folder?</b> In Thunderbird select the messages you want, then <b>File → Save As → File</b> to get <code>.eml</code> files. Put them anywhere and load them with <b>Add mail files</b>.</p>
+        <p class="hint"><b>Windows:</b> <code>%APPDATA%\\Thunderbird\\Profiles\\&lt;profile&gt;\\ImapMail\\&lt;server&gt;</code> · <b>Linux:</b> <code>~/.thunderbird/&lt;profile&gt;</code> · <b>macOS:</b> <code>~/Library/Thunderbird/Profiles</code></p>
+      </div>
+
+      <!-- Card: Media & Cloud Storage -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">☁️ Media Storage &amp; Google Drive</h3>
+            <div class="set-card-sub">Save photos and notebook attachments to your local disk or Google Drive</div>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info">
+            <b>Local folder</b>
+            <span id="set-folder-status">Not configured</span>
+          </div>
+          <button class="btn-ghost" id="set-folder-btn">Choose folder</button>
+        </div>
+        <p class="hint" id="set-folder-note" style="margin-top:4px;"></p>
+
+        <div class="set-row">
+          <div class="set-info">
+            <b>Google Drive backup</b>
+            <span id="set-drive-status">Not connected</span>
+          </div>
+          <button class="btn-ghost" id="set-drive-btn">Connect</button>
+        </div>
+        <div class="field" style="margin-top:8px;"><label>Google OAuth Client ID</label><input type="text" id="set-drive-client" placeholder="xxxxx.apps.googleusercontent.com"></div>
+        <div class="field"><label>Drive folder ID (optional)</label><input type="text" id="set-drive-folder" placeholder="Paste folder ID from Drive URL"></div>
+        <p class="hint">Create an OAuth client (Web application) in Google Cloud Console with <b id="set-origin"></b> as authorised origin.</p>
+      </div>
+    </div>
+
+    <!-- HUB 3: KNOWLEDGE & TRAINING -->
+    <div class="sub-panel hidden" data-sub-panel="knowledge">
+      <!-- Card: Machine Learning Hub -->
+      <div class="set-card" style="background:rgba(79,163,160,0.04); border:1px solid rgba(79,163,160,0.22);">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🧠 TARS Machine Learning &amp; Fine-Tuning Hub</h3>
+            <div class="set-card-sub">Captures technician diagnostic corrections, verified inverter runbooks, and PAC logs</div>
+          </div>
+          <span id="ml-dataset-count" style="color:var(--teal); font-weight:600; font-size:0.82rem;">Loading dataset metrics...</span>
+        </div>
+        <p class="hint" style="margin:0 0 10px">Export structured pairs (.JSONL) to fine-tune Gemini in Google AI Studio or train custom local LLMs.</p>
+        
+        <div class="set-actions" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn-primary" id="ml-export-btn">📥 Export Training Dataset (.JSONL)</button>
+          <button class="btn-ghost" id="ml-guide-btn">📖 How to Train TARS (Step-by-Step Guide)</button>
+        </div>
+        <div id="ml-feedback" style="font-size:0.8rem; margin-top:8px; font-weight:500;"></div>
+      </div>
+
+      <!-- Card: Solar Knowledge Base -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">📖 Solar Knowledge Base</h3>
+            <div class="set-card-sub">Inverter fault codes, runbooks, and procedural reference entries</div>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Knowledge base status</b><span id="set-kb-status">No entries yet</span></div>
+          <button class="btn-ghost" id="kb-template">Copy template</button>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Self review</b><span id="reflect-status">not run</span></div>
+          <button class="btn-ghost" id="reflect-run">Review knowledge</button>
+        </div>
+
+        <div class="kb-add" style="margin-top:14px;">
+          <div class="field-row">
+            <div class="field"><label>New entry — title</label><input type="text" id="kb-new-title" placeholder="e.g. Growatt 117 relay fault"></div>
+            <div class="field"><label>Tags</label><input type="text" id="kb-new-tags" placeholder="growatt, relay"></div>
+          </div>
+          <div class="field"><label>What to remember</label><textarea id="kb-new-body" style="min-height:80px" placeholder="Write it as you would explain it to a colleague."></textarea></div>
+          <button class="btn-primary" id="kb-add-btn" style="width:100%">Add to knowledge base</button>
+          <button class="btn-ghost" id="kb-sync" style="width:100%; margin-top:8px">File knowledge into notebooks</button>
+          <button class="btn-ghost" id="kb-purge" style="width:100%; margin-top:6px">Remove entries by source…</button>
+        </div>
+
+        <div class="set-row" style="margin-top:14px;">
+          <div class="set-info"><b>Shared knowledge</b><span id="kb-share-status">checking…</span></div>
+          <button class="btn-ghost" id="kb-seed">Publish local entries</button>
+        </div>
+
+        <div class="field" style="margin-top:14px;"><label>kb.json contents</label><textarea id="kb-json" style="min-height:140px; font-family:'JetBrains Mono',monospace; font-size:0.78rem;" placeholder='[{"title":"...","content":"...","tags":["..."]}]'></textarea></div>
+        <div class="set-actions">
+          <button class="btn-primary" id="kb-save" style="flex:1">Save knowledge base</button>
+          <button class="btn-ghost" id="kb-clear">Clear</button>
+        </div>
+      </div>
+
+      <!-- Card: Knowledge Galaxy 3D Map -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🌌 Knowledge Galaxy Map</h3>
+            <div class="set-card-sub">Interactive 3D graph of note clusters, cross-links, and knowledge density</div>
+          </div>
+        </div>
+
+        <div class="kb-map-tip" id="kb-map-tip"></div>
+        <div class="galaxy-hud" id="galaxy-hud"></div>
+        <button class="galaxy-expand" id="galaxy-expand" title="Expand">⤢</button>
+        <div class="galaxy-time-row">
+          <input type="range" id="galaxy-time" class="rain-range" min="5" max="100" step="1" value="100">
+          <span id="galaxy-time-lab">all time</span>
+        </div>
+        <div class="set-actions" style="margin:8px 0 4px;">
+          <button class="btn-ghost" id="galaxy-clear">Clear focus</button>
+          <button class="btn-ghost" id="galaxy-scan">Scan markdown folder</button>
+          <button class="btn-ghost" id="galaxy-drive">Include Drive</button>
+          <button class="btn-ghost" id="galaxy-refresh">Refresh</button>
+        </div>
+        <p class="hint">Drag to orbit, scroll to zoom. <b>Click</b> a star to focus; <b>double-click</b> to open. Red rings are orphan notes without links.</p>
+      </div>
+
+      <!-- Card: Email & Dispatch Templates -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">📋 Email &amp; Dispatch Templates</h3>
+            <div class="set-card-sub">Reusable formats for client visit confirmations, RMA requests, and PAC reports</div>
+          </div>
+        </div>
+
+        <div class="tpl-list-wrap">
+          <div class="set-info" style="margin:0 0 8px"><b>Saved Templates</b><span id="tpl-count">none saved</span></div>
+          <div id="tpl-list" class="tpl-list"></div>
+          <p class="hint">Use <b>{{placeholders}}</b> for values that change dynamically.</p>
+          <div class="field-row">
+            <div class="field"><label>Template name</label><input type="text" id="tpl-name" placeholder="visit confirmation"></div>
+            <div class="field"><label>To</label><input type="text" id="tpl-to" placeholder="{{email}}"></div>
+          </div>
+          <div class="field"><label>Subject</label><input type="text" id="tpl-subject" placeholder="Visit scheduled — {{client}}"></div>
+          <div class="field"><label>Body</label><textarea id="tpl-body" style="min-height:100px" placeholder="Hello {{client}},&#10;&#10;Your technical visit is confirmed for {{date}} at {{time}}."></textarea></div>
+          <button class="btn-ghost" id="tpl-save" style="width:100%">Save template</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- HUB 4: SYSTEM & PREFERENCES -->
+    <div class="sub-panel hidden" data-sub-panel="system">
+      <!-- Card: Appearance & Custom Theme -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🎨 Custom Appearance &amp; Themes</h3>
+            <div class="set-card-sub">AI theme generator with automated WCAG contrast verification</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <textarea id="ct-prompt" style="min-height:64px" placeholder="e.g. a stormy sea at dusk — deep blue-greys with a pale gold horizon"></textarea>
+        </div>
+        <div class="ct-examples" id="ct-examples">
+          <button type="button">sunset over the ocean</button>
+          <button type="button">cyberpunk neon, magenta and cyan</button>
+          <button type="button">forest at dawn, mossy greens</button>
+          <button type="button">warm terracotta and sand</button>
+          <button type="button">deep space, violet nebula</button>
+        </div>
+        <div class="set-actions" style="margin:10px 0 4px;">
+          <button class="btn-ghost" id="ct-improve" title="Let TARS expand your idea before generating">Improve prompt</button>
+          <button class="btn-primary" id="ct-generate" style="flex:1">✦ Generate theme</button>
+        </div>
+        <p class="hint" id="ct-status" style="min-height:1.1em"></p>
+        <div class="ct-grid" id="ct-grid"></div>
+        <div class="set-actions" style="margin-top:14px;">
+          <button class="btn-primary" id="ct-save" style="flex:1">Save &amp; apply</button>
+          <button class="btn-ghost" id="ct-copy">Copy current theme</button>
+          <button class="btn-ghost" id="ct-reset">Reset</button>
+        </div>
+      </div>
+
+      <!-- Card: Interface Sound & Rain Ambience -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🔊 Interface Sounds &amp; Ambience</h3>
+            <div class="set-card-sub">Tactile audio feedback and live rainfall wheel simulation</div>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>Interface sounds</b><span id="set-sfx-status">On</span></div>
+          <button class="btn-ghost" id="sfx-toggle">Toggle</button>
+        </div>
+
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:8px"><b>Rain animation test</b><span id="rain-test-label">Using the live forecast</span></div>
+          <div class="rain-preview-wrap"><canvas id="rain-preview"></canvas><span class="rain-preview-lab">preview</span></div>
+          <input type="range" id="rain-test" min="-1" max="60" step="0.5" value="-1" class="rain-range">
+          <p class="hint" style="margin:6px 0 0">Slide to preview the wheel at any rainfall. Far left returns to live forecast.</p>
+        </div>
+      </div>
+
+      <!-- Card: Digital Ink & Handwriting -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">✍️ Digital Ink &amp; Handwriting Training</h3>
+            <div class="set-card-sub">Teach TARS your personal stroke letterforms for higher OCR accuracy</div>
+          </div>
+        </div>
+
+        <div class="set-row" style="display:block">
+          <div class="set-info" style="margin-bottom:8px"><b>Teach TARS your handwriting</b><span id="hw-status">nothing taught yet</span></div>
+          <p class="hint" style="margin:0 0 10px">Write each prompt in the box below and press Save. TARS keeps your letterforms as a reference sheet.</p>
+          <div class="hw-prompt" id="hw-prompt">Press Start to begin</div>
+          <canvas id="hw-canvas"></canvas>
+          <div class="hw-actions">
+            <button class="btn-ghost" id="hw-start">Start drill</button>
+            <button class="btn-ghost" id="hw-clear">Clear</button>
+            <button class="btn-ghost" id="hw-skip">Skip</button>
+            <button class="btn-primary" id="hw-save">Save sample</button>
+          </div>
+          <div class="hw-actions" style="margin-top:6px">
+            <input class="hw-free" id="hw-free" placeholder="…or write anything and type what it says">
+            <button class="btn-ghost" id="hw-save-free">Save that</button>
+          </div>
+        </div>
+        <div class="set-row">
+          <div class="set-info"><b>Reference sheet</b><span id="hw-sheet-status">built from your samples</span></div>
+          <button class="btn-ghost" id="hw-preview">Preview</button>
+        </div>
+        <div class="set-row">
+          <div class="set-info"><b>Stored samples</b><span>Remove them all if your writing changes</span></div>
+          <button class="btn-ghost" id="hw-forget">Forget all</button>
+        </div>
+      </div>
+
+      <!-- Card: Security & Encryption -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">🔒 Security, Encryption &amp; Profiles</h3>
+            <div class="set-card-sub">AES-256-GCM client-side encryption and multi-profile workspace isolation</div>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <div class="set-info"><b>AES-256 Encryption status</b><span id="enc-status">Checking…</span></div>
+          <button class="btn-ghost" id="enc-refresh">Re-check</button>
+        </div>
+        <div class="set-row">
+          <div class="set-info"><b>Existing records</b><span>Older rows saved before encryption are still plain text</span></div>
+          <button class="btn-ghost" id="enc-migrate">Encrypt existing data</button>
+        </div>
+        <div class="set-row">
+          <div class="set-info"><b>Technician profile</b><span id="profile-status">signed in</span></div>
+          <button class="btn-ghost" id="profile-new">Create profile</button>
+        </div>
+        <p class="hint">Each profile keeps its <b>own</b> cases, notebooks, and notes encrypted with its own key.</p>
+      </div>
+
+      <!-- Card: Data Backup & Export -->
+      <div class="set-card">
+        <div class="set-card-head">
+          <div>
+            <h3 class="set-card-title">💾 Data Backup &amp; Export</h3>
+            <div class="set-card-sub">Export your agenda cases, notebooks, technical logs, and JSON backups</div>
+          </div>
+        </div>
+        <p class="hint">Downloads everything currently loaded — cases, notebooks and notes.</p>
+        <div class="set-actions">
+          <button class="btn-ghost" id="export-xls">⬇ Excel (.xls)</button>
+          <button class="btn-ghost" id="export-doc">⬇ Word (.doc)</button>
+          <button class="btn-ghost" id="export-json">⬇ JSON backup</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+      </div><!-- /.set-shell -->
+  </div><!-- /#view-settings -->
+
+  <div id="view-sla" class="hidden">
+    <div class="sla-container">
+      <div class="sla-header-bar">
+        <div class="sla-heading">
+          <h2>
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="3"/><path d="M12 10v2l1 1"/></svg>
+            SLA Hub
+          </h2>
+          <p>Persistent Case Memory, Equipment Tracking & Service Level Control</p>
+        </div>
+        <div class="sla-top-actions">
+          <button class="btn-primary" id="sla-new-btn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            + New SLA Case
+          </button>
+          <button class="btn-ghost" id="sla-bridge-intake-btn" title="Intake active conversation from Hyperflow">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+            ⚡ TARS Bridge Intake
+          </button>
+          <button class="btn-ghost" id="sla-legacy-notes-btn" title="View legacy unassigned notebooks">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Legacy Notes
+          </button>
+        </div>
+      </div>
+
+      <!-- Executive SLA Breach & Risk Alert Banner -->
+      <div id="sla-breach-banner" class="sla-breach-banner hidden">
+        <div class="sla-breach-icon">🚨</div>
+        <div class="sla-breach-body">
+          <div class="sla-breach-title" id="sla-breach-title">ALERTA DE SLA CONTRATUAL: 0 casos em estouro crítico</div>
+          <div class="sla-breach-desc" id="sla-breach-desc">Casos em atendimento ultrapassaram o tempo contratual de primeira resposta ou resolução.</div>
+        </div>
+        <div class="sla-breach-actions">
+          <button type="button" class="btn-primary sla-breach-btn" id="sla-breach-filter-btn">⚡ Filtrar Casos Críticos</button>
+        </div>
+      </div>
+
+      <!-- SLA KPI Stat Strip -->
+      <div class="sla-stats-grid">
+        <div class="sla-stat-card active" data-slaf="all">
+          <div class="sla-stat-label">Total Active</div>
+          <div class="sla-stat-val" id="sla-stat-open">0</div>
+          <div class="sla-stat-sub">Cases in pipeline</div>
+        </div>
+        <div class="sla-stat-card" data-slaf="all">
+          <div class="sla-stat-label"><span class="dotmark" style="background:#4ade80"></span> On-Time SLA</div>
+          <div class="sla-stat-val" id="sla-stat-compliance" style="color:#4ade80">100%</div>
+          <div class="sla-stat-sub">Contractual compliance</div>
+        </div>
+        <div class="sla-stat-card" data-slaf="at_risk">
+          <div class="sla-stat-label"><span class="dotmark" style="background:#facc15"></span> At Risk</div>
+          <div class="sla-stat-val" id="sla-stat-atrisk" style="color:#facc15">0</div>
+          <div class="sla-stat-sub">&lt; 8h or &lt; 50% left</div>
+        </div>
+        <div class="sla-stat-card" data-slaf="overdue">
+          <div class="sla-stat-label"><span class="dotmark" style="background:#f87171"></span> Overdue</div>
+          <div class="sla-stat-val" id="sla-stat-overdue" style="color:#f87171">0</div>
+          <div class="sla-stat-sub">SLA breached</div>
+        </div>
+        <div class="sla-stat-card" data-slaf="waiting_mfr">
+          <div class="sla-stat-label"><span class="dotmark" style="background:#fb923c"></span> Waiting Mfr</div>
+          <div class="sla-stat-val" id="sla-stat-waiting-mfr">0</div>
+          <div class="sla-stat-sub">Awaiting manufacturer</div>
+        </div>
+        <div class="sla-stat-card" data-slaf="waiting_cust">
+          <div class="sla-stat-label"><span class="dotmark" style="background:#fde047"></span> Waiting Customer</div>
+          <div class="sla-stat-val" id="sla-stat-waiting-cust">0</div>
+          <div class="sla-stat-sub">Requested info/test</div>
+        </div>
+      </div>
+
+      <!-- Controls & Search -->
+      <div class="sla-controls-bar">
+        <div class="sla-search-row">
+          <div class="sla-search-shell">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input id="sla-search-input" placeholder="Search by SN, Customer, Phone, Equipment, Jira protocol, Technician…">
+          </div>
+          <select id="sla-sort-select" class="sla-sort-select">
+            <option value="urgency">Sort: Urgency / Deadline</option>
+            <option value="recent">Sort: Recently Updated</option>
+            <option value="created">Sort: Created Date</option>
+            <option value="priority">Sort: Priority</option>
+          </select>
+        </div>
+        <div class="sla-filters-row">
+          <button class="sla-f-pill active" data-slaf="all">All Active</button>
+          <button class="sla-f-pill" data-slaf="at_risk">⚠️ At Risk / Overdue</button>
+          <button class="sla-f-pill" data-slaf="pending_mfr">Pending Manufacturer Contact</button>
+          <button class="sla-f-pill" data-slaf="waiting_mfr">Waiting Manufacturer</button>
+          <button class="sla-f-pill" data-slaf="mfr_responded">Manufacturer Responded</button>
+          <button class="sla-f-pill" data-slaf="waiting_cust">Waiting Customer</button>
+          <button class="sla-f-pill" data-slaf="follow_up">Technical Follow-up</button>
+          <button class="sla-f-pill" data-slaf="resolved">Resolved / Closed</button>
+        </div>
+      </div>
+
+      <!-- Cases Grid -->
+      <div class="sla-cases-grid" id="sla-cases-grid"></div>
+    </div>
+  </div>
+
+  <div id="view-notebooks" class="hidden">
+    <div class="nb-filters" id="nb-filters">
+        <button class="hist-f active" data-nbf="all">All notes</button>
+        <button class="hist-f" data-nbf="runbook">Runbooks</button>
+        <button class="hist-f" data-nbf="client">Clients</button>
+        <button class="hist-f" data-nbf="ink">Ink</button>
+        <button class="hist-f" data-nbf="tars">From TARS</button>
+      </div>
+      <div class="notebooks-toolbar">
+      <div class="search-shell" id="search-shell">
+        <button class="search-btn" id="search-btn" aria-label="Search notes">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+        </button>
+        <input type="text" id="notebook-search" placeholder="Search notes…">
+      </div>
+      <button id="new-notebook-btn">+ New notebook</button>
+    </div>
+    <button class="ai-toggle" id="toggle-sys" title="Show or hide knowledge notebooks">⌁</button>
+    <div class="notebooks-breadcrumb hidden" id="notebooks-breadcrumb">
+      <button id="notebooks-back-btn">‹ Notebooks</button>
+      <span id="notebooks-current-title"></span>
+      <button id="delete-notebook-btn" class="btn-danger" style="padding:6px 12px; font-size:0.78rem;">Delete notebook</button>
+      <button id="new-note-btn" class="ai-toggle" style="margin-left:auto">+ New note</button>
+    </div>
+    <div class="notebooks-grid" id="notebooks-grid"></div>
+  </div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<button class="tars-dock" id="tars-dock" data-state="off" title="TARS — say “Hey TARS”" aria-label="TARS assistant">
+  <span class="dock-core"></span>
+  <span class="dock-ring"></span>
+  <span class="dock-badge" id="tars-badge" hidden></span>
+</button>
+
+<div class="voice-panel" id="voice-panel">
+  <button class="voice-close" id="voice-close" aria-label="Close voice">×</button>
+  <div class="voice-orb" id="voice-orb" data-state="off" role="button" tabindex="0"
+       aria-label="Talk to TARS. Press Enter to speak without the wake phrase.">
+    <canvas id="voice-canvas" aria-hidden="true"></canvas>
+    <span class="orb-dot" aria-hidden="true"></span>
+  </div>
+  <div class="voice-state" id="voice-state" role="status" aria-live="polite">Voice off</div>
+  <div class="voice-level" role="meter" aria-label="Microphone level" aria-hidden="true"><span id="voice-level-fill"></span></div>
+  <div class="voice-lvlnum" id="voice-lvlnum"></div>
+  <div class="voice-heard" id="voice-heard" aria-live="polite"></div>
+  <div class="voice-hint">Say <b>“Hey TARS”</b>, or tap the orb to talk without it.</div>
+  <select class="voice-select" id="voice-select" title="Speaking voice"></select>
+  <button class="btn-ghost voice-mute" id="voice-mute">Mute replies</button>
+</div>
+
+<div class="ai-panel" id="ai-panel">
+  <div class="ai-panel-header">
+    <div class="ai-header-title">
+      <span class="pulse-dot"></span>
+      <span>TARS Assistant</span>
+      <span class="ai-badge">Online</span>
+    </div>
+    <button id="ai-close" aria-label="Close Assistant">×</button>
+  </div>
+  <div class="ai-chips" id="ai-chips">
+    <button type="button" class="ai-chip" data-prompt="What should I do for Deye inverter alarm F30?">⚡ Deye F30 Error</button>
+    <button type="button" class="ai-chip" data-prompt="What is Foxess error 21?">⚠️ Foxess Error 21</button>
+    <button type="button" class="ai-chip" data-prompt="Summarize my urgent cases for today">📅 Today's Urgent</button>
+    <button type="button" class="ai-chip" data-prompt="What are the warranty criteria for Deye inverters?">🛡️ Warranty Criteria</button>
+  </div>
+  <div class="ai-messages" id="ai-messages">
+    <div class="ai-msg hint">Ask about today's agenda, inverter alarms, warranty runbooks, or say what to create — e.g. "add an urgent case for Integrator SolarMax at 14:00".</div>
+  </div>
+  <div class="ai-input-row"><textarea id="ai-input" placeholder="Ask TARS anything... (Press Enter to send)"></textarea><button class="ai-share" id="ai-share" title="Share a window so TARS can read it">⧉</button><button id="ai-send">Send</button></div>
+</div>
+
+  <!-- Modals live at the top level: inside a view they inherit its hidden
+       state and open invisibly. -->
+  <div class="modal-backdrop" id="theme-modal-backdrop">
+  <div class="modal">
+    <h2>Choose a theme</h2>
+    <div class="theme-grid" id="theme-grid"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="theme-close-btn" style="flex:1">Close</button>
+    </div>
+  </div>
+</div>
+  <div class="modal-backdrop" id="new-notebook-modal-backdrop">
+  <div class="modal">
+    <h2>New notebook</h2>
+    <div class="field"><label>Name</label><input type="text" id="new-notebook-title" placeholder="e.g. Client sites, Ideas, Troubleshooting log"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="new-notebook-cancel" style="flex:1">Cancel</button>
+      <button class="btn-primary" id="new-notebook-confirm">Create</button>
+    </div>
+  </div>
+</div>
+  <div class="modal-backdrop notebook-modal" id="notebook-modal-backdrop">
+  <div class="modal">
+    <div class="notebook-editor-header">
+      <input type="text" id="nb-title-input" placeholder="Untitled">
+      <input type="date" id="nb-date-input" title="Link to a calendar date">
+      <button class="btn-ghost" id="nb-ink-toggle" title="Handwriting layer">✎ Ink</button>
+      <button class="btn-danger" id="nb-delete-btn" style="display:none">Delete</button>
+    </div>
+    <span class="notebook-status" id="notebook-status">Saved</span>
+    <div class="tag-input-wrap" id="nb-tags-wrap" style="margin-top:10px;">
+      <div class="tag-chips" id="nb-tags-chips"></div>
+      <input type="text" id="nb-tags-input" placeholder="Add a tag, press Enter">
+    </div>
+    <div class="nb-toolbar" id="nb-toolbar">
+      <button type="button" data-block="h1" title="Heading 1">H1</button>
+      <button type="button" data-block="h2" title="Heading 2">H2</button>
+      <button type="button" data-block="h3" title="Heading 3">H3</button>
+      <button type="button" data-block="p" title="Body text">¶</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+      <button type="button" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+      <button type="button" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+      <button type="button" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+      <button type="button" data-inline="code" title="Inline code">`c`</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-hl="var(--amber)" title="Highlight amber" class="sw-a"></button>
+      <button type="button" data-hl="var(--accent2)" title="Highlight blue" class="sw-b"></button>
+      <button type="button" data-hl="var(--accent3)" title="Highlight teal" class="sw-c"></button>
+      <button type="button" data-hl="none" title="Clear highlight">⌫</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-link="1" title="Insert link">🔗</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-block="ul" title="Bullet list">•</button>
+      <button type="button" data-block="ol" title="Numbered list">1.</button>
+      <button type="button" data-block="todo" title="Checklist">☑</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-block="quote" title="Quote">❝</button>
+      <button type="button" data-block="code" title="Code block">&lt;/&gt;</button>
+      <button type="button" data-block="hr" title="Divider">—</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-cmd="justifyLeft" title="Align left">⇤</button>
+      <button type="button" data-cmd="justifyCenter" title="Centre">⇔</button>
+      <button type="button" data-cmd="justifyRight" title="Align right">⇥</button>
+      <button type="button" data-cmd="removeFormat" title="Clear formatting">⌧</button>
+    </div>
+    <div id="notebook-canvas" contenteditable="true" data-placeholder="Type '/' for blocks, or just start writing..."></div>
+
+    <div id="ink-wrap" style="display:none">
+      <div class="ink-bar">
+        <button class="ink-tool active" data-ink-tool="pen" title="Pen">✒</button>
+        <button class="ink-tool" data-ink-tool="highlighter" title="Highlighter">▬</button>
+        <button class="ink-tool" data-ink-tool="eraser" title="Eraser">⌫</button>
+        <button class="ink-tool" data-ink-tool="select" title="Select handwriting">▢</button>
+        <button class="ink-tool" data-ink-tool="pan" title="Pan (or hold Alt)">✥</button>
+        <span class="ink-sep"></span>
+        <span class="ink-colours" id="ink-colours"></span>
+        <span class="ink-sep"></span>
+        <select class="ink-shapes" id="ink-shapes" title="Insert a shape">
+          <option value="">Shape…</option>
+          <option value="rectangle">Rectangle</option>
+          <option value="square">Square</option>
+          <option value="circle">Circle</option>
+          <option value="ellipse">Ellipse</option>
+          <option value="triangle">Triangle</option>
+          <option value="arrow">Arrow</option>
+          <option value="line">Line</option>
+        </select>
+        <span class="ink-sep"></span>
+        <label class="ink-lab">Size<input type="range" id="ink-width" min="1" max="14" step="0.5" value="2.4"></label>
+        <label class="ink-lab">Smooth<input type="range" id="ink-smooth" min="0" max="80" step="5" value="35"></label>
+        <span class="ink-sep"></span>
+        <button class="ink-act" id="ink-undo" title="Undo (Ctrl+Z)">↺</button>
+        <button class="ink-act" id="ink-redo" title="Redo (Ctrl+Shift+Z)">↻</button>
+        <button class="ink-act" id="ink-fit" title="Reset zoom">⤢</button>
+        <button class="ink-act" id="ink-front" title="Bring to front (Ctrl+])">⬆</button>
+        <button class="ink-act" id="ink-back" title="Send to back (Ctrl+[)">⬇</button>
+        <button class="ink-act" id="ink-dup" title="Duplicate selection (Ctrl+D)">⧉</button>
+        <button class="ink-act" id="ink-del" title="Delete selection (Del)">🗑</button>
+        <button class="ink-act" id="ink-smart" title="Smart Ink — tidy recognised shapes">◇</button>
+        <button class="ink-act" id="ink-revert" title="Undo last shape recognition">↶◇</button>
+        <button class="ink-act" id="ink-clear" title="Erase all ink">✕</button>
+        <span class="ink-info" id="ink-info">0 strokes · 100%</span>
+      </div>
+      <canvas id="ink-canvas"></canvas>
+      <div class="ink-prompt" id="ink-prompt" style="display:none"></div>
+      <div class="ink-hand" id="ink-hand">
+        <button class="btn-ghost" id="hand-all">All ink</button>
+        <button class="btn-ghost" id="hand-ctx" title="Give the reader vocabulary from this page, case and knowledge base">Context: on</button>
+        <button class="btn-ghost" id="hand-clear" style="display:none">Clear selection</button>
+        <button class="btn-primary" id="hand-read">Recognise handwriting</button>
+      </div>
+      <div class="ink-review" id="ink-review" style="display:none"></div>
+    </div>
+    <div class="slash-menu" id="slash-menu"></div>
+    <div class="img-bar" id="img-bar">
+      <button type="button" data-w="25%">25%</button>
+      <button type="button" data-w="50%">50%</button>
+      <button type="button" data-w="75%">75%</button>
+      <button type="button" data-w="100%">Full</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-align="left" title="Align left">⇤</button>
+      <button type="button" data-align="center" title="Centre">⇔</button>
+      <button type="button" data-align="right" title="Align right">⇥</button>
+      <span class="nb-tb-sep"></span>
+      <button type="button" data-del="1" title="Remove image">✕</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="notebook-close-btn" style="flex:1">Close</button>
+    </div>
+  </div>
+</div>
+  <div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal">
+    <h2 id="modal-title">New case</h2>
+    <div class="closed-banner" id="closed-banner" style="display:none">
+      <svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      <span>This case is closed — kept as a record and no longer editable.</span>
+    </div>
+    <input type="hidden" id="case-id">
+    <div class="field"><label>Client / subject</label><input type="text" id="f-titulo" placeholder="e.g. Integrator XPTO — inverter won't connect"></div>
+    <div class="field-row">
+      <div class="field"><label>Date</label><input type="date" id="f-date"></div>
+      <div class="field"><label>Start time (optional)</label><input type="time" id="f-horario"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>End time (optional)</label><input type="time" id="f-horario-fim"></div>
+      <div class="field" id="f-actual-end-wrap" style="display:none;"><label>Actually finished at</label><input type="time" id="f-actual-end"></div>
+    </div>
+    <div class="field" id="ai-time-suggest-wrap" style="display:none;">
+      <button type="button" class="reformular-btn" id="suggest-time-btn">✦ Suggest a better time estimate</button>
+      <div id="time-suggestion-text" class="hint" style="margin-top:6px;"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Ticket # (optional)</label><input type="text" id="f-ticket" placeholder="PAC-0000"></div>
+      <div class="field">
+        <label>Phone <span class="lock-hint" id="phone-lock"></span></label>
+        <div class="phone-row">
+          <input type="tel" id="f-phone" placeholder="(19) 99999-9999" autocomplete="off">
+          <a class="phone-call" id="f-phone-call" title="Call" href="#" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg>
+          </a>
+        </div>
+      </div>
+      <div class="field">
+        <label>Priority</label>
+        <div class="select-wrap" id="f-prioridade-wrap">
+          <button type="button" class="select-trigger" id="f-prioridade-trigger">
+            <span class="select-trigger-label">Medium</span>
+            <svg width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="select-panel" id="f-prioridade-panel">
+            <div class="select-option" data-value="urgente">Urgent</div>
+            <div class="select-option" data-value="alta">High</div>
+            <div class="select-option" data-value="media">Medium</div>
+            <div class="select-option" data-value="baixa">Low</div>
+          </div>
+          <input type="hidden" id="f-prioridade" value="media">
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Time block</label>
+      <div class="select-wrap" id="f-bloco-wrap">
+        <button type="button" class="select-trigger" id="f-bloco-trigger">
+          <span class="select-trigger-label">Morning</span>
+          <svg width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="select-panel" id="f-bloco-panel">
+          <div class="select-option" data-value="primeira-hora">First hour</div>
+          <div class="select-option" data-value="manha">Morning</div>
+          <div class="select-option" data-value="tarde">Afternoon</div>
+          <div class="select-option" data-value="fim-do-dia">End of day</div>
+        </div>
+        <input type="hidden" id="f-bloco" value="manha">
+      </div>
+    </div>
+    <div class="field">
+      <label>Tags</label>
+      <div class="tag-input-wrap" id="f-tags-wrap">
+        <div class="tag-chips" id="f-tags-chips"></div>
+        <input type="text" id="f-tags-input" placeholder="Add a tag, press Enter">
+      </div>
+    </div>
+    <div class="field">
+      <div class="notes-row"><label style="margin:0">Case notes</label></div>
+      <div class="case-notes-log" id="f-notes-log"></div>
+      <div id="notes-editable-wrap">
+        <div class="notes-row"><span></span><button type="button" class="reformular-btn" id="reformular-btn">✦ Rephrase with AI</button></div>
+        <textarea id="f-notas" placeholder="Add a note about this case..."></textarea>
+        <button type="button" class="btn-ghost" id="add-note-entry-btn" style="width:100%; margin-top:8px;">+ Add to history</button>
+      </div>
+      <p class="hint" id="notes-locked-hint" style="display:none;">Notes are locked — this case is closed.</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-danger" id="delete-btn" style="display:none">Delete</button>
+      <button type="button" class="btn-ghost" id="email-case-btn" style="display:none">✉️ Email Case</button>
+      <button class="btn-ghost" id="cancel-btn">Cancel</button>
+      <button class="btn-primary" id="save-btn">Save</button>
+    </div>
+  </div>
+</div>
+  <div class="modal-backdrop" id="sticky-modal-backdrop" style="z-index:130">
+  <div class="modal" style="max-width:440px">
+    <h2>Case note</h2>
+    <p class="sticky-stamp mono" id="sticky-time"></p>
+    <div class="field"><textarea id="sticky-text"></textarea></div>
+    <p class="hint" id="sticky-lock" style="display:none">Locked — this case was resolved successfully.</p>
+    <div class="modal-actions">
+      <button class="btn-danger" id="sticky-del">Delete</button>
+      <button class="btn-ghost" id="sticky-close">Close</button>
+      <button class="btn-primary" id="sticky-save">Save</button>
+    </div>
+  </div>
+</div>
+  <div class="modal-backdrop" id="star-backdrop" style="z-index:160">
+  <div class="modal star-modal">
+    <div class="star-head">
+      <span class="star-kind" id="star-kind">NODE</span>
+      <h2 id="star-title">—</h2>
+      <button class="star-close" id="star-close" aria-label="Close">×</button>
+    </div>
+    <div class="star-meta" id="star-meta"></div>
+    <div class="star-body" id="star-body"></div>
+    <div class="star-links" id="star-links"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="star-focus">Focus in galaxy</button>
+      <button class="btn-primary" id="star-open">Open</button>
+    </div>
+  </div>
+</div>
+  <div class="modal-backdrop" id="compose-backdrop" style="z-index:150">
+  <div class="modal" style="max-width:560px; position:relative;">
+    <h2 id="compose-title">Message</h2>
+    <p class="hint" id="compose-missing"></p>
+    
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
+      <label for="compose-to" style="margin:0; font-weight:600; font-size:0.82rem;">Recipient</label>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <div class="select-wrap select-wrap-compact" id="compose-contact-wrap" style="min-width:210px; max-width:250px;">
+          <button type="button" class="select-trigger" id="compose-contact-trigger">
+            <span class="select-trigger-label">👤 Pick a contact...</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div class="select-panel" id="compose-contact-panel" style="max-height:220px;">
+            <div class="select-option selected" data-value="">👤 Pick a saved contact...</div>
+          </div>
+          <input type="hidden" id="compose-contact-select" value="">
+        </div>
+        <button type="button" class="btn-ghost" id="compose-quick-save-contact" style="height:28px; padding:2px 10px; font-size:0.72rem; border-radius:8px;" title="Save current recipient to contacts">➕ Save</button>
+      </div>
+    </div>
+    <div class="field" style="margin-top:0;">
+      <input type="text" id="compose-to" placeholder="client@example.com, service@hoymiles.com">
+      <div id="compose-contact-badge" style="font-size:0.76rem; color:var(--teal); margin-top:4px; display:none; font-weight:500;"></div>
+    </div>
+
+    <div class="field" style="margin-top:6px;" id="compose-cc-container">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <label for="compose-cc" style="margin:0; font-weight:600; font-size:0.82rem;">Cc (Copy)</label>
+        <span class="hint" style="font-size:0.72rem; margin:0;">Client email in copy (captured from screen / manual)</span>
+      </div>
+      <input type="text" id="compose-cc" placeholder="e.g. client@email.com, owner@solarplant.com">
+    </div>
+
+    <div class="field"><label>Subject</label><input type="text" id="compose-subject" placeholder="Solar Agenda Diagnostics Summary"></div>
+    <div class="field"><label>Message</label><textarea id="compose-body" style="min-height:200px" placeholder="Write or review your technical message..."></textarea></div>
+    <div id="compose-status" style="font-size:0.8rem; margin:6px 0 10px; font-weight:600; min-height:18px;"></div>
+    <div class="modal-actions" style="flex-wrap:wrap; gap:8px;">
+      <button class="btn-ghost" id="compose-copy">Copy</button>
+      <button class="btn-ghost" id="compose-close">Cancel</button>
+      <button class="btn-ghost" id="compose-mailto" title="Open in default mail client">Open Mail Client</button>
+      <button class="btn-primary" id="compose-send">Send Email</button>
+    </div>
+
+    <!-- Voice Recipient Confirmation Overlay Before Sending -->
+    <div id="compose-confirm-overlay" style="display:none; position:absolute; inset:0; background:rgba(18,22,28,0.94); backdrop-filter:blur(6px); border-radius:12px; z-index:20; padding:20px; flex-direction:column; justify-content:center;">
+      <div style="background:var(--bg); border:2px solid var(--amber); border-radius:12px; padding:18px; box-shadow:0 12px 36px rgba(0,0,0,0.5);">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+          <span style="font-size:1.8rem;">🔊</span>
+          <div>
+            <h3 style="margin:0; font-size:1.1rem; color:var(--amber);">Confirm Recipient with TARS</h3>
+            <span style="font-size:0.75rem; color:var(--muted);">Voice announcement active before dispatch</span>
+          </div>
+        </div>
+        
+        <div style="background:rgba(255,179,0,0.06); border:1px solid rgba(255,179,0,0.25); border-radius:8px; padding:12px; margin-bottom:12px; font-size:0.85rem; line-height:1.45;">
+          <div style="margin-bottom:4px;">Recipient Name: <b id="confirm-recipient-name" style="color:var(--text);">Direct Recipient</b> <span id="confirm-recipient-role" class="star-tag" style="display:none; margin-left:6px;"></span></div>
+          <div style="margin-bottom:4px;">Registered Email: <b id="confirm-recipient-email" style="color:var(--amber); font-size:0.95rem; word-break:break-all;"></b></div>
+          <div id="confirm-recipient-cc-row" style="margin-bottom:4px; display:none;">Copy (CC): <b id="confirm-recipient-cc" style="color:var(--teal); font-size:0.9rem; word-break:break-all;"></b></div>
+          <div style="font-size:0.78rem; color:var(--muted);">Subject: <span id="confirm-recipient-subject"></span></div>
+        </div>
+
+        <div id="confirm-voice-indicator" style="display:flex; align-items:center; gap:8px; font-size:0.8rem; color:var(--teal); margin-bottom:12px; font-weight:500;">
+          <span class="gs-live"></span>
+          <span id="confirm-voice-text">TARS is reciting the registered email...</span>
+        </div>
+
+        <p class="hint" style="margin:0 0 14px;">Listen to the speech or verify the email address above to make sure it's the right person. Once confirmed, press <b>Send Email</b>.</p>
+
+        <div class="modal-actions" style="gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn-ghost" id="confirm-replay-voice">🔊 Repeat Voice</button>
+          <button type="button" class="btn-ghost" id="confirm-cancel-send">← Back & Edit</button>
+          <button type="button" class="btn-primary" id="confirm-final-send">✅ Confirm & Send Now</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <!-- Contact Add/Edit Modal -->
+  <div class="modal-backdrop" id="contact-modal-backdrop" style="z-index:180">
+    <div class="modal" style="max-width:560px; max-height:90vh; overflow-y:auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <h2 id="contact-modal-title" style="margin:0; font-size:1.15rem;">➕ Save Contact</h2>
+        <button type="button" class="btn-ghost" id="contact-modal-close" style="padding:3px 9px; font-size:1.1rem; cursor:pointer;">×</button>
+      </div>
+      <input type="hidden" id="contact-id">
+      <div class="field">
+        <label>Full Name / Company Name</label>
+        <input type="text" id="contact-name" placeholder="e.g. Hoymiles Brasil — Suporte Técnico">
+      </div>
+      <div class="field">
+        <label>Registered Email Address</label>
+        <input type="email" id="contact-email" placeholder="e.g. service@hoymiles.com">
+      </div>
+      <div class="field-row">
+        <div class="field" style="flex:1">
+          <label>Role / Category</label>
+          <input type="text" id="contact-role" placeholder="e.g. Manufacturer Support, Distributor, Client">
+        </div>
+        <div class="field" style="flex:1">
+          <label>Phone / WhatsApp</label>
+          <input type="text" id="contact-phone" placeholder="e.g. +55 11 91234-5678">
+        </div>
+      </div>
+
+      <!-- Topics / Specializations for Context Adaptation -->
+      <div class="field">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <label>Topics &amp; Context Triggers</label>
+          <span class="hint" style="font-size:0.72rem; margin:0;">Keywords for TARS vision &amp; voice matching</span>
+        </div>
+        <input type="text" id="contact-topics" placeholder="e.g. hoymiles, password conflict, conflito de senha, dtu, rma, lock">
+        <div style="display:flex; align-items:center; gap:6px; margin-top:5px; flex-wrap:wrap;">
+          <span style="font-size:0.72rem; color:var(--muted);">Quick add:</span>
+          <button type="button" class="btn-ghost tag-suggest-btn" data-tag="password conflict" style="padding:1px 6px; font-size:0.7rem;">+ password conflict</button>
+          <button type="button" class="btn-ghost tag-suggest-btn" data-tag="hoymiles" style="padding:1px 6px; font-size:0.7rem;">+ hoymiles</button>
+          <button type="button" class="btn-ghost tag-suggest-btn" data-tag="rma" style="padding:1px 6px; font-size:0.7rem;">+ rma</button>
+          <button type="button" class="btn-ghost tag-suggest-btn" data-tag="grid fault" style="padding:1px 6px; font-size:0.7rem;">+ grid fault</button>
+          <button type="button" class="btn-ghost tag-suggest-btn" data-tag="deye" style="padding:1px 6px; font-size:0.7rem;">+ deye</button>
+          <button type="button" class="btn-ghost tag-suggest-btn" data-tag="dtu" style="padding:1px 6px; font-size:0.7rem;">+ dtu</button>
+        </div>
+      </div>
+
+      <!-- Associated Templates for this Contact -->
+      <div class="field" style="margin-top:12px; background:rgba(255,255,255,0.02); border:1px solid var(--line); border-radius:8px; padding:10px 12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div>
+            <b style="font-size:0.85rem; color:var(--text);">📝 Associated Email Templates</b>
+            <div class="hint" style="font-size:0.72rem; margin:0;">Used by TARS to draft formalized messages with screen SN &amp; client in copy</div>
+          </div>
+          <button type="button" class="btn-ghost" id="contact-add-template-btn" style="padding:3px 9px; font-size:0.75rem; border-color:var(--teal); color:var(--teal);">➕ New Template</button>
+        </div>
+        <div id="contact-templates-list" style="display:flex; flex-direction:column; gap:6px; max-height:180px; overflow-y:auto;">
+          <div style="font-size:0.78rem; color:var(--muted); font-style:italic;">No custom templates added yet.</div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:10px;">
+        <label>Technical Notes / Equipment</label>
+        <textarea id="contact-notes" style="min-height:55px;" placeholder="e.g. Microinversores Hoymiles HMS/HMT, DTU Pro, portal S-Miles Cloud"></textarea>
+      </div>
+
+      <div id="contact-modal-feedback" style="font-size:0.8rem; margin:6px 0; font-weight:600; min-height:16px;"></div>
+      <div class="modal-actions" style="margin-top:12px; display:flex; justify-content:space-between; align-items:center;">
+        <button type="button" class="btn-ghost" id="contact-modal-delete" style="color:var(--urgente); display:none; padding:6px 12px; font-size:0.82rem;">🗑️ Delete Contact</button>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn-ghost" id="contact-modal-cancel">Cancel</button>
+          <button type="button" class="btn-primary" id="contact-modal-save">Save Contact</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Contact Template Submodal (Add/Edit template for contact) -->
+  <div class="modal-backdrop" id="contact-template-modal-backdrop" style="z-index:200">
+    <div class="modal" style="max-width:520px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 id="ctpl-modal-title" style="margin:0; font-size:1.05rem;">📝 Edit Template</h3>
+        <button type="button" class="btn-ghost" id="ctpl-modal-close" style="padding:2px 8px; font-size:1rem; cursor:pointer;">×</button>
+      </div>
+      <input type="hidden" id="ctpl-id">
+      <div class="field">
+        <label>Template Title / Label</label>
+        <input type="text" id="ctpl-name" placeholder="e.g. Hoymiles — Conflito de Senha / Liberação DTU">
+      </div>
+      <div class="field-row">
+        <div class="field" style="flex:1">
+          <label>Topic Trigger</label>
+          <input type="text" id="ctpl-topic" placeholder="e.g. password conflict, rma">
+        </div>
+        <div class="field" style="flex:1">
+          <label>Default CC (Copy)</label>
+          <input type="text" id="ctpl-cc" placeholder="e.g. {{client_email}}">
+        </div>
+      </div>
+      <div class="field">
+        <label>Subject Line</label>
+        <input type="text" id="ctpl-subject" placeholder="e.g. [Hoymiles] Conflito de Senha - S/N {{serial_number}}">
+      </div>
+      <div class="field">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <label>Email Body</label>
+          <span class="hint" style="font-size:0.72rem; margin:0;">Supports {{serial_number}}, {{client_email}}, {{equipment_model}}, {{fault_code}}</span>
+        </div>
+        <textarea id="ctpl-body" style="min-height:160px; font-family:var(--font-mono, monospace); font-size:0.8rem;" placeholder="Write formal email template..."></textarea>
+      </div>
+      <div id="ctpl-feedback" style="font-size:0.8rem; margin:4px 0; font-weight:600; min-height:16px;"></div>
+      <div class="modal-actions" style="margin-top:10px; display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" class="btn-ghost" id="ctpl-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="ctpl-save">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Machine Learning & Fine-Tuning Guide Modal -->
+  <div class="modal-backdrop" id="ml-guide-modal-backdrop" style="z-index:170">
+  <div class="modal" style="max-width:680px; max-height:86vh; overflow-y:auto;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h2 style="margin:0; font-size:1.25rem;">🧠 Guide: Training TARS with Machine Learning</h2>
+      <button class="btn-ghost" id="ml-guide-close" style="padding:4px 10px; font-size:1.2rem; cursor:pointer;">×</button>
+    </div>
+    <p class="hint" style="margin-top:0;">This playbook explains how to transform field technician logs, resolved tickets, and inverter runbooks into a fine-tuned Machine Learning model for TARS.</p>
+
+    <div style="display:flex; flex-direction:column; gap:16px; font-size:0.88rem; line-height:1.6;">
+      <div style="background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:10px; padding:14px;">
+        <h3 style="margin:0 0 6px; color:var(--amber); font-size:0.95rem;">Step 1: Dataset Generation & Logging</h3>
+        <p style="margin:0;">Every time a technician closes a ticket or writes a resolution note in Solar Agenda, it captures the fault symptoms, inverter model (Deye, Foxess), and real corrective steps. Click <b>"Export Training Dataset (.JSONL)"</b> in Settings to automatically compile these into standardized prompt-completion pairs.</p>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:10px; padding:14px;">
+        <h3 style="margin:0 0 6px; color:var(--teal); font-size:0.95rem;">Step 2: Supervised Fine-Tuning (SFT) with Google Gemini</h3>
+        <p style="margin:0 0 8px;">You can fine-tune Gemini directly in <b>Google AI Studio</b> with zero cloud infrastructure setup:</p>
+        <ol style="margin:0; padding-left:20px;">
+          <li>Go to <a href="https://aistudio.google.com/" target="_blank" style="color:var(--amber);">Google AI Studio</a> → <b>Tune Models</b>.</li>
+          <li>Click <b>Create Tuned Model</b> and select <b>gemini-1.5-flash</b> or <b>gemini-2.5-flash</b> as base model.</li>
+          <li>Upload the <code>solar-tars-dataset.jsonl</code> file exported from Solar Agenda.</li>
+          <li>Set Epochs to <b>3–5</b>, Batch size to <b>4</b>, and Learning rate multiplier to <b>1.0</b>.</li>
+          <li>Click <b>Tune</b>. Once training finishes (~15-30 min), copy your fine-tuned model ID (e.g. <code>tunedModels/solar-tars-v1</code>) into Settings or environment secrets.</li>
+        </ol>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:10px; padding:14px;">
+        <h3 style="margin:0 0 6px; color:#4fa3d8; font-size:0.95rem;">Step 3: Open-Source Local Fine-Tuning (LoRA / QLoRA)</h3>
+        <p style="margin:0;">For completely offline field laptops using Llama 3 or Mistral:</p>
+        <pre style="background:rgba(0,0,0,0.5); padding:10px; border-radius:8px; overflow-x:auto; font-size:0.78rem; margin:8px 0;">pip install unsloth "transformers[torch]"
+from unsloth import FastLanguageModel
+model, tokenizer = FastLanguageModel.from_pretrained("unsloth/llama-3-8b-Instruct-bnb-4bit")
+model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
+# Load solar-tars-dataset.jsonl and train using SFTTrainer</pre>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:10px; padding:14px;">
+        <h3 style="margin:0 0 6px; color:var(--amber); font-size:0.95rem;">Step 4: Continuous Reinforcement from Field Feedback</h3>
+        <p style="margin:0;">In the TARS drawer, whenever a technician marks an answer as helpful or edits a draft note, TARS records positive reinforcement weights in <code>Learn.rules</code>. This hybrid approach pairs fine-tuned model weights with real-time in-context memory.</p>
+      </div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn-primary" id="ml-guide-ok" style="flex:1;">Got it</button>
+    </div>
+  </div>
+</div>
+  <div class="modal-backdrop" id="day-modal-backdrop">
+  <div class="modal">
+    <h2 id="day-modal-title">Day</h2>
+    <div class="day-modal-section">
+      <h3>Cases</h3>
+      <div id="day-modal-cases"></div>
+    </div>
+    <div class="day-modal-section">
+      <h3>Notes</h3>
+      <div id="day-modal-notebooks"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="day-modal-close" style="flex:1">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==========================================================================
+     SLA HUB MODALS
+     ========================================================================== -->
+
+<!-- 1. SLA Case Deep-Dive Modal (8 Sub-Tabs) -->
+<div class="modal-backdrop" id="sla-case-modal-backdrop" style="z-index:160;">
+  <div class="modal sla-case-modal">
+    <div class="sla-modal-header">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <span class="sla-id-badge" id="sla-modal-id">SLA-1000</span>
+        <h3 id="sla-modal-customer" style="margin:0; font-size:1.15rem; font-weight:700;">Customer Name</h3>
+        <select id="sla-modal-status-select" class="sla-sort-select" style="font-weight:600;"></select>
+      </div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div id="sla-modal-health-pill" class="sla-health-pill"></div>
+        <button class="btn-ghost" id="sla-modal-close-btn" style="font-size:1.3rem; padding:4px 10px; cursor:pointer;">×</button>
+      </div>
+    </div>
+
+    <!-- 8 Sub-Tabs -->
+    <div class="sla-modal-subnav">
+      <button class="sla-tab-btn active" data-slatab="overview">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Overview
+      </button>
+      <button class="sla-tab-btn" data-slatab="timeline">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Timeline
+      </button>
+      <button class="sla-tab-btn" data-slatab="conversation">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Conversation
+      </button>
+      <button class="sla-tab-btn" data-slatab="notes">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Notes
+      </button>
+      <button class="sla-tab-btn" data-slatab="equipment">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Equipment
+      </button>
+      <button class="sla-tab-btn" data-slatab="protocols">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        Protocols
+      </button>
+      <button class="sla-tab-btn" data-slatab="files">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+        Files
+      </button>
+      <button class="sla-tab-btn" data-slatab="tars">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--amber)" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="10" r="1.2" fill="currentColor"/><circle cx="15" cy="10" r="1.2" fill="currentColor"/><path d="M8 15h8"/></svg>
+        TARS
+      </button>
+    </div>
+
+    <!-- Modal Body Panels -->
+    <div class="sla-modal-body" id="sla-modal-body">
+      <!-- 1. Overview Panel -->
+      <div class="sla-subpanel" id="sla-panel-overview"></div>
+
+      <!-- 2. Timeline Panel -->
+      <div class="sla-subpanel hidden" id="sla-panel-timeline">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h4 style="margin:0; font-size:0.95rem; font-weight:700;">Chronological Activity Stream</h4>
+          <button class="btn-primary" id="sla-modal-add-event-btn" style="font-size:0.8rem; padding:6px 12px;">+ Add Event</button>
+        </div>
+        <div class="sla-timeline" id="sla-modal-timeline-list"></div>
+      </div>
+
+      <!-- 3. Conversation Panel -->
+      <div class="sla-subpanel hidden" id="sla-panel-conversation">
+        <div class="sla-section-card">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h4 class="sla-section-title">💬 Hyperflow Customer Context</h4>
+            <button class="btn-ghost" id="sla-conv-reextract-btn" style="font-size:0.8rem;">⚡ Re-analyze with TARS</button>
+          </div>
+          <div id="sla-modal-conversation-meta" style="font-size:0.82rem; color:var(--muted); line-height:1.5;"></div>
+          <div id="sla-modal-conversation-chat" style="max-height:360px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:12px; background:rgba(0,0,0,0.25); border-radius:8px; border:1px solid var(--line);"></div>
+        </div>
+      </div>
+
+      <!-- 4. Notes Panel (Rich Notes Sub-Tab) -->
+      <div class="sla-subpanel hidden" id="sla-panel-notes">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+          <div>
+            <h4 style="margin:0; font-size:0.95rem; font-weight:700;">Case Technical Notes</h4>
+            <p style="margin:2px 0 0; font-size:0.78rem; color:var(--muted);">Rich text, handwriting/ink, checklists, and diagnosis runbooks</p>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-primary" id="sla-new-case-note-btn">+ New Case Note</button>
+            <button class="btn-ghost" id="sla-attach-unassigned-note-btn">📎 Attach Existing Note</button>
+          </div>
+        </div>
+        <div id="sla-modal-notes-list" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px;"></div>
+      </div>
+
+      <!-- 5. Equipment Panel -->
+      <div class="sla-subpanel hidden" id="sla-panel-equipment">
+        <div class="sla-section-card">
+          <h4 class="sla-section-title">🔧 Primary Equipment & Serial Numbers</h4>
+          <div id="sla-modal-equipment-details"></div>
+        </div>
+        <div class="sla-section-card" style="margin-top:14px;">
+          <h4 class="sla-section-title">📜 Previous Related SLAs for this Equipment / SN</h4>
+          <p style="margin:0 0 10px; font-size:0.8rem; color:var(--muted);">All historical or concurrent cases recorded across the company for this serial number:</p>
+          <div id="sla-modal-sn-history" style="display:flex; flex-direction:column; gap:8px;"></div>
+        </div>
+      </div>
+
+      <!-- 6. Protocols Panel -->
+      <div class="sla-subpanel hidden" id="sla-panel-protocols">
+        <div class="sla-section-card">
+          <h4 class="sla-section-title">🔗 Protocols & External Reference Tracking</h4>
+          <div style="display:flex; flex-direction:column; gap:16px;">
+            <!-- Hyperflow -->
+            <div style="background:rgba(0,0,0,0.18); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="font-weight:600; margin-bottom:6px; font-size:0.88rem; color:var(--text); display:flex; justify-content:space-between;">
+                <span>💬 Hyperflow Conversation Protocol</span>
+                <span id="sla-proto-hf-badge" class="sla-id-badge" style="font-size:0.74rem;"></span>
+              </div>
+              <div class="field">
+                <input type="text" id="sla-proto-hf-input" placeholder="Hyperflow ID or URL (e.g. https://app.hyperflow.com.br/chat/1842)">
+              </div>
+            </div>
+            <!-- Jira -->
+            <div style="background:rgba(0,0,0,0.18); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="font-weight:600; margin-bottom:6px; font-size:0.88rem; color:var(--text); display:flex; justify-content:space-between;">
+                <span>📋 Jira Warranty & Protocol Tracker</span>
+                <span id="sla-proto-jira-badge" class="sla-id-badge" style="font-size:0.74rem;"></span>
+              </div>
+              <p class="hint" style="margin:0 0 8px;">Supports official boards: <b>ADB</b> (Deye), <b>GABEF</b> (FoxESS), <b>AGH</b> (Huawei), <b>CIDG</b> (Modules/Warehouse).</p>
+              <div style="display:grid; grid-template-columns:140px 1fr auto; gap:8px; margin-bottom:8px;">
+                <select id="sla-proto-jira-board" class="sla-sort-select">
+                  <option value="ADB">ADB (Deye)</option>
+                  <option value="GABEF">GABEF (FoxESS)</option>
+                  <option value="AGH">AGH (Huawei)</option>
+                  <option value="CIDG">CIDG (Modules/Warranty)</option>
+                  <option value="OTHER">Other Board</option>
+                </select>
+                <input type="text" id="sla-proto-jira-num" placeholder="Protocol / Issue Key (e.g. ADB-458921)">
+                <button class="btn-ghost" id="sla-proto-jira-open-btn">Open Jira ↗</button>
+              </div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <button type="button" class="btn-ghost" id="sla-proto-jira-create-btn" style="font-size:0.78rem; padding:4px 10px; color:#38bdf8;">
+                  ➕ Create Issue in Jira
+                </button>
+                <button type="button" class="btn-ghost" id="sla-proto-jira-sync-btn" style="font-size:0.78rem; padding:4px 10px;">
+                  🔄 Sync from Jira
+                </button>
+                <span id="sla-proto-jira-spinner" style="display:none; font-size:0.78rem; color:var(--amber);">⏳ Processing...</span>
+              </div>
+              <div id="sla-proto-jira-feedback" style="font-size:0.78rem; margin-top:6px; font-weight:500;"></div>
+            </div>
+
+            <!-- Hoymiles Installer Account (TARS Vision Bridge Automation) -->
+            <div id="sla-proto-hoymiles-card" style="background:rgba(242,167,27,0.06); border:1px solid rgba(242,167,27,0.3); border-radius:8px; padding:12px;">
+              <div style="font-weight:600; margin-bottom:6px; font-size:0.88rem; color:var(--text); display:flex; justify-content:space-between; align-items:center;">
+                <span style="display:flex; align-items:center; gap:6px;">
+                  <span>⚡ Conta Hoymiles (Automação TARS Vision Bridge)</span>
+                </span>
+                <span id="sla-proto-hoymiles-badge" class="sla-id-badge" style="background:rgba(242,167,27,0.2); color:#f2a71b; font-size:0.74rem;"></span>
+              </div>
+              <div id="sla-proto-hoymiles-content" style="font-size:0.82rem; color:var(--muted); line-height:1.5;">
+                Nenhuma conta Hoymiles vinculada automaticamente a este caso. Quando a extensão TARS cria uma conta no portal Hoymiles para o instalador, ela é vinculada e registrada aqui via SLA Webhook.
+              </div>
+            </div>
+
+            <button class="btn-primary" id="sla-proto-save-btn" style="align-self:flex-start;">Save Protocols</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7. Files Panel -->
+      <div class="sla-subpanel hidden" id="sla-panel-files">
+        <div class="sla-section-card">
+          <h4 class="sla-section-title">📁 Evidence, Nameplates & Diagnostic Media</h4>
+          <div id="sla-files-dropzone" style="border:2px dashed var(--line); border-radius:10px; padding:24px; text-align:center; cursor:pointer; background:rgba(0,0,0,0.15); transition:all 0.15s ease;">
+            <input type="file" id="sla-file-input" multiple style="display:none;" accept="image/*,video/*,application/pdf,.txt,.log,.csv">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--muted)" stroke-width="1.6" style="margin-bottom:8px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <div style="font-weight:600; font-size:0.9rem; color:var(--text);">Drag and drop files here or click to browse</div>
+            <div style="font-size:0.78rem; color:var(--muted); margin-top:4px;">Inverter label photo, multimeter readings, oscilloscope, PAC report (PDF, PNG, JPG, MP4, LOG)</div>
+          </div>
+          <div id="sla-modal-files-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:12px; margin-top:16px;"></div>
+        </div>
+      </div>
+
+      <!-- 8. TARS Intelligence Panel -->
+      <div class="sla-subpanel hidden" id="sla-panel-tars">
+        <div class="sla-section-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <h4 class="sla-section-title">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--amber)" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="10" r="1.2" fill="currentColor"/><circle cx="15" cy="10" r="1.2" fill="currentColor"/><path d="M8 15h8"/></svg>
+              TARS Autonomous SLA Analysis
+            </h4>
+            <button class="btn-primary" id="sla-run-tars-btn">🧠 Run SLA Diagnostic Analysis</button>
+          </div>
+          <p class="hint" style="margin:4px 0 12px;">TARS evaluates all metadata, conversation logs, equipment history, and timeline events to deduce facts, inferences, and high-confidence next actions.</p>
+          <div id="sla-tars-analysis-output"></div>
+        </div>
+
+        <!-- WhatsApp / Manufacturer Parser Box -->
+        <div class="whatsapp-parser-box" style="margin-top:16px;">
+          <h4 style="margin:0; font-size:0.92rem; font-weight:700; color:#25d366; display:flex; align-items:center; gap:8px;">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#25d366" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+            Manufacturer Communication Parser (WhatsApp / Email)
+          </h4>
+          <p class="hint" style="margin:0;">Paste message received from manufacturer technical support (e.g. Deye, FoxESS, Huawei). TARS will extract requested measurements/videos, propose a state change, and draft a response to the customer.</p>
+          <textarea id="sla-mfr-msg-input" rows="3" placeholder="Ex: 'Boa tarde. Para prosseguir com a garantia do inversor SUN-8K, favor nos enviar medição de tensão AC fase-neutro no disjuntor e um vídeo de 15s do display ao ligar a chave CC.'" style="width:100%; border-radius:8px; padding:10px; background:rgba(0,0,0,0.3); border:1px solid var(--line); color:var(--text); font-size:0.84rem; outline:none; resize:vertical;"></textarea>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <button class="btn-primary" id="sla-mfr-parse-btn" style="background:#25d366; color:#111; font-weight:600;">⚡ Parse & Extract Requirements</button>
+          </div>
+          <div id="sla-mfr-parse-result" style="display:none; flex-direction:column; gap:10px; margin-top:8px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 2. Create / Edit SLA Case Modal -->
+<div class="modal-backdrop" id="sla-new-modal-backdrop" style="z-index:165;">
+  <div class="modal" style="max-width:680px; max-height:88vh; overflow-y:auto;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <h3 id="sla-form-modal-title" style="margin:0; font-size:1.25rem;">+ Create SLA Case</h3>
+      <button class="btn-ghost" id="sla-new-modal-close" style="font-size:1.3rem; padding:4px 10px; cursor:pointer;">×</button>
+    </div>
+    <form id="sla-case-form" style="display:flex; flex-direction:column; gap:14px;">
+      <input type="hidden" id="sla-form-id">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="field">
+          <label>Customer Name *</label>
+          <input type="text" id="sla-form-customer" required placeholder="e.g. Roberto Dias de Souza">
+        </div>
+        <div class="field">
+          <label>Phone / WhatsApp</label>
+          <input type="text" id="sla-form-phone" placeholder="e.g. +55 11 98842-1920">
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="field">
+          <label>Manufacturer *</label>
+          <select id="sla-form-mfr" required class="sla-sort-select">
+            <option value="Deye">Deye</option>
+            <option value="FoxESS">FoxESS</option>
+            <option value="Huawei">Huawei</option>
+            <option value="Solis">Solis</option>
+            <option value="Growatt">Growatt</option>
+            <option value="Sungrow">Sungrow</option>
+            <option value="Hoymiles">Hoymiles</option>
+            <option value="Sofar">Sofar</option>
+            <option value="Other">Other Manufacturer</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Equipment Model *</label>
+          <input type="text" id="sla-form-model" required placeholder="e.g. SUN-8K-SG01LP1-EU">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Primary Serial Number (SN) *</label>
+        <input type="text" id="sla-form-sn" required placeholder="e.g. 230123456789" style="font-family:monospace; font-weight:600;">
+        <span class="hint">Supports 8-20 digit alphanumeric serial numbers. Validated contextually.</span>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="field">
+          <label>Category</label>
+          <select id="sla-form-category" class="sla-sort-select">
+            <option value="Inverter Alarm / Fault">Inverter Alarm / Fault</option>
+            <option value="Grid Overvoltage / AC Fault">Grid Overvoltage / AC Fault</option>
+            <option value="Datalogger / WiFi Communication">Datalogger / WiFi Communication</option>
+            <option value="Hardware / Contactor Failure">Hardware / Contactor Failure</option>
+            <option value="Warranty / Board Replacement">Warranty / Board Replacement</option>
+            <option value="PAC / Thermographic Inspection">PAC / Thermographic Inspection</option>
+            <option value="Battery / BMS Storage">Battery / BMS Storage</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Priority</label>
+          <select id="sla-form-priority" class="sla-sort-select">
+            <option value="urgente">Urgente (12h SLA)</option>
+            <option value="alta" selected>Alta (24h SLA)</option>
+            <option value="media">Média (48h SLA)</option>
+            <option value="baixa">Baixa (72h SLA)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Problem Description *</label>
+        <textarea id="sla-form-problem" rows="3" required placeholder="Describe error codes, symptoms reported by customer, trip conditions..." style="width:100%; border-radius:8px; padding:8px 10px; background:var(--bg); border:1px solid var(--line); color:var(--text); font-size:0.85rem; outline:none; resize:vertical;"></textarea>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="field">
+          <label>Initial Lifecycle State</label>
+          <select id="sla-form-status" class="sla-sort-select"></select>
+        </div>
+        <div class="field">
+          <label>Responsible Technician</label>
+          <input type="text" id="sla-form-tech" placeholder="e.g. Suporte Solar">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Next Operational Action</label>
+        <input type="text" id="sla-form-next-action" placeholder="e.g. Contact Deye support on WhatsApp for F30 warranty board">
+      </div>
+
+      <div class="modal-actions" style="margin-top:10px;">
+        <button type="button" class="btn-ghost" id="sla-new-modal-cancel" style="flex:1;">Cancel</button>
+        <button type="submit" class="btn-primary" style="flex:1;">Save SLA Case</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- 3. TARS Bridge Intake & SN Extractor Modal -->
+<div class="modal-backdrop" id="sla-bridge-intake-modal-backdrop" style="z-index:170;">
+  <div class="modal" style="max-width:720px; max-height:90vh; overflow-y:auto;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; font-size:1.2rem; display:flex; align-items:center; gap:8px;">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--amber)" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+        TARS Bridge — Intake Conversation into SLA
+      </h3>
+      <button class="btn-ghost" id="sla-intake-modal-close" style="font-size:1.3rem; padding:4px 10px; cursor:pointer;">×</button>
+    </div>
+    <p class="hint" style="margin-top:0;">Import conversation transcript from Hyperflow or paste text. TARS identifies serial numbers, equipment models, customer name, and calculates extraction confidence.</p>
+
+    <div class="field">
+      <label>Conversation Text / Transcript</label>
+      <textarea id="sla-intake-raw-text" rows="5" placeholder="Paste conversation transcript here, or click 'Pull from Active Bridge' below..." style="width:100%; border-radius:8px; padding:10px; background:var(--bg); border:1px solid var(--line); color:var(--text); font-size:0.84rem; outline:none; resize:vertical; font-family:monospace;"></textarea>
+    </div>
+
+    <div style="display:flex; gap:10px; margin-bottom:14px;">
+      <button class="btn-primary" id="sla-intake-extract-btn" style="flex:1;">⚡ Extract SLA Entities</button>
+      <button class="btn-ghost" id="sla-intake-pull-active-btn" style="flex:1;">📡 Pull from Active Bridge</button>
+    </div>
+
+    <!-- Review & Confirm Form (displayed once extracted) -->
+    <div id="sla-intake-review-box" style="display:none; background:rgba(255,255,255,0.02); border:1px solid var(--line); border-radius:10px; padding:16px; flex-direction:column; gap:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); padding-bottom:8px;">
+        <span style="font-weight:700; font-size:0.92rem;">Review Extracted SLA Data</span>
+        <span id="sla-intake-overall-conf" class="conf-badge conf-high">98% Confidence</span>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div class="field">
+          <label>Customer Name</label>
+          <input type="text" id="sla-intake-customer">
+        </div>
+        <div class="field">
+          <label>Phone</label>
+          <input type="text" id="sla-intake-phone">
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div class="field">
+          <label>Manufacturer <span id="sla-intake-mfr-conf"></span></label>
+          <select id="sla-intake-mfr" class="sla-sort-select">
+            <option value="Deye">Deye</option>
+            <option value="FoxESS">FoxESS</option>
+            <option value="Huawei">Huawei</option>
+            <option value="Solis">Solis</option>
+            <option value="Growatt">Growatt</option>
+            <option value="Sungrow">Sungrow</option>
+            <option value="Hoymiles">Hoymiles</option>
+            <option value="Sofar">Sofar</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Equipment Model <span id="sla-intake-model-conf"></span></label>
+          <input type="text" id="sla-intake-model">
+        </div>
+      </div>
+
+      <!-- SN Selection & Candidates -->
+      <div class="field">
+        <label>Detected Serial Number(s) <span id="sla-intake-sn-conf"></span></label>
+        <input type="text" id="sla-intake-sn" style="font-family:monospace; font-weight:700;">
+        <div id="sla-intake-sn-candidates" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;"></div>
+        <div id="sla-intake-disambiguation-box" style="display:none; background:rgba(0,0,0,0.25); border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); display:flex; align-items:center; gap:5px;">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--amber)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+              TARS Disambiguation Reasoning
+            </span>
+            <span id="sla-intake-engine-source" style="font-size:0.72rem; color:var(--muted); font-family:monospace;"></span>
+          </div>
+          <div id="sla-intake-disambiguation-list" style="display:flex; flex-direction:column; gap:4px; font-size:0.78rem;"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Problem Summary</label>
+        <textarea id="sla-intake-problem" rows="2" style="width:100%; border-radius:8px; padding:8px; background:var(--bg); border:1px solid var(--line); color:var(--text); font-size:0.85rem; outline:none; resize:vertical;"></textarea>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div class="field">
+          <label>Priority</label>
+          <select id="sla-intake-priority" class="sla-sort-select">
+            <option value="urgente">Urgente (12h)</option>
+            <option value="alta" selected>Alta (24h)</option>
+            <option value="media">Média (48h)</option>
+            <option value="baixa">Baixa (72h)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Initial Status</label>
+          <select id="sla-intake-status" class="sla-sort-select">
+            <option value="PENDING MANUFACTURER CONTACT" selected>PENDING MANUFACTURER CONTACT</option>
+            <option value="TRIAGE / ANALYSIS">TRIAGE / ANALYSIS</option>
+            <option value="NEW">NEW</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="margin-top:10px;">
+        <button type="button" class="btn-ghost" id="sla-intake-cancel" style="flex:1;">Cancel</button>
+        <button type="button" class="btn-primary" id="sla-intake-confirm-btn" style="flex:2;">Confirm & Create SLA Case</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 4. Add Manual Timeline Event Modal -->
+<div class="modal-backdrop" id="sla-event-modal-backdrop" style="z-index:175;">
+  <div class="modal" style="max-width:480px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; font-size:1.15rem;">+ Add Timeline Event</h3>
+      <button class="btn-ghost" id="sla-event-modal-close" style="font-size:1.3rem; padding:4px 10px; cursor:pointer;">×</button>
+    </div>
+    <form id="sla-event-form" style="display:flex; flex-direction:column; gap:12px;">
+      <div class="field">
+        <label>Event Type</label>
+        <select id="sla-event-type" class="sla-sort-select">
+          <option value="technical_action">Technical Action / Measurement</option>
+          <option value="whatsapp_msg">WhatsApp Message / Contact</option>
+          <option value="hyperflow_msg">Hyperflow Message / Customer Call</option>
+          <option value="manufacturer_contact">Manufacturer Contact</option>
+          <option value="jira_update">Jira Protocol Update</option>
+          <option value="status_change">State Transition</option>
+          <option value="note">Field Note</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Title</label>
+        <input type="text" id="sla-event-title" required placeholder="e.g. Measured AC grid voltage at 254V">
+      </div>
+      <div class="field">
+        <label>Details / Description</label>
+        <textarea id="sla-event-detail" rows="3" placeholder="Provide test readings, procedures performed, or summary of message..." style="width:100%; border-radius:8px; padding:8px; background:var(--bg); border:1px solid var(--line); color:var(--text); font-size:0.85rem; outline:none; resize:vertical;"></textarea>
+      </div>
+      <div class="modal-actions" style="margin-top:8px;">
+        <button type="button" class="btn-ghost" id="sla-event-cancel" style="flex:1;">Cancel</button>
+        <button type="submit" class="btn-primary" style="flex:1;">Add Event</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+</div><!-- /#app-root -->
+
+<script src="/sla-hub.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

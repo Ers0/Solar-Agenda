@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>TARS Vision Bridge</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      width: 330px;
+      margin: 0;
+      padding: 12px;
+      font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #101923;
+      color: #cad9e7;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #233544;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .brand-logo {
+      width: 20px;
+      height: 20px;
+      background: #f2a71b;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0b1118;
+      font-weight: 800;
+      font-size: 11px;
+    }
+    h1 {
+      font-size: 13px;
+      margin: 0;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+    .badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      background: #1e293b;
+      color: #94a3b8;
+      border: 1px solid #334155;
+    }
+    .nav-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 12px;
+      background: #0b1219;
+      padding: 3px;
+      border-radius: 8px;
+      border: 1px solid #1e2d3b;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 6px 4px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: #8fa3b5;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.15s ease;
+    }
+    .tab-btn:hover {
+      color: #e2e8f0;
+      background: #162433;
+    }
+    .tab-btn.active {
+      background: #1e3347;
+      color: #f2a71b;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    .section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #667b8d;
+      margin: 10px 0 5px;
+      font-weight: 700;
+    }
+    .card {
+      background: #16222d;
+      border: 1px solid #233544;
+      border-radius: 8px;
+      padding: 9px;
+      margin-bottom: 9px;
+    }
+    .card-label {
+      font-size: 10.5px;
+      color: #8fa3b5;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .input-text {
+      width: 100%;
+      padding: 7px 9px;
+      border: 1px solid #2a3e50;
+      border-radius: 6px;
+      background: #0d151e;
+      color: #f1f5f9;
+      font-size: 11.5px;
+      font-family: inherit;
+    }
+    .input-text:focus {
+      outline: none;
+      border-color: #f2a71b;
+    }
+    .btn-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    button {
+      width: 100%;
+      padding: 7px 10px;
+      margin: 0 0 5px;
+      border: 1px solid #304352;
+      border-radius: 6px;
+      background: #182632;
+      color: #cad9e7;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    button:hover {
+      border-color: #f2a71b;
+      background: #1e3142;
+      color: #ffffff;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    button.btn-primary {
+      background: #f2a71b;
+      color: #0b1118;
+      border-color: #d9910e;
+      font-weight: 700;
+    }
+    button.btn-primary:hover {
+      background: #ffb833;
+      color: #000;
+    }
+    button.btn-outline {
+      background: transparent;
+      border-color: #2a3e50;
+      color: #94a3b8;
+    }
+    button.btn-outline:hover {
+      border-color: #64748b;
+      color: #e2e8f0;
+    }
+    button.btn-success {
+      background: #0f3524;
+      border-color: #166534;
+      color: #4ade80;
+    }
+    button.btn-success:hover {
+      background: #14532d;
+      border-color: #22c55e;
+      color: #86efac;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .info-box {
+      background: #0c141d;
+      border: 1px solid #1e2e3d;
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    .info-box.full {
+      grid-column: span 2;
+    }
+    .info-box-title {
+      font-size: 9.5px;
+      color: #718292;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .info-box-val {
+      font-size: 11px;
+      color: #e2e8f0;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .log-box {
+      margin-top: 8px;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 10.5px;
+      background: #090e14;
+      border: 1px solid #1b2836;
+      border-radius: 6px;
+      padding: 8px;
+      color: #8fa3b5;
+      max-height: 140px;
+      overflow-y: auto;
+      line-height: 1.4;
+    }
+    .log-box.err { color: #f87171; border-color: #7f1d1d; }
+    .log-box.ok { color: #4ade80; border-color: #14532d; }
+    .status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #22c55e;
+      margin-right: 4px;
+    }
+    .status-dot.yellow { background: #eab308; }
+    .status-dot.red { background: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div class="brand-logo">T</div>
+      <h1>TARS Vision Bridge</h1>
+    </div>
+    <span class="badge" id="appVersion">v1.2.37</span>
+  </div>
+
+  <div class="nav-tabs">
+    <button class="tab-btn active" data-tab="tab-sla">🛡️ SLA & Webhook</button>
+    <button class="tab-btn" data-tab="tab-lab">⚡ Hoymiles Lab</button>
+    <button class="tab-btn" data-tab="tab-vision">👁️ Vision</button>
+  </div>
+
+  <!-- TAB 1: SLA & WEBHOOK -->
+  <div id="tab-sla" class="tab-content active">
+    <div class="card">
+      <div class="card-label">
+        <span>Webhook SLA Solar Agenda</span>
+        <span id="slaWebhookStatusText"><span class="status-dot"></span>Ativo</span>
+      </div>
+      <input type="text" id="slaWebhookUrl" class="input-text" placeholder="https://solar-agenda.vercel.app/api/sla/webhook" spellcheck="false">
+      <div class="btn-row">
+        <button id="btnSaveSlaUrl" class="btn-outline" style="flex: 2;">💾 Salvar URL</button>
+        <button id="btnResetSlaUrl" class="btn-outline" style="flex: 1;" title="Restaurar padrão Solar Agenda">↺ Padrão</button>
+      </div>
+    </div>
+
+    <button id="btnTestSlaPing" class="btn-success">
+      <span>🚀</span> Testar Ping SLA Webhook
+    </button>
+
+    <div class="section-title">Status da Automação Hoymiles</div>
+    <div class="info-grid">
+      <div class="info-box full">
+        <div class="info-box-title">Última Conta Criada</div>
+        <div class="info-box-val" id="infoLastEmail">—</div>
+      </div>
+      <div class="info-box">
+        <div class="info-box-title">Empresa / Instalador</div>
+        <div class="info-box-val" id="infoLastCompany">—</div>
+      </div>
+      <div class="info-box">
+        <div class="info-box-title">Data / Hora</div>
+        <div class="info-box-val" id="infoLastDate">—</div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button id="btnClearHoymilesMemory" class="btn-outline" style="font-size: 11px;">
+        🧹 Limpar Memória (Re-teste)
+      </button>
+      <button id="btnOpenSolarAgenda" class="btn-primary" style="font-size: 11px;">
+        📂 Abrir SLA Hub
+      </button>
+    </div>
+
+    <div class="section-title">Console de Resposta SLA</div>
+    <div id="slaStatus" class="log-box">Pronto. Clique em "Testar Ping SLA Webhook" para validar o recebimento de eventos no Solar Agenda.</div>
+  </div>
+
+  <!-- TAB 2: HOYMILES TEST LAB -->
+  <div id="tab-lab" class="tab-content">
+    <div style="font-size: 11px; color: #7d8fa1; margin-bottom: 8px;">
+      Execute uma ação da UI Hoymiles por vez para testes ou validação no portal.
+    </div>
+    
+    <div class="section-title">Diagnóstico</div>
+    <button id="inspect">🔍 Inspecionar página atual</button>
+    <button id="ping">📡 Testar Ping do Adaptador</button>
+
+    <div class="section-title">Navegação &amp; Criação</div>
+    <button id="org">1. Clicar: Org &amp; User</button>
+    <button id="add">2. Clicar: Add Organization</button>
+    <button id="parent">3. Parent Org → APItest</button>
+    <button id="name">4. Preencher: Nome da Empresa</button>
+    <button id="type">5. Selecionar: Type → Installer</button>
+    <button id="country">6. Selecionar: Country → Brazil</button>
+    <button id="region">7. Selecionar: Region (Estado)</button>
+    <button id="contact">8. Preencher: Contato</button>
+    <button id="contactNumber">9. Preencher: Telefone</button>
+    <button id="address">10. Preencher: Endereço</button>
+    <button id="intro">11. Preencher: Introdução</button>
+
+    <div class="section-title">Retorno do Adaptador Hoymiles</div>
+    <div id="labStatus" class="log-box">Aguardando comando de teste Hoymiles...</div>
+  </div>
+
+  <!-- TAB 3: TARS VISION -->
+  <div id="tab-vision" class="tab-content">
+    <div style="font-size: 11px; color: #7d8fa1; margin-bottom: 8px;">
+      Captura a aba atual e envia a visão estruturada para o Solar Agenda.
+    </div>
+    <input type="text" id="visionQuestion" class="input-text" placeholder="Pergunta opcional para o TARS..." style="margin-bottom: 8px;">
+    <button id="btnAskVision" class="btn-primary">
+      👁️ Perguntar ao TARS sobre esta página
+    </button>
+    <div id="visionStatus" class="log-box">TARS Vision pronto.</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
