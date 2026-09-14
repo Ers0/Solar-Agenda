@@ -1399,6 +1399,7 @@
     <div class="modal-actions">
       <button class="btn-danger" id="delete-btn" style="display:none">Delete</button>
       <button type="button" class="btn-ghost" id="email-case-btn" style="display:none">✉️ Email Case</button>
+      <button type="button" class="btn-ghost" id="pdf-case-btn" style="display:none">📄 Save as PDF</button>
       <button class="btn-ghost" id="cancel-btn">Cancel</button>
       <button class="btn-primary" id="save-btn">Save</button>
     </div>
@@ -1433,7 +1434,7 @@
     </div>
   </div>
 </div>
-  <div class="modal-backdrop" id="compose-backdrop" style="z-index:150">
+  <div class="modal-backdrop" id="compose-backdrop" style="z-index:250">
   <div class="modal" style="max-width:560px; position:relative;">
     <h2 id="compose-title">Message</h2>
     <p class="hint" id="compose-missing"></p>
@@ -1467,6 +1468,24 @@
       <input type="text" id="compose-cc" placeholder="e.g. client@email.com, owner@solarplant.com">
     </div>
 
+    <!-- Attachment preview chip -->
+    <div id="compose-attachment-container" style="display:none; margin:8px 0 10px; padding:10px 12px; background:rgba(242,167,27,0.08); border:1px solid rgba(242,167,27,0.35); border-radius:8px; align-items:center; justify-content:space-between; gap:10px;">
+      <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+        <span style="font-size:1.5rem; flex-shrink:0;">📄</span>
+        <div style="min-width:0;">
+          <div style="font-size:0.82rem; font-weight:700; color:var(--text); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span id="compose-attachment-name" style="word-break:break-all;">Laudo-SLA.pdf</span>
+            <span class="star-tag" style="background:var(--amber); color:#000; font-size:0.65rem; font-weight:800; padding:1px 6px;">PDF ANEXADO</span>
+          </div>
+          <div id="compose-attachment-size" style="font-size:0.72rem; color:var(--muted);">Documento Técnico Oficial Pronto para Disparo</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        <button type="button" class="btn-ghost" id="compose-preview-attachment-btn" style="font-size:0.75rem; padding:3px 8px; border-radius:6px;" title="Visualizar ou Baixar PDF">👁️ Ver / Baixar</button>
+        <button type="button" class="btn-ghost" id="compose-remove-attachment-btn" style="font-size:0.75rem; padding:3px 8px; border-radius:6px; color:var(--urgente);" title="Remover anexo">✕</button>
+      </div>
+    </div>
+
     <div class="field"><label>Subject</label><input type="text" id="compose-subject" placeholder="Solar Agenda Diagnostics Summary"></div>
     <div class="field"><label>Message</label><textarea id="compose-body" style="min-height:200px" placeholder="Write or review your technical message..."></textarea></div>
     <div id="compose-status" style="font-size:0.8rem; margin:6px 0 10px; font-weight:600; min-height:18px;"></div>
@@ -1492,6 +1511,7 @@
           <div style="margin-bottom:4px;">Recipient Name: <b id="confirm-recipient-name" style="color:var(--text);">Direct Recipient</b> <span id="confirm-recipient-role" class="star-tag" style="display:none; margin-left:6px;"></span></div>
           <div style="margin-bottom:4px;">Registered Email: <b id="confirm-recipient-email" style="color:var(--amber); font-size:0.95rem; word-break:break-all;"></b></div>
           <div id="confirm-recipient-cc-row" style="margin-bottom:4px; display:none;">Copy (CC): <b id="confirm-recipient-cc" style="color:var(--teal); font-size:0.9rem; word-break:break-all;"></b></div>
+          <div id="confirm-recipient-attachment-row" style="margin-bottom:4px; display:none;">Attachment: <b id="confirm-recipient-attachment" style="color:var(--amber); font-size:0.88rem; word-break:break-all;"></b></div>
           <div style="font-size:0.78rem; color:var(--muted);">Subject: <span id="confirm-recipient-subject"></span></div>
         </div>
 
@@ -1513,7 +1533,7 @@
 </div>
 
   <!-- Contact Add/Edit Modal -->
-  <div class="modal-backdrop" id="contact-modal-backdrop" style="z-index:180">
+  <div class="modal-backdrop" id="contact-modal-backdrop" style="z-index:260">
     <div class="modal" style="max-width:560px; max-height:90vh; overflow-y:auto;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
         <h2 id="contact-modal-title" style="margin:0; font-size:1.15rem;">➕ Save Contact</h2>
@@ -1588,7 +1608,7 @@
   </div>
 
   <!-- Contact Template Submodal (Add/Edit template for contact) -->
-  <div class="modal-backdrop" id="contact-template-modal-backdrop" style="z-index:200">
+  <div class="modal-backdrop" id="contact-template-modal-backdrop" style="z-index:270">
     <div class="modal" style="max-width:520px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
         <h3 id="ctpl-modal-title" style="margin:0; font-size:1.05rem;">📝 Edit Template</h3>
@@ -1706,7 +1726,13 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
         <h3 id="sla-modal-customer" style="margin:0; font-size:1.15rem; font-weight:700;">Customer Name</h3>
         <select id="sla-modal-status-select" class="sla-sort-select" style="font-weight:600;"></select>
       </div>
-      <div style="display:flex; align-items:center; gap:12px;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button type="button" class="btn-ghost" id="sla-modal-pdf-btn" title="Export SLA Technical Report to PDF" style="display:inline-flex; align-items:center; gap:6px; font-size:0.8rem; padding:5px 10px;">
+          📄 <span id="sla-modal-pdf-text">Save as PDF</span>
+        </button>
+        <button type="button" class="btn-ghost" id="sla-modal-email-btn" title="Send SLA Technical Report & PDF to Email" style="display:inline-flex; align-items:center; gap:6px; font-size:0.8rem; padding:5px 10px;">
+          ✉️ <span id="sla-modal-email-text">Send to Email</span>
+        </button>
         <div id="sla-modal-health-pill" class="sla-health-pill"></div>
         <button class="btn-ghost" id="sla-modal-close-btn" style="font-size:1.3rem; padding:4px 10px; cursor:pointer;">×</button>
       </div>
@@ -2160,6 +2186,9 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
 
 </div><!-- /#app-root -->
 
+<script src="/vendor/jspdf.umd.min.js"></script>
+<script src="/vendor/html2canvas.min.js"></script>
+<script src="/pdf-export.js"></script>
 <script src="/i18n.js"></script>
 <script src="/sla-hub.js"></script>
 <script src="/app.js"></script>

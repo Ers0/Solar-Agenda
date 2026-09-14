@@ -932,9 +932,14 @@
               <span class="sla-id-badge">${c.id}</span>
               <span class="sla-prio-tag prio-${c.priority || 'alta'}">${(c.priority || 'alta').toUpperCase()}</span>
             </div>
-            <div class="sla-health-pill ${health.status.toLowerCase()} sla-health-${health.status}">
-              <span style="font-size:0.85rem;">${health.icon}</span>
-              <span>${health.label}</span>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <button type="button" class="btn-ghost sla-card-pdf-btn" data-slaid="${c.id}" onclick="event.stopPropagation(); window.PDFExport && window.PDFExport.exportSLACase(window.SLAHub.getCase('${c.id}'));" title="Salvar Laudo PDF" style="font-size:0.72rem; padding:2px 7px; height:24px; border-radius:6px; color:var(--text);">
+                📄 PDF
+              </button>
+              <div class="sla-health-pill ${health.status.toLowerCase()} sla-health-${health.status}">
+                <span style="font-size:0.85rem;">${health.icon}</span>
+                <span>${health.label}</span>
+              </div>
             </div>
           </div>
 
@@ -1101,7 +1106,10 @@
         <div class="sla-section-card">
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <h4 class="sla-section-title">📋 Informações do Caso & Equipamento</h4>
-            <button class="btn-ghost" id="sla-edit-case-details-btn" style="font-size:0.76rem; padding:3px 8px;">✏️ Editar Caso</button>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <button class="btn-ghost" id="sla-overview-pdf-btn" style="font-size:0.76rem; padding:3px 8px; color:var(--amber);">📄 Laudo PDF</button>
+              <button class="btn-ghost" id="sla-edit-case-details-btn" style="font-size:0.76rem; padding:3px 8px;">✏️ Editar Caso</button>
+            </div>
           </div>
 
           <div class="sla-detail-grid">
@@ -1250,6 +1258,12 @@
           btn.textContent = '✓ Copiado!';
           setTimeout(() => { btn.textContent = '📋'; }, 2000);
         }
+      }
+    });
+
+    document.getElementById('sla-overview-pdf-btn')?.addEventListener('click', () => {
+      if (window.PDFExport && typeof window.PDFExport.exportSLACase === 'function') {
+        window.PDFExport.exportSLACase(item);
       }
     });
 
@@ -2290,6 +2304,20 @@
       if (e.target.id === 'sla-case-modal-backdrop') closeSLACaseModal();
     });
 
+    // Case Modal PDF & Email Export
+    document.getElementById('sla-modal-pdf-btn')?.addEventListener('click', () => {
+      if (!currentSLACase) return;
+      if (window.PDFExport && typeof window.PDFExport.exportSLACase === 'function') {
+        window.PDFExport.exportSLACase(currentSLACase);
+      }
+    });
+    document.getElementById('sla-modal-email-btn')?.addEventListener('click', () => {
+      if (!currentSLACase) return;
+      if (window.PDFExport && typeof window.PDFExport.emailReport === 'function') {
+        window.PDFExport.emailReport('sla', currentSLACase);
+      }
+    });
+
     // Form Modal bindings
     document.getElementById('sla-new-modal-close')?.addEventListener('click', closeNewSLAModal);
     document.getElementById('sla-new-modal-cancel')?.addEventListener('click', closeNewSLAModal);
@@ -2621,6 +2649,12 @@
     renderSLACasesGrid: renderSLACasesGrid,
     updateSLAStats: updateSLAStats,
     openCase: openSLACaseModal,
+    getCase: (id) => slaCases.find(c => c.id === id),
+    getCases: () => slaCases,
+    exportPDF: (id) => {
+      const c = slaCases.find(x => x.id === id);
+      if (c && window.PDFExport) window.PDFExport.exportSLACase(c);
+    },
     openNew: openNewSLAModal,
     openIntake: openBridgeIntakeModal,
     runTarsSLAAnalysis: runTarsSLAAnalysis,

@@ -173,6 +173,8 @@
       'btn_rephrase_ai': '✦ Rephrase with AI',
       'btn_add_to_history': '+ Add to history',
       'btn_email_case': '✉️ Email Case',
+      'btn_pdf_case': '📄 Save as PDF',
+      'btn_pdf_sla': '📄 Save as PDF',
       'btn_delete': 'Delete',
       'btn_cancel': 'Cancel',
       'btn_save': 'Save',
@@ -418,6 +420,8 @@
       'btn_rephrase_ai': '✦ Reformular com IA',
       'btn_add_to_history': '+ Adicionar ao histórico',
       'btn_email_case': '✉️ Enviar por E-mail',
+      'btn_pdf_case': '📄 Salvar como PDF',
+      'btn_pdf_sla': '📄 Salvar como PDF',
       'btn_delete': 'Excluir',
       'btn_cancel': 'Cancelar',
       'btn_save': 'Salvar',
@@ -859,6 +863,12 @@
       if (deleteBtn) deleteBtn.textContent = this.t('btn_delete');
       const emailCaseBtn = document.getElementById('email-case-btn');
       if (emailCaseBtn) emailCaseBtn.textContent = this.t('btn_email_case');
+      const pdfCaseBtn = document.getElementById('pdf-case-btn');
+      if (pdfCaseBtn) pdfCaseBtn.textContent = this.t('btn_pdf_case');
+      const slaPdfText = document.getElementById('sla-modal-pdf-text');
+      if (slaPdfText) slaPdfText.textContent = this.t('btn_pdf_sla');
+      const slaEmailText = document.getElementById('sla-modal-email-text');
+      if (slaEmailText) slaEmailText.textContent = this.t('btn_email_case');
       const cancelBtn = document.getElementById('cancel-btn');
       if (cancelBtn) cancelBtn.textContent = this.t('btn_cancel');
       const saveBtn = document.getElementById('save-btn');

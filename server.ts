@@ -74,7 +74,7 @@ function formatSmtpError(err: any, user?: string): string {
 // --- API: Send Email ---
 app.post("/api/send-email", async (req, res) => {
   try {
-    const { to, cc, subject, text, html, smtpConfig } = req.body;
+    const { to, cc, subject, text, html, smtpConfig, attachments } = req.body;
 
     if (!to) {
       return res.status(400).json({ ok: false, error: "Recipient ('to') email address is required." });
@@ -86,16 +86,27 @@ app.post("/api/send-email", async (req, res) => {
     const transporter = getTransporter(smtpConfig);
     const fromAddr = smtpConfig?.from || smtpConfig?.user || process.env.SMTP_FROM || process.env.SMTP_USER;
 
-    const info = await transporter.sendMail({
+    const mailOptions: any = {
       from: fromAddr ? `Solar Agenda <${fromAddr}>` : undefined,
       to,
       cc: cc ? (Array.isArray(cc) ? cc.join(', ') : cc) : undefined,
       subject,
       text: text || undefined,
       html: html || (text ? `<div style="font-family: sans-serif; line-height: 1.6; color: #1f2937;">${String(text).replace(/\n/g, "<br/>")}</div>` : undefined),
-    });
+    };
 
-    console.log("[SMTP] Email sent:", info.messageId, "to:", to, "cc:", cc || "none");
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      mailOptions.attachments = attachments.map((att: any) => ({
+        filename: att.filename || "technical-report.pdf",
+        content: att.content,
+        encoding: att.encoding || (typeof att.content === "string" && !att.path ? "base64" : undefined),
+        contentType: att.contentType || "application/pdf",
+      }));
+    }
+
+    const info = await transporter.sendMail(mailOptions);
+
+    console.log("[SMTP] Email sent:", info.messageId, "to:", to, "cc:", cc || "none", "attachments:", mailOptions.attachments?.length || 0);
     return res.json({ ok: true, messageId: info.messageId, accepted: info.accepted });
   } catch (err: any) {
     console.error("[SMTP Error]", err);

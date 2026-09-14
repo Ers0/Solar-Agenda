@@ -1026,6 +1026,8 @@ function openModal(id, presetDate){
   document.getElementById('delete-btn').style.display = c ? 'inline-block' : 'none';
   const emailCaseBtn = document.getElementById('email-case-btn');
   if(emailCaseBtn) emailCaseBtn.style.display = c ? 'inline-block' : 'none';
+  const pdfCaseBtn = document.getElementById('pdf-case-btn');
+  if(pdfCaseBtn) pdfCaseBtn.style.display = c ? 'inline-block' : 'none';
 
   const finished = c && statusRank(c.status) === 1;
   document.getElementById('f-actual-end-wrap').style.display = finished ? 'block' : 'none';
@@ -1073,6 +1075,14 @@ document.getElementById('email-case-btn')?.addEventListener('click', () => {
     subject: `[${c.ticket || 'SOLAR-CASE'}] ${c.titulo}`,
     body: bodyText
   }, {});
+});
+
+document.getElementById('pdf-case-btn')?.addEventListener('click', () => {
+  const c = editingId ? cases.find(x => x.id === editingId) : null;
+  if(!c) return;
+  if(window.PDFExport && typeof window.PDFExport.exportCase === 'function') {
+    window.PDFExport.exportCase(c);
+  }
 });
 function closeModal(){ backdrop.classList.remove('open'); editingId = null; }
 document.getElementById('add-case-btn').addEventListener('click', () => openModal(null));
@@ -4839,9 +4849,10 @@ const TOOLS = [
       const match = Contacts.resolveRecipient(to) || Contacts.findByEmail(to) || Contacts.search(to)[0];
       const recipientName = match ? match.name : to;
       const isPt = (VOICE?.lang || 'pt').toLowerCase().startsWith('pt');
+      const attachments = pendingEmailPayload?.attachments || composeState?.attachments || lastPreparedEmail?.attachments || [];
 
       try {
-        const res = await sendEmailViaApi(to, su, bo, cc);
+        const res = await sendEmailViaApi(to, su, bo, cc, attachments);
         SFX.pop();
         closeCompose();
         lastPreparedEmail = null;
@@ -4849,10 +4860,11 @@ const TOOLS = [
         try {
           speak(isPt ? `E-mail enviado com sucesso para ${recipientName}.` : `Email successfully sent to ${recipientName}.`, VOICE?.lang);
         } catch(e){}
-        return `E-mail enviado com sucesso via servidor SMTP para ${recipientName} (${to})!\n• Assunto: ${su}${cc ? `\n• CC: ${cc}` : ''}\n• Status: Entregue ao servidor de disparo (ID: ${res.messageId || 'ok'}).`;
+        const hasAtt = attachments && attachments.length > 0;
+        return `E-mail enviado com sucesso ${hasAtt ? 'com laudo PDF anexado ' : ''}via servidor SMTP para ${recipientName} (${to})!\n• Assunto: ${su}${cc ? `\n• CC: ${cc}` : ''}\n• Status: Entregue ao servidor de disparo (ID: ${res.messageId || 'ok'}).`;
       } catch(err){
         console.warn('[Dispatch Pending Email Error]', err);
-        openCompose({ name: 'Email Dispatch', to, cc, subject: su, body: bo }, {});
+        openCompose({ name: 'Email Dispatch', to, cc, subject: su, body: bo, attachments }, {});
         const statusEl = document.getElementById('compose-status');
         if(statusEl){
           statusEl.style.color = 'var(--urgente)';
@@ -12528,28 +12540,29 @@ let pendingEmailPayload = null;
 let lastSpokenEmailConfirmation = '';
 let lastPreparedEmail = null;
 
-async function announceAndConfirmEmail(to, subject, body, cc){
+async function announceAndConfirmEmail(to, subject, body, cc, attachments = []){
   const match = Contacts.findByEmail(to);
   const recipientName = match ? match.name : to;
   const recipientRole = match ? match.role : '';
   const isPt = (VOICE?.lang || 'pt').toLowerCase().startsWith('pt');
   const spokenEmail = formatEmailForSpeech(to, VOICE?.lang || 'pt');
   const spokenCc = cc ? formatEmailForSpeech(cc, VOICE?.lang || 'pt') : '';
+  const hasAttachment = attachments && attachments.length > 0;
 
   let spokenAnnouncement = '';
   if(isPt){
     spokenAnnouncement = match 
-      ? `Confirmando destinatário. O e-mail registrado para ${match.name} é ${spokenEmail}.${cc ? ` E-mail do cliente em cópia: ${spokenCc}.` : ''} Por favor, confirme se está correto antes de enviar.`
-      : `Confirmando destinatário. O e-mail de destino é ${spokenEmail}.${cc ? ` Com cópia para ${spokenCc}.` : ''} Por favor, confirme se está correto antes de enviar.`;
+      ? `Confirmando destinatário. O e-mail registrado para ${match.name} é ${spokenEmail}.${cc ? ` E-mail do cliente em cópia: ${spokenCc}.` : ''}${hasAttachment ? ' O laudo técnico em PDF está anexado.' : ''} Por favor, confirme se está correto antes de enviar.`
+      : `Confirmando destinatário. O e-mail de destino é ${spokenEmail}.${cc ? ` Com cópia para ${spokenCc}.` : ''}${hasAttachment ? ' O laudo técnico em PDF está anexado.' : ''} Por favor, confirme se está correto antes de enviar.`;
   } else {
     spokenAnnouncement = match
-      ? `Confirming recipient. The registered email address for ${match.name} is ${spokenEmail}.${cc ? ` Client in CC: ${spokenCc}.` : ''} Please confirm before sending.`
-      : `Confirming recipient. Destination email address is ${spokenEmail}.${cc ? ` With CC to ${spokenCc}.` : ''} Please confirm before sending.`;
+      ? `Confirming recipient. The registered email address for ${match.name} is ${spokenEmail}.${cc ? ` Client in CC: ${spokenCc}.` : ''}${hasAttachment ? ' The technical PDF report is attached.' : ''} Please confirm before sending.`
+      : `Confirming recipient. Destination email address is ${spokenEmail}.${cc ? ` With CC to ${spokenCc}.` : ''}${hasAttachment ? ' The technical PDF report is attached.' : ''} Please confirm before sending.`;
   }
 
   lastSpokenEmailConfirmation = spokenAnnouncement;
-  pendingEmailPayload = { to, subject, body, cc, recipientName, recipientRole };
-  lastPreparedEmail = { to, subject, body, cc, recipientName, recipientRole, time: Date.now() };
+  pendingEmailPayload = { to, subject, body, cc, attachments, recipientName, recipientRole };
+  lastPreparedEmail = { to, subject, body, cc, attachments, recipientName, recipientRole, time: Date.now() };
 
   const overlay = document.getElementById('compose-confirm-overlay');
   const nameEl = document.getElementById('confirm-recipient-name');
@@ -12559,6 +12572,8 @@ async function announceAndConfirmEmail(to, subject, body, cc){
   const ccValEl = document.getElementById('confirm-recipient-cc-val');
   const subjEl = document.getElementById('confirm-recipient-subject');
   const voiceTxt = document.getElementById('confirm-voice-text');
+  const attRow = document.getElementById('confirm-recipient-attachment-row');
+  const attVal = document.getElementById('confirm-recipient-attachment');
 
   if(nameEl) nameEl.textContent = recipientName;
   if(roleEl){
@@ -12578,11 +12593,19 @@ async function announceAndConfirmEmail(to, subject, body, cc){
       ccEl.style.display = 'none';
     }
   }
+  if(attRow && attVal){
+    if(hasAttachment){
+      attRow.style.display = 'block';
+      attVal.textContent = `${attachments[0].filename || 'Laudo.pdf'} (${attachments[0].size || 'PDF'})`;
+    } else {
+      attRow.style.display = 'none';
+    }
+  }
   if(subjEl) subjEl.textContent = subject || '(No subject)';
   if(voiceTxt){
     voiceTxt.textContent = isPt 
-      ? `TARS recitando e-mail registrado: ${to}${cc ? ` (CC: ${cc})` : ''}`
-      : `TARS reciting registered email: ${to}${cc ? ` (CC: ${cc})` : ''}`;
+      ? `TARS recitando e-mail registrado: ${to}${cc ? ` (CC: ${cc})` : ''}${hasAttachment ? ' [PDF Anexo]' : ''}`
+      : `TARS reciting registered email: ${to}${cc ? ` (CC: ${cc})` : ''}${hasAttachment ? ' [PDF Attached]' : ''}`;
   }
 
   if(overlay){
@@ -12599,12 +12622,33 @@ async function announceAndConfirmEmail(to, subject, body, cc){
 
 // The compose sheet. TARS prepares it; the send is verified with voice confirmation.
 let composeState = null;
+
+function updateComposeAttachmentUi(){
+  const container = document.getElementById('compose-attachment-container');
+  if(!container) return;
+  const att = composeState?.attachments?.[0];
+  if(att){
+    container.style.display = 'flex';
+    const nameEl = document.getElementById('compose-attachment-name');
+    const sizeEl = document.getElementById('compose-attachment-size');
+    if(nameEl) nameEl.textContent = att.filename || 'Laudo.pdf';
+    if(sizeEl) sizeEl.textContent = `${att.size || 'PDF'} • Documento Técnico Oficial Pronto para Disparo`;
+  } else {
+    container.style.display = 'none';
+  }
+}
+
 function openCompose(tpl, vars){
   const s = Templates.fill(tpl.subject || '', vars);
   const b = Templates.fill(tpl.body || '', vars);
   const t = Templates.fill(tpl.to || '', vars);
   const c = Templates.fill(tpl.cc || vars?.cc || '', vars);
-  composeState = { tpl, missing: [...new Set([...s.missing, ...b.missing, ...t.missing, ...c.missing])] };
+  const attachments = tpl.attachments || vars?.attachments || [];
+  composeState = {
+    tpl,
+    attachments: Array.isArray(attachments) ? [...attachments] : (attachments ? [attachments] : []),
+    missing: [...new Set([...s.missing, ...b.missing, ...t.missing, ...c.missing])]
+  };
   document.getElementById('compose-title').textContent = tpl.name || 'Message';
   document.getElementById('compose-to').value = t.text;
   const ccInput = document.getElementById('compose-cc');
@@ -12617,6 +12661,9 @@ function openCompose(tpl, vars){
     : 'Everything is filled in. Check it, then send.';
   warn.className = 'hint' + (composeState.missing.length ? ' compose-warn' : '');
 
+  // Render attachment badge
+  updateComposeAttachmentUi();
+
   // Reset confirmation overlay and update contacts
   const overlay = document.getElementById('compose-confirm-overlay');
   if(overlay) overlay.style.display = 'none';
@@ -12624,9 +12671,15 @@ function openCompose(tpl, vars){
   updateComposeContactPicker();
   updateComposeContactBadge(t.text);
 
-  document.getElementById('compose-backdrop').classList.add('open');
+  const backdrop = document.getElementById('compose-backdrop');
+  if(backdrop){
+    backdrop.classList.add('open');
+    backdrop.style.zIndex = '250'; // Ensure it is on top of any open SLA or preview modals
+  }
   SFX.open();
 }
+window.openCompose = openCompose;
+window.statusRank = statusRank;
 
 function closeCompose(){
   document.getElementById('compose-backdrop')?.classList.remove('open');
@@ -12661,6 +12714,31 @@ document.getElementById('compose-quick-save-contact')?.addEventListener('click',
   openContactModal({ email: curEmail, name: '' });
 });
 
+document.getElementById('compose-preview-attachment-btn')?.addEventListener('click', () => {
+  const att = composeState?.attachments?.[0];
+  if(!att) return;
+  if(att.dataUri){
+    const win = window.open();
+    if(win){
+      win.document.write(`<iframe src="${att.dataUri}" frameborder="0" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
+      return;
+    }
+  }
+  if(att.content){
+    const a = document.createElement('a');
+    a.href = `data:application/pdf;base64,${att.content}`;
+    a.download = att.filename || 'laudo.pdf';
+    a.click();
+  }
+});
+
+document.getElementById('compose-remove-attachment-btn')?.addEventListener('click', () => {
+  if(composeState){
+    composeState.attachments = [];
+    updateComposeAttachmentUi();
+  }
+});
+
 document.getElementById('compose-copy')?.addEventListener('click', () => {
   const txt = `${document.getElementById('compose-subject').value}\n\n${document.getElementById('compose-body').value}`;
   navigator.clipboard?.writeText(txt);
@@ -12668,7 +12746,7 @@ document.getElementById('compose-copy')?.addEventListener('click', () => {
   setTimeout(() => { document.getElementById('compose-copy').textContent = 'Copy'; }, 1200);
 });
 
-async function sendEmailViaApi(to, subject, text, cc){
+async function sendEmailViaApi(to, subject, text, cc, attachments){
   const cfg = typeof SmtpDispatcher !== 'undefined' ? SmtpDispatcher.get() : JSON.parse(localStorage.getItem('solar-agenda-smtp-config') || '{}');
   const res = await fetch('/api/send-email', {
     method: 'POST',
@@ -12678,7 +12756,8 @@ async function sendEmailViaApi(to, subject, text, cc){
       subject,
       text,
       cc: cc || undefined,
-      smtpConfig: (cfg.user && cfg.pass) ? cfg : undefined
+      smtpConfig: (cfg.user && cfg.pass) ? cfg : undefined,
+      attachments: (attachments && attachments.length > 0) ? attachments : undefined
     })
   });
 
@@ -12711,6 +12790,7 @@ document.getElementById('compose-send')?.addEventListener('click', async () => {
   const su = document.getElementById('compose-subject').value.trim();
   const bo = document.getElementById('compose-body').value;
   const statusEl = document.getElementById('compose-status');
+  const attachments = composeState?.attachments || [];
 
   if(!to){
     if(statusEl){ statusEl.style.color = 'var(--urgente)'; statusEl.textContent = 'Please provide a recipient email address.'; }
@@ -12721,7 +12801,7 @@ document.getElementById('compose-send')?.addEventListener('click', async () => {
     return;
   }
 
-  await announceAndConfirmEmail(to, su, bo, cc);
+  await announceAndConfirmEmail(to, su, bo, cc, attachments);
 });
 
 // Confirmation overlay handlers
@@ -12739,7 +12819,7 @@ document.getElementById('confirm-cancel-send')?.addEventListener('click', () => 
 
 document.getElementById('confirm-final-send')?.addEventListener('click', async () => {
   if(!pendingEmailPayload) return;
-  const { to, subject, body, cc } = pendingEmailPayload;
+  const { to, subject, body, cc, attachments } = pendingEmailPayload;
   const statusEl = document.getElementById('compose-status');
   const finalBtn = document.getElementById('confirm-final-send');
   const overlay = document.getElementById('compose-confirm-overlay');
@@ -12747,18 +12827,19 @@ document.getElementById('confirm-final-send')?.addEventListener('click', async (
   const cfg = typeof SmtpDispatcher !== 'undefined' ? SmtpDispatcher.get() : JSON.parse(localStorage.getItem('solar-agenda-smtp-config') || '{}');
   const isGmail = (cfg.provider === 'gmail') || (cfg.user && cfg.user.toLowerCase().endsWith('@gmail.com'));
   const providerName = isGmail ? 'Gmail' : (cfg.host?.includes('mailcorp') ? 'Mailcorp' : 'SMTP');
+  const hasAtt = attachments && attachments.length > 0;
 
   if(finalBtn) finalBtn.disabled = true;
   if(statusEl){
     statusEl.style.color = 'var(--amber)';
-    statusEl.textContent = `Dispatching email via ${providerName} to ${to}${cc ? ` (CC: ${cc})` : ''}...`;
+    statusEl.textContent = `Dispatching email ${hasAtt ? 'with PDF attachment ' : ''}via ${providerName} to ${to}${cc ? ` (CC: ${cc})` : ''}...`;
   }
 
   try {
-    const res = await sendEmailViaApi(to, subject, body, cc);
+    const res = await sendEmailViaApi(to, subject, body, cc, attachments);
     if(statusEl){
       statusEl.style.color = 'var(--teal)';
-      statusEl.textContent = `Email successfully sent via ${providerName}! (ID: ${res.messageId || 'ok'})`;
+      statusEl.textContent = `Email successfully sent ${hasAtt ? 'with PDF ' : ''}via ${providerName}! (ID: ${res.messageId || 'ok'})`;
     }
     SFX.pop();
     if(overlay) overlay.style.display = 'none';
@@ -12788,6 +12869,19 @@ document.getElementById('compose-mailto')?.addEventListener('click', () => {
   if(cc) parts.push(`cc=${cc}`);
   if(su) parts.push(`subject=${su}`);
   if(bo) parts.push(`body=${bo}`);
+
+  // If an attachment is attached, download it so user can attach it easily in their email app
+  const att = composeState?.attachments?.[0];
+  if(att){
+    const a = document.createElement('a');
+    a.href = att.dataUri || `data:application/pdf;base64,${att.content}`;
+    a.download = att.filename || 'Laudo-Tecnico.pdf';
+    a.click();
+    if (typeof window.showToast === 'function') {
+      window.showToast(`📥 PDF baixado para anexar ao seu cliente de e-mail.`);
+    }
+  }
+
   window.location.href = `mailto:${to}${parts.length ? '?' + parts.join('&') : ''}`;
 });
 

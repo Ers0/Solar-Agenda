@@ -3610,4 +3610,76 @@
     }
   }
 
+/* ==========================================================================
+   PDF Technical Report Modal & Print Styles
+   ========================================================================== */
+.pdf-report-modal {
+  width: 95%;
+  max-width: 860px;
+}
+
+.printable-paper {
+  background: #ffffff;
+  color: #0f172a;
+  box-sizing: border-box;
+}
+
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  body > *:not(#pdf-preview-backdrop) {
+    display: none !important;
+  }
+
+  #pdf-preview-backdrop {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    z-index: 999999 !important;
+  }
+
+  #pdf-preview-backdrop .modal {
+    display: block !important;
+    position: static !important;
+    box-shadow: none !important;
+    border: none !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  #pdf-preview-backdrop .modal > div:first-child {
+    display: none !important; /* Hide preview toolbar when printing */
+  }
+
+  #pdf-preview-backdrop > div > div:last-child {
+    padding: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+  }
+
+  .printable-paper {
+    box-shadow: none !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  @page {
+    size: A4 portrait;
+    margin: 12mm 15mm;
+  }
+}
+
+
 
