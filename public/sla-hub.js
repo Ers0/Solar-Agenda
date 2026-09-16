@@ -3320,6 +3320,17 @@
 
     // Initial Load
     loadSLACases();
+
+    // Auto-sync polling every 12 seconds to capture incoming webhook events from TARS Bridge
+    if (!window.__slaHubSyncInterval) {
+      window.__slaHubSyncInterval = setInterval(() => {
+        // Only refresh if SLA view is active or tab is visible
+        const slaView = document.getElementById('view-sla');
+        if (slaView && !slaView.classList.contains('hidden')) {
+          loadSLACases();
+        }
+      }, 12000);
+    }
   }
 
   // Expose API on window

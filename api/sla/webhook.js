@@ -82,22 +82,29 @@ export default async function handler(req, res) {
         const cPhone = (c.customer?.phone || "").replace(/\D/g, "");
         const searchPhone = customerPhone.replace(/\D/g, "");
 
-        const matchesDirectId = targetCaseId && c.id.toLowerCase() === targetCaseId.toLowerCase();
-        const matchesConv = conversationId && (
+        const matchesDirectId = Boolean(targetCaseId && c.id.toLowerCase() === targetCaseId.toLowerCase());
+        const matchesProtocol = Boolean(
+          hyperflowProtocol && (
+            (c.protocols?.hyperflow_id && String(c.protocols.hyperflow_id).toLowerCase() === hyperflowProtocol.toLowerCase()) ||
+            (c.protocols?.hyperflow?.protocol && String(c.protocols.hyperflow.protocol).toLowerCase() === hyperflowProtocol.toLowerCase()) ||
+            (c.conversation?.protocol && String(c.conversation.protocol).toLowerCase() === hyperflowProtocol.toLowerCase())
+          )
+        );
+        const matchesConv = Boolean(conversationId && (
           (c.protocols?.hyperflow_id && String(c.protocols.hyperflow_id).includes(conversationId)) ||
           (c.protocols?.hyperflow?.conversation_id === conversationId) ||
           (Array.isArray(c.protocols?.hyperflow) && c.protocols.hyperflow.includes(conversationId))
-        );
-        const matchesConvUrl = conversationUrl && (
+        ));
+        const matchesConvUrl = Boolean(conversationUrl && (
           (c.protocols?.hyperflow_url && c.protocols.hyperflow_url === conversationUrl) ||
           (c.protocols?.hyperflow?.conversation_url === conversationUrl) ||
           (c.conversation?.conversation_url === conversationUrl)
-        );
-        const matchesEmail = loginEmail && cEmail && (cEmail === loginEmail);
-        const matchesPhone = searchPhone.length >= 8 && cPhone && (cPhone === searchPhone || cPhone.endsWith(searchPhone) || searchPhone.endsWith(cPhone));
-        const matchesHoymilesProto = Array.isArray(c.protocols?.hoymiles) && c.protocols.hoymiles.some(h => (h.account_email || "").toLowerCase() === loginEmail);
+        ));
+        const matchesEmail = Boolean(loginEmail && cEmail && (cEmail === loginEmail));
+        const matchesPhone = Boolean(searchPhone.length >= 8 && cPhone && (cPhone === searchPhone || cPhone.endsWith(searchPhone) || searchPhone.endsWith(cPhone)));
+        const matchesHoymilesProto = Boolean(loginEmail && Array.isArray(c.protocols?.hoymiles) && c.protocols.hoymiles.some(h => (h.account_email || "").toLowerCase() === loginEmail));
 
-        if (matchesDirectId || matchesConv || matchesConvUrl || matchesEmail || matchesPhone || matchesHoymilesProto) {
+        if (matchesDirectId || matchesProtocol || matchesConv || matchesConvUrl || matchesEmail || matchesPhone || matchesHoymilesProto) {
           matchedCaseId = c.id;
           c.protocols = c.protocols || {};
 

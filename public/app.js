@@ -240,7 +240,7 @@ function switchView(view){
   SFX.tick();
   requestAnimationFrame(() => setRain());
   window.scrollTo({ top: 0, behavior: 'smooth' });
-  if(view === "sla"){ if(window.SLAHub) window.SLAHub.render(); }
+  if(view === "sla"){ if(window.SLAHub) { window.SLAHub.load(); window.SLAHub.render(); } }
   if(view === "observer"){ if(window.TARSObserverUI) window.TARSObserverUI.render(); }
   if(view === "calendar") renderCalendar();
   if(view === "history") renderHistory();
@@ -13546,8 +13546,8 @@ async function initSlaWebhookUI() {
             feedback.style.color = '#34d399';
             feedback.textContent = `✓ Webhook SLA validado com sucesso! Caso registrado: ${data.caseId || 'SLA'} (${data.customer || 'Cliente'}).`;
             loadSlaWebhookLogs();
-            if (window.SLAHub && typeof window.SLAHub.loadCases === 'function') {
-              window.SLAHub.loadCases();
+            if (window.SLAHub && typeof window.SLAHub.load === 'function') {
+              window.SLAHub.load();
             }
           } else {
             feedback.style.color = 'var(--urgente)';
