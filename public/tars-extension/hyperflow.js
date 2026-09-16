@@ -439,6 +439,40 @@
     };
 
     await putMessage(message);
+
+    // Dispatch event to TARS Observer Mode background batch queue
+    try {
+      if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({
+          type: 'TARS_OBSERVER_EVENT',
+          event: {
+            eventType: 'HYPERFLOW_MESSAGE',
+            observedAt: message.capturedAt,
+            origin: 'hyperflow.global',
+            page: window.location.pathname,
+            title: document.title,
+            case: {
+              conversationId: conversation.conversationId,
+              protocol: conversation.protocol || null,
+              customerName: conversation.customerName || null,
+              customerPhone: conversation.customerPhone || null
+            },
+            data: {
+              messageId: message.id,
+              direction: message.direction,
+              speaker: message.speaker,
+              timestamp: message.timestamp,
+              capturedAt: message.capturedAt,
+              text: message.text,
+              attachmentCount: attachments.length
+            }
+          }
+        }, () => {
+          if (chrome.runtime.lastError) { /* ignore */ }
+        });
+      }
+    } catch (_) {}
+
     for (const a of attachments) {
       const aid = `att:${await sha256(`${id}|${a.source}|${a.filename || ''}`)}`;
       await request((await tx(STORE_ATTACHMENTS, 'readwrite')).put({
@@ -461,6 +495,33 @@
       const conversation = findConversationIdentity();
       const changedConversation = !activeConversation || activeConversation.conversationId !== conversation.conversationId;
       activeConversation = conversation;
+
+      if (changedConversation) {
+        try {
+          if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({
+              type: 'TARS_OBSERVER_EVENT',
+              event: {
+                eventType: 'TARS_OBSERVER_CASE_ACTIVE',
+                observedAt: new Date().toISOString(),
+                origin: 'hyperflow.global',
+                page: window.location.pathname,
+                title: document.title,
+                case: {
+                  conversationId: conversation.conversationId,
+                  protocol: conversation.protocol || null,
+                  customerName: conversation.customerName || null,
+                  customerPhone: conversation.customerPhone || null
+                },
+                data: {
+                  identitySource: conversation.identitySource,
+                  identityConfidence: conversation.identityConfidence
+                }
+              }
+            }, () => { if (chrome.runtime.lastError) {} });
+          }
+        } catch (_) {}
+      }
 
       const previous = await getConversation(conversation.conversationId);
       await putConversation({

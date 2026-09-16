@@ -5,6 +5,15 @@ import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import { JiraService, JiraConfig, CreateJiraIssueParams } from "./server/jira";
 import { runTARSIntakeDisambiguation } from "./server/tars-sn";
+import {
+  TARSCase,
+  TARSObserverEvent,
+  IngestEventsBatchPayload,
+  getDefaultObserverCases,
+  processObserverEventsBatch,
+  exportLearningCandidatesJSONL,
+  computeConfidenceLevel
+} from "./server/tars-observer";
 
 dotenv.config();
 
@@ -138,7 +147,16 @@ function readAppStorage() {
   } catch (e) {
     console.warn("[Storage] Error reading app storage:", e);
   }
-  return { contacts: null, smtpConfig: null, slaCases: null, jiraConfig: null, jiraWebhookLogs: [], slaWebhookLogs: [] };
+  return { 
+    contacts: null, 
+    smtpConfig: null, 
+    slaCases: null, 
+    jiraConfig: null, 
+    jiraWebhookLogs: [], 
+    slaWebhookLogs: [],
+    tarsObserverCases: null,
+    tarsProcessedEvents: []
+  };
 }
 
 function writeAppStorage(data: any) {
@@ -151,6 +169,8 @@ function writeAppStorage(data: any) {
       jiraConfig: data.jiraConfig !== undefined ? data.jiraConfig : current.jiraConfig,
       jiraWebhookLogs: data.jiraWebhookLogs !== undefined ? data.jiraWebhookLogs : (current.jiraWebhookLogs || []),
       slaWebhookLogs: data.slaWebhookLogs !== undefined ? data.slaWebhookLogs : (current.slaWebhookLogs || []),
+      tarsObserverCases: data.tarsObserverCases !== undefined ? data.tarsObserverCases : current.tarsObserverCases,
+      tarsProcessedEvents: data.tarsProcessedEvents !== undefined ? data.tarsProcessedEvents : (current.tarsProcessedEvents || []),
       updatedAt: new Date().toISOString()
     };
     fs.writeFileSync(STORAGE_FILE, JSON.stringify(merged, null, 2), "utf-8");
@@ -159,6 +179,23 @@ function writeAppStorage(data: any) {
     console.warn("[Storage] Error writing app storage:", e);
     return null;
   }
+}
+
+// Helper to get active TARS Observer cases (with default seeds if empty)
+function getObserverCases(): TARSCase[] {
+  const storage = readAppStorage();
+  if (Array.isArray(storage.tarsObserverCases) && storage.tarsObserverCases.length > 0) {
+    return storage.tarsObserverCases;
+  }
+  const defaults = getDefaultObserverCases();
+  writeAppStorage({ tarsObserverCases: defaults });
+  return defaults;
+}
+
+function getProcessedEventIdsSet(): Set<string> {
+  const storage = readAppStorage();
+  const ids = Array.isArray(storage.tarsProcessedEvents) ? storage.tarsProcessedEvents : [];
+  return new Set<string>(ids);
 }
 
 // Helper to get configured JiraService instance
@@ -269,6 +306,85 @@ app.post("/api/sla-cases/extract-sn", async (req, res) => {
   } catch (err: any) {
     console.error("[TARS-SN API Error]", err);
     res.status(500).json({ ok: false, error: err?.message || "Failed to extract and disambiguate serial numbers." });
+  }
+});
+
+// --- API: TARS AI SLA Note Professional Rephraser ---
+app.post("/api/sla-notes/rephrase", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const note = body.note || {};
+    const caseItem = body.caseItem || body.case || {};
+    const checklist = body.checklist || note.checklist || [];
+    const measurements = body.measurements || note.measurements || {};
+    const draftNotes = body.draftNotes || note.text || body.text || '';
+    const category = body.category || note.category_label || note.category || 'Parecer de Engenharia SLA';
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (apiKey) {
+      const { GoogleGenAI } = await import("@google/genai");
+      const ai = new GoogleGenAI({ apiKey });
+      const prompt = `Você é o TARS, assistente técnico e de engenharia especializado em sistemas solares fotovoltaicos, inversores de alta/baixa potência e garantias (Deye, Hoymiles, FoxESS, Huawei).
+Reescreva e formate as anotações técnicas do técnico em um Laudo Técnico / Parecer de SLA formal, conciso, objetivo e conforme as normas técnicas ABNT NBR 16149 / NBR 16274 e requisitos dos fabricantes.
+
+DADOS DO CASO:
+- Caso ID: ${caseItem?.id || 'N/A'}
+- Cliente: ${caseItem?.customer?.name || 'Cliente'}
+- Equipamento: ${caseItem?.equipment?.manufacturer || ''} ${caseItem?.equipment?.model || ''}
+- Número de Série: ${(caseItem?.equipment?.serial_numbers || []).join(', ') || 'N/A'}
+- Falha Relatada: ${caseItem?.problem_summary || 'N/A'}
+- Categoria da Nota: ${category || 'Diagnóstico Técnico'}
+
+MEDIÇÕES REGISTRADAS:
+- Tensão CA: ${measurements?.vac || 'Conforme padrão'}
+- Tensão CC Strings: ${measurements?.vdc || 'Conforme arranjo'}
+- Resistência Isolamento: ${measurements?.riso || '> 1 MΩ'}
+- Código de Erro no Display: ${measurements?.errorCode || measurements?.error_code || 'Registrado'}
+
+VERIFICAÇÕES CUMPRIDAS:
+${Array.isArray(checklist) ? checklist.map((c: any) => typeof c === 'string' ? `- [X] ${c}` : `- [${c.checked ? 'X' : ' '}] ${c.label}`).join('\n') : 'Verificações padrão de campo executadas.'}
+
+OBSERVAÇÕES DO TÉCNICO:
+"${draftNotes || 'Verificações elétricas e inspeção física realizadas.'}"
+
+INSTRUÇÕES:
+Retorne um texto técnico estruturado e direto em Markdown com:
+1. Resumo Executivo da Ocorrência
+2. Medições e Ensaios em Conformidade
+3. Parecer Técnico & Causa Raiz Provável
+4. Ação Recomendada / Próximo Passo do SLA`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt
+      });
+      const textOut = response.text || '';
+      return res.json({ ok: true, rephrased: textOut, rephrasedText: textOut });
+    } else {
+      // Heuristic engineering standard formatting
+      const checkedCount = Array.isArray(checklist) ? checklist.filter((c: any) => typeof c === 'string' || c.checked).length : 0;
+      const totalCount = Array.isArray(checklist) ? checklist.length : 9;
+      const fallback = `### PARECER TÉCNICO DE ENGENHARIA — ${caseItem?.id || 'SLA'}
+**Equipamento:** ${caseItem?.equipment?.manufacturer || 'Fabricante'} ${caseItem?.equipment?.model || ''} (SN: ${(caseItem?.equipment?.serial_numbers || []).join(', ') || 'N/A'})
+**Fase Operacional:** ${category || 'Diagnóstico Técnico em Campo'}
+**Conformidade de Procedimentos:** ${checkedCount}/${totalCount} verificações obrigatórias validadas.
+
+#### 1. Ensaios Elétricos e Medições de Campo
+- **Tensão de Rede CA (Fase-Neutro):** ${measurements?.vac || '220V (Em conformidade com ABNT NBR 16149)'}
+- **Tensão de Entrada CC (Strings):** ${measurements?.vdc || 'Compatível com a curva de operação do MPPT sob irradiação solar'}
+- **Resistência de Isolamento (Riso):** ${measurements?.riso || '> 50 MΩ (Isolamento dielétrico aprovado)'}
+- **Alarme no Display / App:** ${measurements?.errorCode || measurements?.error_code || 'Código de falha validado contra o manual de serviço'}
+
+#### 2. Diagnóstico & Ações Executadas
+${draftNotes || 'Realizada inspeção minuciosa dos cabos solares, aperto de terminais MC4 e validação de continuidade do aterramento e DPS. Sem indícios de sobretensão externa.'}
+
+#### 3. Parecer & Próxima Ação do SLA
+${caseItem?.next_action || 'Prosseguir com o acionamento do suporte técnico do fabricante ou homologação da solução com o cliente final.'}`;
+      return res.json({ ok: true, rephrased: fallback, rephrasedText: fallback });
+    }
+  } catch (err: any) {
+    console.error("[SLA Note Rephrase Error]", err);
+    res.status(500).json({ ok: false, error: err?.message || "Failed to rephrase note." });
   }
 });
 
@@ -728,72 +844,122 @@ app.post("/api/sla/webhook", async (req, res) => {
     const orgObj = payload.organization || {};
     const accountObj = payload.account || {};
 
-    const customerName = (customerObj.name || orgObj.name || "Cliente Solar").trim();
-    const customerEmail = (customerObj.email || accountObj.loginEmail || "").trim();
-    const customerPhone = (customerObj.phone || "").trim();
-    const customerState = (customerObj.state || "").trim();
+    const customerName = (customerObj.name || orgObj.name || payload.customerName || "Cliente Solar").trim();
+    const customerEmail = (customerObj.email || accountObj.loginEmail || payload.email || "").trim();
+    const customerPhone = (customerObj.phone || payload.phone || "").trim();
+    const customerState = (customerObj.state || payload.state || "").trim();
 
-    const orgName = (orgObj.name || "").trim();
+    // Hyperflow specific fields
+    const conversationUrl = (payload.conversationUrl || payload.conversationLink || payload.url || "").trim();
+    const hyperflowProtocol = (payload.protocol || payload.hyperflowProtocol || (conversationId ? `HF-${conversationId.replace(/^hyperflow:/, '').slice(0, 8)}` : "")).trim();
+    const isHyperflowEvent = eventType.startsWith("hyperflow") || !!conversationUrl || !!payload.protocol || !!payload.messages;
+
+    const orgName = (orgObj.name || payload.company || "").trim();
     const parentOrg = (orgObj.parentOrganization || "APItest").trim();
     const orgRole = (orgObj.role || "Installer").trim();
     const loginEmail = (accountObj.loginEmail || customerEmail).trim().toLowerCase();
 
-    console.info(`[SLA Webhook] Received event: ${eventType} for ${loginEmail || orgName} (source: ${source})`);
+    console.info(`[SLA Webhook] Received event: ${eventType} for ${loginEmail || customerName || orgName} (source: ${source})`);
 
     const storage = readAppStorage();
     const list: any[] = Array.isArray(storage.slaCases) ? [...storage.slaCases] : [];
     let matchedCaseId: string | null = null;
     let isNewCase = false;
 
-    // 1. Look for existing case matching email, phone, org, or conversationId
+    // 1. Look for existing case matching caseId, conversationId, conversationUrl, email, phone, or SN
+    const targetCaseId = (payload.caseId || payload.slaCaseId || "").trim();
     for (let i = 0; i < list.length; i++) {
       const c = { ...list[i] };
       const cEmail = (c.customer?.email || "").toLowerCase();
       const cPhone = (c.customer?.phone || "").replace(/\D/g, "");
       const searchPhone = customerPhone.replace(/\D/g, "");
 
-      const matchesConv = conversationId && Array.isArray(c.protocols?.hyperflow) && c.protocols.hyperflow.includes(conversationId);
+      const matchesDirectId = targetCaseId && c.id.toLowerCase() === targetCaseId.toLowerCase();
+      const matchesConv = conversationId && (
+        (c.protocols?.hyperflow_id && String(c.protocols.hyperflow_id).includes(conversationId)) ||
+        (c.protocols?.hyperflow?.conversation_id === conversationId) ||
+        (Array.isArray(c.protocols?.hyperflow) && c.protocols.hyperflow.includes(conversationId))
+      );
+      const matchesConvUrl = conversationUrl && (
+        (c.protocols?.hyperflow_url && c.protocols.hyperflow_url === conversationUrl) ||
+        (c.protocols?.hyperflow?.conversation_url === conversationUrl) ||
+        (c.conversation?.conversation_url === conversationUrl)
+      );
       const matchesEmail = loginEmail && cEmail && (cEmail === loginEmail);
       const matchesPhone = searchPhone.length >= 8 && cPhone && (cPhone === searchPhone || cPhone.endsWith(searchPhone) || searchPhone.endsWith(cPhone));
       const matchesHoymilesProto = Array.isArray(c.protocols?.hoymiles) && c.protocols.hoymiles.some((h: any) => (h.account_email || "").toLowerCase() === loginEmail);
 
-      if (matchesConv || matchesEmail || matchesPhone || matchesHoymilesProto) {
+      if (matchesDirectId || matchesConv || matchesConvUrl || matchesEmail || matchesPhone || matchesHoymilesProto) {
         matchedCaseId = c.id;
         c.protocols = c.protocols || {};
-        c.protocols.hoymiles = Array.isArray(c.protocols.hoymiles) ? [...c.protocols.hoymiles] : [];
-        
-        // Add protocol record if not present
-        if (!c.protocols.hoymiles.some((h: any) => (h.account_email || "").toLowerCase() === loginEmail)) {
-          c.protocols.hoymiles.push({
-            account_email: loginEmail,
-            org_name: orgName,
-            parent_org: parentOrg,
-            role: orgRole,
-            created_at: occurredAt,
-            conversation_id: conversationId,
-            status: eventStatus
+
+        if (isHyperflowEvent) {
+          // Hyperflow is a dedicated separate protocol with conversation link
+          const protoCode = hyperflowProtocol || c.protocols.hyperflow_id || (conversationId ? `HF-${conversationId}` : "HF-AUTO");
+          c.protocols.hyperflow = {
+            protocol: protoCode,
+            conversation_url: conversationUrl || c.protocols.hyperflow_url || (conversationId ? `https://conversas.hyperflow.global/chat/${conversationId}` : ""),
+            conversation_id: conversationId || c.protocols.hyperflow?.conversation_id || "",
+            status: "LINKED",
+            synced_at: occurredAt,
+            customer_name: customerName,
+            customer_phone: customerPhone
+          };
+          c.protocols.hyperflow_id = protoCode;
+          c.protocols.hyperflow_url = c.protocols.hyperflow.conversation_url;
+
+          c.conversation = c.conversation || {};
+          c.conversation.source = "Hyperflow";
+          c.conversation.channel = "WhatsApp";
+          c.conversation.conversation_url = c.protocols.hyperflow.conversation_url;
+          c.conversation.protocol = protoCode;
+
+          if (Array.isArray(payload.messages) && payload.messages.length > 0) {
+            c.conversation.messages = payload.messages;
+          }
+
+          if (!Array.isArray(c.timeline)) c.timeline = [];
+          c.timeline.push({
+            id: `tl-hf-${Date.now()}`,
+            type: "hyperflow_protocol_linked",
+            title: `Protocolo Hyperflow Vinculado: ${protoCode}`,
+            detail: `Conversa sincronizada via TARS Bridge. Link da Conversa: ${c.protocols.hyperflow.conversation_url || 'N/A'}. Total de mensagens: ${c.conversation.messages?.length || 0}.`,
+            author: `TARS Vision Bridge v${bridgeVersion}`,
+            timestamp: occurredAt
           });
-        }
+        } else {
+          // Hoymiles account event
+          c.protocols.hoymiles = Array.isArray(c.protocols.hoymiles) ? [...c.protocols.hoymiles] : [];
+          if (!c.protocols.hoymiles.some((h: any) => (h.account_email || "").toLowerCase() === loginEmail)) {
+            c.protocols.hoymiles.push({
+              account_email: loginEmail,
+              org_name: orgName,
+              parent_org: parentOrg,
+              role: orgRole,
+              created_at: occurredAt,
+              conversation_id: conversationId,
+              status: eventStatus
+            });
+          }
 
-        if (conversationId && Array.isArray(c.protocols.hyperflow) && !c.protocols.hyperflow.includes(conversationId)) {
-          c.protocols.hyperflow.push(conversationId);
-        }
+          if (conversationId && Array.isArray(c.protocols.hyperflow) && !c.protocols.hyperflow.includes(conversationId)) {
+            c.protocols.hyperflow.push(conversationId);
+          }
 
-        // Timeline entry
-        if (!Array.isArray(c.timeline)) c.timeline = [];
-        c.timeline.push({
-          id: `tl-wh-${Date.now()}`,
-          type: "hoymiles_account_created",
-          title: `Conta Hoymiles Criada: ${loginEmail}`,
-          detail: `Conta de Instalador criada com sucesso no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Credenciais e tutoriais entregues via Hyperflow.`,
-          author: `TARS Vision Bridge v${bridgeVersion}`,
-          timestamp: occurredAt
-        });
+          if (!Array.isArray(c.timeline)) c.timeline = [];
+          c.timeline.push({
+            id: `tl-wh-${Date.now()}`,
+            type: "hoymiles_account_created",
+            title: `Conta Hoymiles Criada: ${loginEmail}`,
+            detail: `Conta de Instalador criada com sucesso no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Credenciais entregues via Hyperflow.`,
+            author: `TARS Vision Bridge v${bridgeVersion}`,
+            timestamp: occurredAt
+          });
 
-        // Mark resolved if was pending/in_progress and this completes the service
-        if (["aberto", "em_analise", "aguardando_terceiros"].includes(c.status)) {
-          c.status = "concluido";
-          c.resolved_at = occurredAt;
+          if (["aberto", "em_analise", "aguardando_terceiros"].includes(c.status)) {
+            c.status = "concluido";
+            c.resolved_at = occurredAt;
+          }
         }
 
         c.updated_at = new Date().toISOString();
@@ -806,56 +972,120 @@ app.post("/api/sla/webhook", async (req, res) => {
     if (!matchedCaseId) {
       isNewCase = true;
       const caseNum = Math.floor(1000 + Math.random() * 9000);
-      matchedCaseId = `SLA-HOY-${caseNum}`;
 
-      const newCase = {
-        id: matchedCaseId,
-        title: `Criação de Conta Hoymiles — ${orgName || customerName}`,
-        priority: "media",
-        status: "concluido",
-        created_at: occurredAt,
-        resolved_at: occurredAt,
-        sla_limit_hours: 24,
-        responsible_tech: "TARS Vision Bridge",
-        customer: {
-          name: customerName,
-          email: customerEmail || loginEmail,
-          phone: customerPhone,
-          state: customerState,
-          company: orgName
-        },
-        equipment: {
-          manufacturer: "Hoymiles",
-          model: "S-Miles Cloud (Portal do Instalador)",
-          serial_numbers: ["N/A - Conta Web/App"]
-        },
-        problem_summary: `Criação automatizada de conta de Instalador Hoymiles para ${customerName} (${orgName}). Login: ${loginEmail}. Senha padrão configurada e entregue via Hyperflow.`,
-        protocols: {
-          hoymiles: [{
-            account_email: loginEmail,
-            org_name: orgName,
-            parent_org: parentOrg,
-            role: orgRole,
-            created_at: occurredAt,
-            conversation_id: conversationId,
-            status: eventStatus
-          }],
-          hyperflow: conversationId ? [conversationId] : []
-        },
-        timeline: [
-          {
-            id: `tl-sla-init-${Date.now()}`,
-            type: "hoymiles_account_created",
-            title: "Conta Hoymiles Criada & Entregue",
-            detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Status: ${eventStatus}. Credenciais e links de treinamento repassados ao cliente via chat Hyperflow.`,
-            author: `TARS Vision Bridge v${bridgeVersion}`,
-            timestamp: occurredAt
-          }
-        ],
-        notes: `Evento recebido via Webhook SLA (${eventType}) da extensão TARS Vision Bridge v${bridgeVersion}. Senhas não são armazenadas no Solar Agenda por segurança.`
-      };
+      if (isHyperflowEvent) {
+        matchedCaseId = `SLA-HF-${caseNum}`;
+        const protoCode = hyperflowProtocol || `HF-${caseNum}`;
+        const hfUrl = conversationUrl || (conversationId ? `https://conversas.hyperflow.global/chat/${conversationId}` : "");
 
-      list.unshift(newCase);
+        const newCase = {
+          id: matchedCaseId,
+          title: `Atendimento Hyperflow — ${customerName}`,
+          priority: payload.priority || "alta",
+          status: payload.status || "aberto",
+          created_at: occurredAt,
+          updated_at: occurredAt,
+          sla_deadline: new Date(Date.now() + 24 * 3600000).toISOString(),
+          sla_limit_hours: 24,
+          responsible_tech: "Suporte Solar (TARS Bridge)",
+          customer: {
+            name: customerName,
+            email: customerEmail,
+            phone: customerPhone,
+            state: customerState,
+            site_location: payload.site_location || ""
+          },
+          equipment: payload.equipment || {
+            manufacturer: payload.manufacturer || "Inversor Solar",
+            model: payload.model || "Equipamento em Diagnóstico",
+            serial_numbers: payload.serial_number ? [payload.serial_number] : (payload.serial_numbers || [])
+          },
+          problem_summary: payload.problem_summary || (payload.messages?.[0]?.text ? `Conversa Hyperflow: ${payload.messages[0].text.slice(0, 180)}` : "Atendimento importado via TARS Bridge."),
+          next_action: "Avaliar protocolo e histórico do cliente via conversa Hyperflow vinculada.",
+          protocols: {
+            hyperflow: {
+              protocol: protoCode,
+              conversation_url: hfUrl,
+              conversation_id: conversationId,
+              status: "LINKED",
+              synced_at: occurredAt,
+              customer_name: customerName,
+              customer_phone: customerPhone
+            },
+            hyperflow_id: protoCode,
+            hyperflow_url: hfUrl,
+            jira: [],
+            hoymiles: []
+          },
+          conversation: {
+            source: "Hyperflow",
+            channel: "WhatsApp",
+            conversation_url: hfUrl,
+            protocol: protoCode,
+            messages: Array.isArray(payload.messages) ? payload.messages : []
+          },
+          timeline: [
+            {
+              id: `tl-hf-init-${Date.now()}`,
+              type: "hyperflow_protocol_linked",
+              title: `Caso Aberto via Hyperflow Protocol: ${protoCode}`,
+              detail: `Atendimento recebido via TARS Bridge Webhook com link direto da conversa: ${hfUrl || 'N/A'}.`,
+              author: `TARS Vision Bridge v${bridgeVersion}`,
+              timestamp: occurredAt
+            }
+          ]
+        };
+        list.unshift(newCase);
+      } else {
+        matchedCaseId = `SLA-HOY-${caseNum}`;
+        const newCase = {
+          id: matchedCaseId,
+          title: `Criação de Conta Hoymiles — ${orgName || customerName}`,
+          priority: "media",
+          status: "concluido",
+          created_at: occurredAt,
+          resolved_at: occurredAt,
+          sla_limit_hours: 24,
+          responsible_tech: "TARS Vision Bridge",
+          customer: {
+            name: customerName,
+            email: customerEmail || loginEmail,
+            phone: customerPhone,
+            state: customerState,
+            company: orgName
+          },
+          equipment: {
+            manufacturer: "Hoymiles",
+            model: "S-Miles Cloud (Portal do Instalador)",
+            serial_numbers: ["N/A - Conta Web/App"]
+          },
+          problem_summary: `Criação automatizada de conta de Instalador Hoymiles para ${customerName} (${orgName}). Login: ${loginEmail}. Senha padrão configurada e entregue via Hyperflow.`,
+          protocols: {
+            hoymiles: [{
+              account_email: loginEmail,
+              org_name: orgName,
+              parent_org: parentOrg,
+              role: orgRole,
+              created_at: occurredAt,
+              conversation_id: conversationId,
+              status: eventStatus
+            }],
+            hyperflow: conversationId ? [conversationId] : []
+          },
+          timeline: [
+            {
+              id: `tl-sla-init-${Date.now()}`,
+              type: "hoymiles_account_created",
+              title: "Conta Hoymiles Criada & Entregue",
+              detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Status: ${eventStatus}. Credenciais e links de treinamento repassados ao cliente via chat Hyperflow.`,
+              author: `TARS Vision Bridge v${bridgeVersion}`,
+              timestamp: occurredAt
+            }
+          ],
+          notes: `Evento recebido via Webhook SLA (${eventType}) da extensão TARS Vision Bridge v${bridgeVersion}. Senhas não são armazenadas no Solar Agenda por segurança.`
+        };
+        list.unshift(newCase);
+      }
     }
 
     // 3. Log webhook event
@@ -1029,6 +1259,467 @@ app.post("/api/sla/webhook/test", async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// =============================================================================
+// TARS OBSERVER BACKEND & EVENT-SOURCED CASE ENGINE
+// Passive Observer Mode (v1.2.81): Zero Customer Interaction Hard Safety Boundary
+// Ingestion Endpoint: POST /api/tars/observer/events
+// =============================================================================
+
+// 1. Ingest Batched Events from TARS Vision Bridge
+app.post("/api/tars/observer/events", async (req, res) => {
+  try {
+    const payload: IngestEventsBatchPayload = req.body || { events: [] };
+    const version = payload.version || "1.0";
+    const source = payload.source || "tars-vision-bridge";
+    const bridgeVersion = payload.bridgeVersion || "1.2.81";
+
+    if (!Array.isArray(payload.events)) {
+      return res.status(400).json({ ok: false, error: "Invalid payload: 'events' array is required." });
+    }
+
+    const currentCases = getObserverCases();
+    const processedSet = getProcessedEventIdsSet();
+
+    const result = processObserverEventsBatch(payload, currentCases, processedSet);
+
+    // Persist updated cases and tracked event IDs
+    writeAppStorage({
+      tarsObserverCases: result.updatedCases,
+      tarsProcessedEvents: Array.from(processedSet).slice(-2000) // retain last 2000 event IDs for idempotency
+    });
+
+    console.log(`[TARS Observer] Ingested ${result.processedCount} events (${result.duplicateCount} duplicates skipped) from ${source} v${bridgeVersion}. Affected cases:`, result.affectedCaseIds);
+
+    return res.json({
+      ok: true,
+      mode: "PASSIVE_OBSERVER",
+      safetyBoundary: "ZERO_CUSTOMER_INTERACTION_ENFORCED",
+      version,
+      bridgeVersion,
+      processedCount: result.processedCount,
+      duplicateCount: result.duplicateCount,
+      affectedCaseIds: result.affectedCaseIds,
+      totalCases: result.updatedCases.length
+    });
+  } catch (err: any) {
+    console.error("[TARS Observer Error]", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 2. List Observer Cases (with filtering by status & query)
+app.get("/api/tars/observer/cases", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const { status, q } = req.query as { status?: string; q?: string };
+
+    let filtered = [...cases];
+
+    if (status && status !== "all") {
+      if (status === "active") {
+        filtered = filtered.filter(c => c.status !== "CLOSED" && c.status !== "RESOLVED");
+      } else if (status === "closed") {
+        filtered = filtered.filter(c => c.status === "CLOSED" || c.status === "RESOLVED");
+      } else if (status === "human_review") {
+        filtered = filtered.filter(c => c.status === "HUMAN_REVIEW" || c.needsHumanReview);
+      } else if (status === "candidates") {
+        filtered = filtered.filter(c => c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated);
+      } else {
+        filtered = filtered.filter(c => c.status.toLowerCase() === status.toLowerCase());
+      }
+    }
+
+    if (q && q.trim()) {
+      const term = q.trim().toLowerCase();
+      filtered = filtered.filter(c => 
+        (c.protocol && c.protocol.toLowerCase().includes(term)) ||
+        (c.conversationId && c.conversationId.toLowerCase().includes(term)) ||
+        (c.customer.name && c.customer.name.toLowerCase().includes(term)) ||
+        (c.customer.phone && c.customer.phone.includes(term)) ||
+        (c.equipment.manufacturer && c.equipment.manufacturer.toLowerCase().includes(term)) ||
+        (c.equipment.model && c.equipment.model.toLowerCase().includes(term)) ||
+        (c.equipment.sn && c.equipment.sn.toLowerCase().includes(term)) ||
+        (c.finalDiagnosis && c.finalDiagnosis.toLowerCase().includes(term))
+      );
+    }
+
+    return res.json({
+      ok: true,
+      count: filtered.length,
+      cases: filtered,
+      safetyBoundary: "PASSIVE_OBSERVER_ACTIVE"
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 3. Get Single Observer Case Deep-Dive
+app.get("/api/tars/observer/cases/:caseId", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const item = cases.find(c => c.id === req.params.caseId || c.protocol === req.params.caseId);
+    if (!item) {
+      return res.status(404).json({ ok: false, error: "Case not found." });
+    }
+    return res.json({ ok: true, case: item });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 4. Update Observer Case fields
+app.patch("/api/tars/observer/cases/:caseId", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const idx = cases.findIndex(c => c.id === req.params.caseId || c.protocol === req.params.caseId);
+    if (idx < 0) {
+      return res.status(404).json({ ok: false, error: "Case not found." });
+    }
+
+    const updates = req.body || {};
+    const item = cases[idx];
+
+    if (updates.status) item.status = updates.status;
+    if (updates.equipment) item.equipment = { ...item.equipment, ...updates.equipment };
+    if (updates.customer) item.customer = { ...item.customer, ...updates.customer };
+    if (updates.finalDiagnosis !== undefined) item.finalDiagnosis = updates.finalDiagnosis;
+    if (updates.finalResolution !== undefined) item.finalResolution = updates.finalResolution;
+    if (updates.humanAnalysis) item.humanAnalysis = { ...item.humanAnalysis, ...updates.humanAnalysis };
+    if (updates.learningMetadata) item.learningMetadata = { ...item.learningMetadata, ...updates.learningMetadata };
+    if (updates.needsHumanReview !== undefined) item.needsHumanReview = Boolean(updates.needsHumanReview);
+
+    item.updatedAt = new Date().toISOString();
+    cases[idx] = item;
+    writeAppStorage({ tarsObserverCases: cases });
+
+    return res.json({ ok: true, case: item });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 5. Validate AI Observation
+app.post("/api/tars/observer/cases/:caseId/validate-observation", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const idx = cases.findIndex(c => c.id === req.params.caseId || c.protocol === req.params.caseId);
+    if (idx < 0) return res.status(404).json({ ok: false, error: "Case not found." });
+
+    const { observationId, validated = true, validatedBy = "Técnico Solar" } = req.body || {};
+    const item = cases[idx];
+    const obs = item.aiObservations.find(o => o.id === observationId);
+    if (!obs) return res.status(404).json({ ok: false, error: "Observation not found." });
+
+    obs.isValidated = Boolean(validated);
+    obs.validatedAt = new Date().toISOString();
+    obs.validatedBy = validatedBy;
+
+    // Check if all observations are validated
+    const allValidated = item.aiObservations.every(o => o.isValidated);
+    if (allValidated) {
+      item.learningMetadata.isValidated = true;
+      item.learningMetadata.validatedAt = new Date().toISOString();
+      item.learningMetadata.validatedBy = validatedBy;
+      item.needsHumanReview = false;
+      if (item.status === "HUMAN_REVIEW") {
+        item.status = "PROCESSING";
+      }
+    }
+
+    item.timeline.push({
+      id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      eventType: "OBSERVATION_VALIDATED",
+      timestamp: new Date().toISOString(),
+      title: `Observação Validada: ${obs.title}`,
+      detail: `Técnico (${validatedBy}) confirmou a interpretação da IA como precisa e conforme.`,
+      author: validatedBy
+    });
+
+    item.updatedAt = new Date().toISOString();
+    cases[idx] = item;
+    writeAppStorage({ tarsObserverCases: cases });
+
+    return res.json({ ok: true, observation: obs, case: item });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 6. Correct AI Interpretation (Human Correction)
+app.post("/api/tars/observer/cases/:caseId/correct-observation", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const idx = cases.findIndex(c => c.id === req.params.caseId || c.protocol === req.params.caseId);
+    if (idx < 0) return res.status(404).json({ ok: false, error: "Case not found." });
+
+    const { observationId, correctedValue, reason = "Correção técnica de campo", correctedBy = "Técnico Solar" } = req.body || {};
+    const item = cases[idx];
+    const obs = item.aiObservations.find(o => o.id === observationId);
+
+    const originalText = obs ? obs.detail : "N/A";
+    const correctionId = `corr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    const correctionItem = {
+      id: correctionId,
+      observationId,
+      originalValue: originalText,
+      correctedValue: String(correctedValue),
+      correctedBy,
+      timestamp: new Date().toISOString(),
+      reason
+    };
+
+    item.humanCorrections.push(correctionItem);
+
+    if (obs) {
+      obs.humanCorrection = correctedValue;
+      obs.isValidated = true;
+      obs.validatedAt = new Date().toISOString();
+      obs.validatedBy = correctedBy;
+    }
+
+    item.timeline.push({
+      id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      eventType: "HUMAN_CORRECTION",
+      timestamp: new Date().toISOString(),
+      title: `Correção Humana Registrada (${correctedBy})`,
+      detail: `De: "${originalText.slice(0, 80)}..." Para: "${correctedValue}". Motivo: ${reason}`,
+      author: correctedBy
+    });
+
+    item.updatedAt = new Date().toISOString();
+    cases[idx] = item;
+    writeAppStorage({ tarsObserverCases: cases });
+
+    return res.json({ ok: true, correction: correctionItem, case: item });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 7. Human Analysis for Media / Images / Videos
+app.post("/api/tars/observer/cases/:caseId/human-analysis", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const idx = cases.findIndex(c => c.id === req.params.caseId || c.protocol === req.params.caseId);
+    if (idx < 0) return res.status(404).json({ ok: false, error: "Case not found." });
+
+    const { visualNotes, mediaEvaluation, technicianConclusion, updatedBy = "Técnico Solar" } = req.body || {};
+    const item = cases[idx];
+
+    item.humanAnalysis = {
+      visualNotes: visualNotes !== undefined ? visualNotes : item.humanAnalysis.visualNotes,
+      mediaEvaluation: mediaEvaluation !== undefined ? mediaEvaluation : item.humanAnalysis.mediaEvaluation,
+      technicianConclusion: technicianConclusion !== undefined ? technicianConclusion : item.humanAnalysis.technicianConclusion,
+      updatedAt: new Date().toISOString(),
+      updatedBy
+    };
+
+    // If human analysis is documented, resolve human review flag
+    if (visualNotes || technicianConclusion) {
+      item.needsHumanReview = false;
+      if (item.status === "HUMAN_REVIEW") {
+        item.status = "PROCESSING";
+      }
+      item.confidence = Math.max(item.confidence, 0.88);
+      item.confidenceLevel = computeConfidenceLevel(item.confidence);
+    }
+
+    item.timeline.push({
+      id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      eventType: "HUMAN_MEDIA_ANALYSIS",
+      timestamp: new Date().toISOString(),
+      title: `Análise Humana de Mídia / Evidências (${updatedBy})`,
+      detail: visualNotes ? `Notas visuais: ${visualNotes.slice(0, 120)}` : "Análise técnica concluída pelo especialista.",
+      author: updatedBy
+    });
+
+    item.updatedAt = new Date().toISOString();
+    cases[idx] = item;
+    writeAppStorage({ tarsObserverCases: cases });
+
+    return res.json({ ok: true, humanAnalysis: item.humanAnalysis, case: item });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 8. Close Case & optionally mark as Training Candidate
+app.post("/api/tars/observer/cases/:caseId/close", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const idx = cases.findIndex(c => c.id === req.params.caseId || c.protocol === req.params.caseId);
+    if (idx < 0) return res.status(404).json({ ok: false, error: "Case not found." });
+
+    const {
+      finalDiagnosis = "",
+      finalResolution = "",
+      markAsCandidate = false,
+      candidateReason = "",
+      tags = [],
+      technician = "Técnico Solar"
+    } = req.body || {};
+
+    const item = cases[idx];
+    item.status = "CLOSED";
+    item.closedAt = new Date().toISOString();
+    item.finalDiagnosis = finalDiagnosis || item.finalDiagnosis || "Atendimento concluído e resolvido.";
+    item.finalResolution = finalResolution || item.finalResolution || "Procedimento técnico aplicado e validado com o cliente.";
+
+    if (markAsCandidate) {
+      item.learningMetadata = {
+        isValidated: true,
+        validatedAt: new Date().toISOString(),
+        validatedBy: technician,
+        isTrainingCandidate: true,
+        candidateReason: candidateReason || "Caso exemplar de resolução e análise técnica",
+        tags: Array.isArray(tags) && tags.length > 0 ? tags : (item.learningMetadata?.tags || ["solar", "resolved"])
+      };
+    }
+
+    item.timeline.push({
+      id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      eventType: "CASE_CLOSED",
+      timestamp: new Date().toISOString(),
+      title: "Caso Fechado & Arquivado",
+      detail: `Diagnóstico: ${item.finalDiagnosis}. Resolução: ${item.finalResolution}.${markAsCandidate ? " (Marcado como candidato a dataset de treinamento de IA)" : ""}`,
+      author: technician
+    });
+
+    item.updatedAt = new Date().toISOString();
+    cases[idx] = item;
+    writeAppStorage({ tarsObserverCases: cases });
+
+    return res.json({ ok: true, case: item });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 9. Mark / Unmark Case as Training Candidate
+app.post("/api/tars/observer/cases/:caseId/candidate", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const idx = cases.findIndex(c => c.id === req.params.caseId || c.protocol === req.params.caseId);
+    if (idx < 0) return res.status(404).json({ ok: false, error: "Case not found." });
+
+    const { isTrainingCandidate = true, candidateReason = "", tags = [] } = req.body || {};
+    const item = cases[idx];
+
+    item.learningMetadata.isTrainingCandidate = Boolean(isTrainingCandidate);
+    if (candidateReason) item.learningMetadata.candidateReason = candidateReason;
+    if (Array.isArray(tags) && tags.length > 0) item.learningMetadata.tags = tags;
+    if (isTrainingCandidate) {
+      item.learningMetadata.isValidated = true;
+      item.learningMetadata.validatedAt = new Date().toISOString();
+    }
+
+    item.updatedAt = new Date().toISOString();
+    cases[idx] = item;
+    writeAppStorage({ tarsObserverCases: cases });
+
+    return res.json({ ok: true, learningMetadata: item.learningMetadata, case: item });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 10. List Learning Candidates (Validated Closed Cases Pool)
+app.get("/api/tars/learning/candidates", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const candidates = cases.filter(c => c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated);
+    return res.json({
+      ok: true,
+      count: candidates.length,
+      candidates,
+      info: "Casos validados armazenados separadamente para consumo do pipeline de aprendizado."
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 11. Export Learning Dataset (.JSONL)
+app.get("/api/tars/learning/export", (req, res) => {
+  try {
+    const cases = getObserverCases();
+    const jsonlContent = exportLearningCandidatesJSONL(cases);
+    
+    res.setHeader("Content-Disposition", "attachment; filename=\"tars-validated-cases.jsonl\"");
+    res.setHeader("Content-Type", "application/x-jsonlines; charset=utf-8");
+    return res.send(jsonlContent);
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 12. Helper Endpoint to Simulate Bridge Event for testing/demo
+app.post("/api/tars/observer/simulate-event", (req, res) => {
+  try {
+    const {
+      eventType = "HYPERFLOW_MESSAGE",
+      text = "Cliente informa que inversor Deye SUN-8K está apresentando alarme F30 com 225 Vac.",
+      protocol = "HF-3001",
+      conversationId = "conv_sim_01",
+      customerName = "João Instalador",
+      manufacturer = "Deye",
+      model = "SUN-8K",
+      sn = "230499881122"
+    } = req.body || {};
+
+    const payload: IngestEventsBatchPayload = {
+      version: "1.0",
+      source: "tars-vision-bridge",
+      bridgeVersion: "1.2.81",
+      events: [
+        {
+          eventId: `sim-ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          eventType,
+          observedAt: new Date().toISOString(),
+          origin: "https://conversas.hyperflow.global",
+          page: `https://conversas.hyperflow.global/chat/${conversationId}`,
+          title: `Atendimento ${protocol}`,
+          tabId: 99,
+          case: {
+            protocol,
+            conversationId,
+            customerName,
+            manufacturer,
+            equipmentModel: model,
+            serialNumber: sn
+          },
+          data: {
+            text,
+            speaker: "customer",
+            direction: "inbound",
+            attachmentCount: 1
+          }
+        }
+      ]
+    };
+
+    const currentCases = getObserverCases();
+    const processedSet = getProcessedEventIdsSet();
+    const result = processObserverEventsBatch(payload, currentCases, processedSet);
+
+    writeAppStorage({
+      tarsObserverCases: result.updatedCases,
+      tarsProcessedEvents: Array.from(processedSet).slice(-2000)
+    });
+
+    return res.json({
+      ok: true,
+      simulated: true,
+      affectedCaseIds: result.affectedCaseIds,
+      cases: result.updatedCases
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 

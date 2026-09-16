@@ -336,6 +336,78 @@ async function waitForHoymilesReady(tabId) {
   return false;
 }
 
+// --------------------------------------------------- TARS Observer Mode (v1.2.81) ---
+// Hard Safety Boundary: Passive Observer ONLY — ZERO interaction with customer
+const TARS_OBSERVER_VERSION = '1.2.81';
+const TARS_OBSERVER_ENDPOINT_KEY = 'tarsObserverEndpointUrl';
+const DEFAULT_OBSERVER_ENDPOINT = 'https://solar-agenda.vercel.app/api/tars/observer/events';
+
+let observerEventQueue = [];
+let observerFlushTimer = null;
+const OBSERVER_FLUSH_INTERVAL_MS = 2000;
+const OBSERVER_MAX_BATCH_SIZE = 25;
+
+async function getObserverEndpointUrl() {
+  const stored = await chrome.storage.local.get([TARS_OBSERVER_ENDPOINT_KEY]);
+  return String(stored[TARS_OBSERVER_ENDPOINT_KEY] || DEFAULT_OBSERVER_ENDPOINT).trim();
+}
+
+function queueObserverEvent(event) {
+  if (!event || !event.eventType) return;
+  const enriched = {
+    eventId: event.eventId || `obs-ev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    eventType: event.eventType,
+    observedAt: event.observedAt || new Date().toISOString(),
+    origin: event.origin || 'tars-vision-bridge',
+    page: event.page || '',
+    title: event.title || '',
+    tabId: event.tabId || null,
+    case: event.case || {},
+    data: event.data || {}
+  };
+  observerEventQueue.push(enriched);
+
+  if (observerEventQueue.length >= OBSERVER_MAX_BATCH_SIZE) {
+    flushObserverEvents();
+  } else if (!observerFlushTimer) {
+    observerFlushTimer = setTimeout(flushObserverEvents, OBSERVER_FLUSH_INTERVAL_MS);
+  }
+}
+
+async function flushObserverEvents() {
+  if (observerFlushTimer) {
+    clearTimeout(observerFlushTimer);
+    observerFlushTimer = null;
+  }
+  if (observerEventQueue.length === 0) return;
+
+  const eventsToSend = observerEventQueue.splice(0, OBSERVER_MAX_BATCH_SIZE);
+  const endpoint = await getObserverEndpointUrl();
+  const payload = {
+    version: '1.0',
+    source: 'tars-vision-bridge',
+    bridgeVersion: TARS_OBSERVER_VERSION,
+    events: eventsToSend
+  };
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: 'omit',
+      cache: 'no-store'
+    });
+    if (!response.ok) {
+      console.warn('[TARS Observer Bridge] Event batch delivery returned status', response.status);
+    } else {
+      console.info(`[TARS Observer Bridge] Ingested ${eventsToSend.length} observer events.`);
+    }
+  } catch (err) {
+    console.warn('[TARS Observer Bridge] Error transmitting event batch:', err);
+  }
+}
+
 // --------------------------------------------------- Solar Agenda SLA Webhook ---
 const TARS_SLA_WEBHOOK_STORAGE_KEY = 'tarsSlaWebhookUrl';
 const DEFAULT_SLA_WEBHOOK_URL = 'https://solar-agenda.vercel.app/api/sla/webhook';
@@ -390,6 +462,52 @@ async function reportHoymilesAccountToSlaWebhook({ data, conversationId, reporti
       return { ok: false, status: response.status, error: `sla_webhook_http_${response.status}`, response: responseText.slice(0, 500) };
     }
     return { ok: true, status: response.status, response: responseText.slice(0, 500) };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error), url };
+  }
+}
+
+async function reportHyperflowProtocolToSlaWebhook({ data, conversationId, protocol, conversationUrl, messages, caseId }) {
+  const url = await getSlaWebhookUrl();
+  if (!url) return { ok: false, skipped: true, error: 'sla_webhook_not_configured' };
+
+  const protoCode = protocol || (conversationId ? `HF-${String(conversationId).replace(/^hyperflow:/, '').slice(0, 8)}` : 'HF-AUTO');
+  const chatLink = conversationUrl || (conversationId ? `https://conversas.hyperflow.global/chat/${conversationId}` : '');
+
+  const payload = {
+    event: 'hyperflow.protocol.linked',
+    version: '1.0',
+    source: 'tars-vision-bridge',
+    bridgeVersion: '1.2.37',
+    occurredAt: new Date().toISOString(),
+    status: 'COMPLETED',
+    caseId: caseId || null,
+    conversationId: conversationId || null,
+    protocol: protoCode,
+    conversationUrl: chatLink,
+    conversationLink: chatLink,
+    customer: {
+      name: data?.fullName || data?.name || null,
+      email: data?.email || null,
+      phone: data?.phone || null,
+      state: data?.state || null
+    },
+    messages: Array.isArray(messages) ? messages : []
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: 'omit',
+      cache: 'no-store'
+    });
+    const responseText = await response.text().catch(() => '');
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: `sla_webhook_http_${response.status}`, response: responseText.slice(0, 500) };
+    }
+    return { ok: true, status: response.status, payload, response: responseText.slice(0, 500) };
   } catch (error) {
     return { ok: false, error: String(error?.message || error), url };
   }
@@ -476,6 +594,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg && msg.type === 'TARS_HYPERFLOW_SEND_PROTOCOL') {
+    (async () => {
+      const result = await reportHyperflowProtocolToSlaWebhook(msg.payload || msg);
+      return result;
+    })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
   if (msg && msg.type === 'TARS_GET_SLA_INFO') {
     (async () => {
       const webhookUrl = await getSlaWebhookUrl();
@@ -515,20 +641,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // TARS Observer Mode Event Handler
+  if (msg && msg.type === 'TARS_OBSERVER_EVENT') {
+    queueObserverEvent({
+      ...msg.event,
+      tabId: sender?.tab?.id || msg.event?.tabId
+    });
+    sendResponse({ ok: true, queued: true });
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_OBSERVER_FLUSH') {
+    flushObserverEvents()
+      .then(() => sendResponse({ ok: true }))
+      .catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
   if (msg && msg.type === 'HYPERFLOW_SEND_REPLY') {
-    (async () => {
-      if (!sender?.tab?.id) return { ok: false, error: 'no_hyperflow_tab' };
-      return await new Promise(resolve => {
-        chrome.tabs.sendMessage(sender.tab.id, {
-          type: 'HYPERFLOW_DO_SEND_REPLY',
-          text: msg.text,
-          conversationId: msg.conversationId
-        }, response => {
-          if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'send_failed' });
-          resolve(response || { ok: false, error: 'empty_send_response' });
-        });
-      });
-    })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
+    // HARD SAFETY BOUNDARY: In passive Observer Mode (v1.2.81), zero customer interaction is permitted
+    console.warn('[TARS Observer] Outbound reply blocked by passive Observer Mode hard safety boundary.');
+    sendResponse({ ok: false, blocked: true, reason: 'observer_mode_passive_safety_boundary' });
     return true;
   }
 

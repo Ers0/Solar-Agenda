@@ -1357,146 +1357,784 @@
   }
 
   // 3. Conversation Panel
+  // ============================================================================
+  // STRICT SLA TECHNICAL NOTES & CONVERSATION / PROTOCOL SYSTEM
+  // ============================================================================
+
+  const SLA_NOTE_CATEGORIES = {
+    diagnostico_campo: { label: 'Diagnóstico Técnico em Campo', color: '#38bdf8', bg: 'rgba(56,189,248,0.15)' },
+    acionamento_garantia: { label: 'Parecer para Acionamento de Garantia', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
+    inspecao_comissionamento: { label: 'Inspeção e Comissionamento (ABNT)', color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
+    avaria_sobretensao: { label: 'Laudo Pericial de Avaria / Sobretensão', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
+    registro_substituicao: { label: 'Registro de Troca / Substituição (RMA)', color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
+    homologacao_fabricante: { label: 'Homologação com Fabricante', color: '#ec4899', bg: 'rgba(236,72,153,0.15)' }
+  };
+
+  const SLA_CHECKLIST_DEFS = [
+    { id: 'vac', elId: 'sla-chk-vac', key: 'nbr16149_vac', label: 'Tensão CA nos limites ABNT NBR 16149 (198V a 242V)', standard: 'ABNT NBR 16149' },
+    { id: 'vdc', elId: 'sla-chk-vdc', key: 'strings_vdc', label: 'Tensão CC dos Strings conferida e polaridade sem inversão', standard: 'ABNT NBR 16274' },
+    { id: 'riso', elId: 'sla-chk-riso', key: 'isolation_riso', label: 'Resistência de Isolamento Dielétrico (Riso > 1 MΩ)', standard: 'ABNT NBR 16274' },
+    { id: 'ground', elId: 'sla-chk-ground', key: 'ground_dps', label: 'Aterramento (R < 10Ω) e DPS classe II inspecionados', standard: 'ABNT NBR 5410' },
+    { id: 'mc4', elId: 'sla-chk-mc4', key: 'mc4_torque', label: 'Conectores MC4 & aperto dos bornes CA inspecionados', standard: 'Conexões CA/CC' },
+    { id: 'error', elId: 'sla-chk-error', key: 'error_code_doc', label: 'Código de falha / alarme no display do inversor documentado', standard: 'Telemetria Inversor' },
+    { id: 'photos', elId: 'sla-chk-photos', key: 'photos_sn_label', label: 'Fotos da placa de identificação, SN e instalação anexadas', standard: 'Evidências SLA' },
+    { id: 'fw', elId: 'sla-chk-fw', key: 'comm_firmware', label: 'Firmware e módulo de comunicação (Wi-Fi/4G) verificados', standard: 'Firmware / Datalogger' },
+    { id: 'mfr', elId: 'sla-chk-mfr', key: 'mfr_warranty_support', label: 'Homologação de garantia / RMA validada com fabricante', standard: 'Homologação Suporte' }
+  ];
+
+  let currentEditingNoteId = null;
+
+  // 3. Conversation Panel (Linked with TARS Vision Bridge)
   function renderConversationPanel(item) {
     const meta = document.getElementById('sla-modal-conversation-meta');
     const chat = document.getElementById('sla-modal-conversation-chat');
+    const bridgeBadge = document.getElementById('sla-conv-bridge-status-badge');
+    const openLinkBtn = document.getElementById('sla-conv-open-link-btn');
+    const urlInput = document.getElementById('sla-conv-url-input');
+    const urlSaveBtn = document.getElementById('sla-conv-url-save-btn');
+    const syncBridgeBtn = document.getElementById('sla-conv-sync-bridge-btn');
+    const guideBtn = document.getElementById('sla-conv-guide-btn');
+    const feedback = document.getElementById('sla-conv-url-feedback');
+
     if (!meta || !chat) return;
 
-    meta.innerHTML = `
-      Source: <b>${escapeHtml(item.conversation?.source || 'Hyperflow')}</b> · Channel: <b>${escapeHtml(item.conversation?.channel || 'WhatsApp')}</b> · Customer: <b>${escapeHtml(item.customer?.name || '')}</b>
-    `;
+    const convUrl = item.conversation?.conversation_url || item.protocols?.hyperflow_url || '';
+    const convProtocol = item.conversation?.protocol || item.protocols?.hyperflow_id || 'Não Informado';
 
-    const msgs = item.conversation?.messages || [];
-    if (!msgs.length) {
-      chat.innerHTML = `<div style="padding:20px; text-align:center; color:var(--muted);">No conversation logs attached to this case.</div>`;
-      return;
+    // Update URL input and open button
+    if (urlInput) urlInput.value = convUrl;
+    if (openLinkBtn) {
+      if (convUrl) {
+        openLinkBtn.href = convUrl;
+        openLinkBtn.style.display = 'inline-flex';
+      } else {
+        openLinkBtn.style.display = 'none';
+      }
     }
 
-    chat.innerHTML = msgs.map(m => {
-      const isCust = m.sender === 'customer';
-      return `
-        <div style="display:flex; flex-direction:column; align-self:${isCust ? 'flex-start' : 'flex-end'}; max-width:80%;">
-          <div style="font-size:0.72rem; color:var(--muted); margin-bottom:2px; align-self:${isCust ? 'flex-start' : 'flex-end'};">
-            ${isCust ? item.customer?.name || 'Cliente' : 'Suporte Solar'} · ${m.time || ''}
-          </div>
-          <div style="padding:10px 14px; border-radius:10px; font-size:0.86rem; line-height:1.45; background:${isCust ? 'rgba(255,255,255,0.06)' : 'rgba(245,158,11,0.18)'}; color:var(--text); border:1px solid ${isCust ? 'var(--line)' : 'rgba(245,158,11,0.3)'};">
-            ${escapeHtml(m.text || '')}
-          </div>
+    // Bridge Status
+    const isBridgeActive = Boolean(window.VisionBridge);
+    if (bridgeBadge) {
+      bridgeBadge.textContent = isBridgeActive ? 'TARS Bridge Conectado' : 'Aguardando Extensão';
+      bridgeBadge.style.background = isBridgeActive ? 'rgba(34,197,94,0.15)' : 'rgba(245,158,11,0.15)';
+      bridgeBadge.style.color = isBridgeActive ? '#22c55e' : '#f59e0b';
+    }
+
+    meta.innerHTML = `
+      Origem: <b>${escapeHtml(item.conversation?.source || 'Hyperflow')}</b> · 
+      Canal: <b>${escapeHtml(item.conversation?.channel || 'WhatsApp')}</b> · 
+      Protocolo: <span style="font-family:monospace; color:var(--amber); font-weight:600;">${escapeHtml(convProtocol)}</span> · 
+      Cliente: <b>${escapeHtml(item.customer?.name || 'Cliente')}</b>
+      ${item.customer?.phone ? `(${escapeHtml(item.customer.phone)})` : ''}
+    `;
+
+    // Render Messages
+    const msgs = item.conversation?.messages || [];
+    if (!msgs.length) {
+      chat.innerHTML = `
+        <div style="padding:28px 16px; text-align:center; color:var(--muted); font-size:0.86rem; background:rgba(255,255,255,0.02); border:1px dashed var(--line); border-radius:8px;">
+          <div style="font-weight:600; color:var(--text); margin-bottom:4px;">Nenhuma mensagem sincronizada ainda neste caso.</div>
+          <div style="font-size:0.8rem; margin-bottom:12px;">Puxe o histórico diretamente da conversa aberta no Hyperflow via TARS Bridge ou vincule a URL direta acima.</div>
+          <button type="button" class="btn-primary" id="sla-conv-empty-sync-btn" style="font-size:0.8rem; padding:6px 14px;">🔄 Puxar Conversa Ativa do Hyperflow</button>
         </div>
       `;
-    }).join('');
+      document.getElementById('sla-conv-empty-sync-btn')?.addEventListener('click', () => syncConversationFromTarsBridge(item));
+    } else {
+      chat.innerHTML = msgs.map(m => {
+        const isCust = m.sender === 'customer' || m.direction === 'in';
+        return `
+          <div style="display:flex; flex-direction:column; align-self:${isCust ? 'flex-start' : 'flex-end'}; max-width:82%;">
+            <div style="font-size:0.72rem; color:var(--muted); margin-bottom:2px; align-self:${isCust ? 'flex-start' : 'flex-end'};">
+              ${isCust ? escapeHtml(item.customer?.name || 'Cliente') : 'Suporte Solar Agenda'} · ${escapeHtml(m.time || '')}
+            </div>
+            <div style="padding:9px 13px; border-radius:10px; font-size:0.85rem; line-height:1.45; background:${isCust ? 'rgba(255,255,255,0.06)' : 'rgba(245,158,11,0.18)'}; color:var(--text); border:1px solid ${isCust ? 'var(--line)' : 'rgba(245,158,11,0.3)'};">
+              ${escapeHtml(m.text || '')}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Save Link Button
+    if (urlSaveBtn) {
+      urlSaveBtn.onclick = () => {
+        const inputVal = urlInput ? urlInput.value.trim() : '';
+        if (!item.conversation) item.conversation = {};
+        if (!item.protocols) item.protocols = {};
+        item.conversation.conversation_url = inputVal;
+        item.protocols.hyperflow_url = inputVal;
+        
+        saveSLACaseApi(item);
+        if (openLinkBtn) {
+          if (inputVal) {
+            openLinkBtn.href = inputVal;
+            openLinkBtn.style.display = 'inline-flex';
+          } else {
+            openLinkBtn.style.display = 'none';
+          }
+        }
+        if (feedback) {
+          feedback.textContent = '✓ Link da conversa salvo com sucesso!';
+          feedback.style.color = '#22c55e';
+          setTimeout(() => { if (feedback) feedback.textContent = ''; }, 3500);
+        }
+        renderProtocolsPanel(item);
+      };
+    }
+
+    // Sync from Bridge Button
+    if (syncBridgeBtn) {
+      syncBridgeBtn.onclick = () => syncConversationFromTarsBridge(item);
+    }
+
+    // Guide Button
+    if (guideBtn) {
+      guideBtn.onclick = () => {
+        const guideModal = document.getElementById('sla-hyperflow-guide-modal-backdrop');
+        if (guideModal) guideModal.classList.add('visible');
+      };
+    }
   }
 
-  // 4. Notes Sub-Tab (Migrated Notes System)
+  // Sync conversation directly from active TARS Bridge frame or broadcast
+  async function syncConversationFromTarsBridge(item) {
+    const feedback = document.getElementById('sla-conv-url-feedback');
+    let imported = false;
+
+    // Check if VisionBridge has a pending frame with thread or URL
+    if (window.VisionBridge && typeof window.VisionBridge.takeFrame === 'function') {
+      const frame = window.VisionBridge.takeFrame();
+      if (frame) {
+        if (frame.url && /hyperflow/i.test(frame.url)) {
+          if (!item.conversation) item.conversation = {};
+          if (!item.protocols) item.protocols = {};
+          item.conversation.conversation_url = frame.url;
+          item.protocols.hyperflow_url = frame.url;
+        }
+        if (frame.thread && frame.thread.messages && frame.thread.messages.length) {
+          if (!item.conversation) item.conversation = {};
+          const existingTexts = new Set((item.conversation.messages || []).map(m => m.text));
+          const newMsgs = frame.thread.messages.filter(m => !existingTexts.has(m.text));
+          item.conversation.messages = [...(item.conversation.messages || []), ...newMsgs];
+          imported = true;
+        } else if (frame.selection || frame.domText) {
+          const raw = frame.selection || frame.domText;
+          const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+          if (lines.length > 0) {
+            if (!item.conversation) item.conversation = {};
+            item.conversation.messages = item.conversation.messages || [];
+            item.conversation.messages.push({
+              sender: 'customer',
+              time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+              text: raw.slice(0, 1500)
+            });
+            imported = true;
+          }
+        }
+      }
+    }
+
+    // Post request to extension content script / background
+    window.postMessage({
+      channel: 'tars-bridge',
+      dir: 'to-ext',
+      action: 'REQUEST_HYPERFLOW_SYNC',
+      caseId: item.id
+    }, window.location.origin);
+
+    if (imported) {
+      addTimelineEvent(item.id, {
+        type: 'hyperflow_msg',
+        title: 'Conversa Sincronizada do Hyperflow',
+        detail: `Histórico de atendimento capturado via TARS Vision Bridge.`
+      });
+      saveSLACaseApi(item);
+      renderConversationPanel(item);
+      renderProtocolsPanel(item);
+      if (feedback) {
+        feedback.textContent = '✓ Mensagens e contexto sincronizados via TARS Bridge com sucesso!';
+        feedback.style.color = '#22c55e';
+      }
+    } else {
+      // Notify technician how to trigger capture from Hyperflow tab
+      if (feedback) {
+        feedback.innerHTML = `
+          ⚡ Solicitando dados ao TARS Bridge. Você também pode abrir a aba do Hyperflow e clicar em <b>"Sincronizar com Solar Agenda"</b> na extensão TARS.
+        `;
+        feedback.style.color = 'var(--amber)';
+      }
+      const guideModal = document.getElementById('sla-hyperflow-guide-modal-backdrop');
+      if (guideModal) guideModal.classList.add('visible');
+    }
+  }
+
+  // 4. Strict SLA Technical Notes Sub-Tab
   function renderNotesSubTab(item) {
     const list = document.getElementById('sla-modal-notes-list');
+    const badge = document.getElementById('sla-notes-count-badge');
     if (!list) return;
 
-    // Filter notes belonging to this SLA case or mentioning this SLA ID / SN
+    // Retrieve dedicated SLA technical notes
+    const slaNotes = item.technical_notes || [];
+    
+    // Also include legacy notes from window.notes if tagged with this case
     const allNotes = window.notes || [];
     const sn = item.equipment?.serial_numbers?.[0] || '';
-    const caseNotes = allNotes.filter(n => {
+    const legacyNotes = allNotes.filter(n => {
       if (n.sla_case_id === item.id) return true;
       if (n.tags && (n.tags.includes(item.id) || (sn && n.tags.includes(sn)))) return true;
-      const hay = `${n.title || ''} ${n.content || ''}`.toLowerCase();
-      if (hay.includes(item.id.toLowerCase())) return true;
-      if (sn && hay.includes(sn.toLowerCase())) return true;
       return false;
     });
 
-    if (!caseNotes.length) {
+    const totalCount = slaNotes.length + legacyNotes.length;
+    if (badge) badge.textContent = `${totalCount} ${totalCount === 1 ? 'parecer' : 'pareceres'}`;
+
+    if (!slaNotes.length && !legacyNotes.length) {
       list.innerHTML = `
-        <div style="grid-column:1 / -1; padding:32px 16px; text-align:center; background:rgba(255,255,255,0.02); border:1px dashed var(--line); border-radius:10px;">
-          <div style="font-weight:600; color:var(--text); margin-bottom:4px;">No Technical Notes Attached</div>
-          <div style="font-size:0.8rem; color:var(--muted); margin-bottom:12px;">Create technical diagnosis records, multimeter readings, checklists or ink drawings for this case.</div>
-          <button class="btn-primary" id="sla-empty-note-btn">+ Create First Case Note</button>
+        <div style="padding:32px 20px; text-align:center; background:rgba(0,0,0,0.22); border:1px dashed var(--line); border-radius:10px;">
+          <div style="font-size:1.1rem; margin-bottom:6px;">📋</div>
+          <div style="font-weight:700; color:var(--text); font-size:0.95rem; margin-bottom:4px;">Nenhum Laudo Técnico Formal Cadastrado</div>
+          <div style="font-size:0.82rem; color:var(--muted); max-width:480px; margin:0 auto 16px; line-height:1.5;">
+            Os laudos do SLA seguem critérios rigorosos de engenharia (ABNT NBR 16149 / 16274), checklists de conformidade, ensaios dielétricos e redação técnica formal com IA.
+          </div>
+          <button type="button" class="btn-primary" id="sla-empty-new-note-btn" style="font-size:0.84rem; padding:8px 18px;">
+            ⚡ + Criar Primeiro Laudo Técnico do Caso
+          </button>
         </div>
       `;
-      document.getElementById('sla-empty-note-btn')?.addEventListener('click', () => createCaseNote(item));
+      document.getElementById('sla-empty-new-note-btn')?.addEventListener('click', () => openSLANoteEditorModal(item));
       return;
     }
 
-    list.innerHTML = caseNotes.map(n => {
-      const updated = n.updated_at ? new Date(n.updated_at).toLocaleDateString() : '';
-      const snippet = n.content ? n.content.replace(/<[^>]*>/g, ' ').slice(0, 90) : '';
-      return `
-        <div class="sla-card" style="cursor:pointer; padding:12px;" data-noteid="${n.id}">
-          <div style="font-weight:700; font-size:0.92rem; color:var(--text); margin-bottom:4px;">${escapeHtml(n.title || 'Untitled Note')}</div>
-          <div style="font-size:0.78rem; color:var(--muted); line-height:1.4; margin-bottom:8px;">${escapeHtml(snippet)}</div>
-          <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.72rem; color:var(--muted);">
-            <span>${(n.tags || []).slice(0, 3).map(t => `#${t}`).join(' ')}</span>
-            <span>${updated}</span>
+    let html = '';
+
+    // Render Dedicated Strict SLA Notes
+    slaNotes.forEach((n, idx) => {
+      const catMeta = SLA_NOTE_CATEGORIES[n.category] || SLA_NOTE_CATEGORIES.acionamento_garantia;
+      const checkedCount = n.checklist_count !== undefined ? n.checklist_count : (n.checklist ? n.checklist.length : 0);
+      const isHighCompliance = checkedCount >= 7;
+      const createdDate = n.created_at ? new Date(n.created_at).toLocaleString('pt-BR') : 'Data não informada';
+      const m = n.measurements || {};
+      const hasMeasurements = m.vac || m.vdc || m.riso || m.error_code;
+
+      html += `
+        <div class="sla-card" style="padding:16px; border:1px solid var(--line); background:rgba(0,0,0,0.25); border-radius:10px;" data-slanoteid="${n.id}">
+          <!-- Note Card Header -->
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span class="sla-id-badge" style="background:${catMeta.bg}; color:${catMeta.color}; font-weight:700; font-size:0.75rem;">
+                ${escapeHtml(n.category_label || catMeta.label)}
+              </span>
+              <span class="sla-id-badge" style="background:${isHighCompliance ? 'rgba(34,197,94,0.15)' : 'rgba(245,158,11,0.15)'}; color:${isHighCompliance ? '#22c55e' : '#f59e0b'}; font-size:0.72rem;">
+                ✓ ${checkedCount}/9 Requisitos Atendidos
+              </span>
+            </div>
+            <div style="font-size:0.75rem; color:var(--muted); display:flex; align-items:center; gap:8px;">
+              <span>Responsável: <b>${escapeHtml(n.author || 'Especialista Solar')}</b></span>
+              <span>·</span>
+              <span>${createdDate}</span>
+            </div>
+          </div>
+
+          <!-- Measurements Strip -->
+          ${hasMeasurements ? `
+            <div style="display:flex; gap:12px; flex-wrap:wrap; background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:6px; padding:8px 12px; margin-bottom:10px; font-size:0.8rem; font-family:monospace;">
+              ${m.vac ? `<div><span style="color:var(--muted);">Vac:</span> <b style="color:var(--text);">${escapeHtml(m.vac)}</b></div>` : ''}
+              ${m.vdc ? `<div><span style="color:var(--muted);">Vdc:</span> <b style="color:var(--text);">${escapeHtml(m.vdc)}</b></div>` : ''}
+              ${m.riso ? `<div><span style="color:var(--muted);">Riso:</span> <b style="color:#22c55e;">${escapeHtml(m.riso)}</b></div>` : ''}
+              ${m.error_code ? `<div><span style="color:var(--muted);">Alarme:</span> <b style="color:#ef4444;">${escapeHtml(m.error_code)}</b></div>` : ''}
+            </div>
+          ` : ''}
+
+          <!-- Checked Standards Chips -->
+          ${n.checklist && n.checklist.length ? `
+            <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
+              ${n.checklist.map(k => {
+                const def = SLA_CHECKLIST_DEFS.find(d => d.key === k || d.id === k);
+                return `<span style="font-size:0.7rem; padding:2px 8px; border-radius:4px; background:rgba(34,197,94,0.1); color:#4ade80; border:1px solid rgba(34,197,94,0.25);">✓ ${escapeHtml(def ? def.standard : k)}</span>`;
+              }).join('')}
+            </div>
+          ` : ''}
+
+          <!-- Main Text Body -->
+          <div style="font-size:0.85rem; line-height:1.55; color:var(--text); white-space:pre-wrap; background:rgba(0,0,0,0.18); border-radius:6px; padding:10px; border-left:3px solid ${catMeta.color}; margin-bottom:10px;">${escapeHtml(n.text || '')}</div>
+
+          <!-- Note Actions -->
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="btn-ghost sla-copy-note-btn" data-slanoteid="${n.id}" style="font-size:0.75rem; padding:3px 10px;">
+              📋 Copiar Parecer
+            </button>
+            <button type="button" class="btn-ghost sla-edit-note-btn" data-slanoteid="${n.id}" style="font-size:0.75rem; padding:3px 10px; color:var(--amber);">
+              ✏️ Editar
+            </button>
+            <button type="button" class="btn-ghost sla-del-note-btn" data-slanoteid="${n.id}" style="font-size:0.75rem; padding:3px 10px; color:#ef4444;">
+              🗑️ Excluir
+            </button>
           </div>
         </div>
       `;
-    }).join('');
+    });
 
-    list.querySelectorAll('[data-noteid]').forEach(el => {
-      el.addEventListener('click', () => {
-        const nId = el.dataset.noteid;
-        if (typeof window.openNote === 'function') {
-          window.openNote(nId);
-        }
+    // Render Legacy General Notes
+    legacyNotes.forEach(ln => {
+      const updated = ln.updated_at ? new Date(ln.updated_at).toLocaleDateString('pt-BR') : '';
+      const snippet = ln.content ? ln.content.replace(/<[^>]*>/g, ' ').slice(0, 160) : '';
+      html += `
+        <div class="sla-card" style="padding:12px; border:1px solid var(--line); border-radius:8px; background:rgba(255,255,255,0.02);" data-legacynoteid="${ln.id}">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <span class="sla-id-badge" style="background:rgba(255,255,255,0.06); color:var(--muted); font-size:0.7rem;">Nota Geral / Anotação</span>
+            <span style="font-size:0.72rem; color:var(--muted);">${updated}</span>
+          </div>
+          <div style="font-weight:700; font-size:0.88rem; color:var(--text); margin-bottom:4px;">${escapeHtml(ln.title || 'Sem título')}</div>
+          <div style="font-size:0.78rem; color:var(--muted); line-height:1.4; margin-bottom:8px;">${escapeHtml(snippet)}</div>
+          <button type="button" class="btn-ghost" style="font-size:0.72rem; padding:2px 8px;" onclick="if(typeof window.openNote==='function') window.openNote('${ln.id}')">Abrir no Bloco de Notas ↗</button>
+        </div>
+      `;
+    });
+
+    list.innerHTML = html;
+
+    // Bind Action Buttons
+    list.querySelectorAll('.sla-copy-note-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const noteId = btn.dataset.slanoteid;
+        const targetNote = slaNotes.find(n => n.id === noteId);
+        if (!targetNote) return;
+
+        const copyText = `[PARECER TÉCNICO SLA — ${targetNote.category_label || targetNote.category}]\nCaso: ${item.id}\nEquipamento: ${item.equipment?.manufacturer || ''} ${item.equipment?.model || ''} (SN: ${item.equipment?.serial_numbers?.[0] || 'N/A'})\nResponsável: ${targetNote.author || 'Engenharia Solar'}\nData: ${new Date(targetNote.created_at).toLocaleString('pt-BR')}\nMedições: Vac: ${targetNote.measurements?.vac || '—'} | Vdc: ${targetNote.measurements?.vdc || '—'} | Riso: ${targetNote.measurements?.riso || '—'} | Alarme: ${targetNote.measurements?.error_code || '—'}\n\n${targetNote.text}`;
+        
+        navigator.clipboard.writeText(copyText).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = '✓ Copiado!';
+          setTimeout(() => { btn.textContent = orig; }, 2000);
+        }).catch(() => alert('Copiado para área de transferência!'));
+      });
+    });
+
+    list.querySelectorAll('.sla-edit-note-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const noteId = btn.dataset.slanoteid;
+        const targetNote = slaNotes.find(n => n.id === noteId);
+        if (targetNote) openSLANoteEditorModal(item, targetNote);
+      });
+    });
+
+    list.querySelectorAll('.sla-del-note-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!confirm('Deseja realmente excluir este laudo técnico do caso?')) return;
+        const noteId = btn.dataset.slanoteid;
+        item.technical_notes = (item.technical_notes || []).filter(n => n.id !== noteId);
+        addTimelineEvent(item.id, {
+          type: 'note',
+          title: 'Laudo Técnico Removido',
+          detail: `Nota técnica ${noteId} removida do caso.`
+        });
+        saveSLACaseApi(item);
+        renderNotesSubTab(item);
       });
     });
   }
 
-  // Create a note specifically bound to this SLA Case
-  async function createCaseNote(item) {
-    const sn = item.equipment?.serial_numbers?.[0] || '';
-    const mfr = item.equipment?.manufacturer || '';
-    const notebookId = (window.notebooks && window.notebooks[0] ? window.notebooks[0].id : 'default');
-    const newNote = {
-      title: `${item.id} — ${item.customer?.name || 'Cliente'} (Nota Técnica)`,
-      content: `<h3>Diagnóstico Técnico SLA ${item.id}</h3><p><b>Cliente:</b> ${item.customer?.name || ''}<br><b>Equipamento:</b> ${mfr} ${item.equipment?.model || ''}<br><b>Número de Série:</b> ${sn}</p><p><b>Problema Relatado:</b> ${item.problem_summary || ''}</p><hr><p><b>Procedimentos realizados / medições:</b></p><ul><li>Tensão CA Fase-Neutro: </li><li>Resistência de Isolamento: </li><li>Tensão CC dos Strings: </li></ul>`,
-      tags: ['sla', item.id, mfr, sn].filter(Boolean),
-      sla_case_id: item.id,
-      notebook_id: notebookId
-    };
+  // Open the Dedicated Strict SLA Technical Note Editor Modal
+  function openSLANoteEditorModal(item, noteToEdit = null) {
+    const modal = document.getElementById('sla-note-editor-modal-backdrop');
+    if (!modal) return;
 
-    try {
-      let created = null;
-      if (typeof window.createNoteApi === 'function') {
-        created = await window.createNoteApi(newNote);
+    currentEditingNoteId = noteToEdit ? noteToEdit.id : null;
+
+    const caseBadge = document.getElementById('sla-note-modal-case-badge');
+    const contextEl = document.getElementById('sla-note-modal-context');
+    const catSelect = document.getElementById('sla-note-form-category');
+    const authorInput = document.getElementById('sla-note-form-author');
+    const vacInput = document.getElementById('sla-note-meas-vac');
+    const vdcInput = document.getElementById('sla-note-meas-vdc');
+    const risoInput = document.getElementById('sla-note-meas-riso');
+    const errorInput = document.getElementById('sla-note-meas-error');
+    const formText = document.getElementById('sla-note-form-text');
+    const aiStatus = document.getElementById('sla-note-ai-status');
+
+    if (caseBadge) caseBadge.textContent = item.id;
+    if (contextEl) {
+      contextEl.innerHTML = `
+        Cliente: <b>${escapeHtml(item.customer?.name || 'Cliente')}</b> · 
+        Equipamento: <b>${escapeHtml(item.equipment?.manufacturer || 'Inversor')} ${escapeHtml(item.equipment?.model || '')}</b> 
+        (SN: <span style="font-family:monospace; color:var(--amber); font-weight:600;">${escapeHtml(item.equipment?.serial_numbers?.[0] || 'N/A')}</span>)
+      `;
+    }
+
+    // Populate or reset inputs
+    if (catSelect) catSelect.value = noteToEdit?.category || 'acionamento_garantia';
+    if (authorInput) authorInput.value = noteToEdit?.author || (window.currentUser?.name || 'Eng. Técnico de Suporte Solar');
+    
+    // Checklists
+    const checkedKeys = new Set(noteToEdit?.checklist || []);
+    SLA_CHECKLIST_DEFS.forEach(def => {
+      const chk = document.getElementById(def.elId);
+      if (chk) chk.checked = checkedKeys.has(def.key) || checkedKeys.has(def.id);
+    });
+
+    // Measurements
+    if (vacInput) vacInput.value = noteToEdit?.measurements?.vac || '';
+    if (vdcInput) vdcInput.value = noteToEdit?.measurements?.vdc || '';
+    if (risoInput) risoInput.value = noteToEdit?.measurements?.riso || '';
+    if (errorInput) errorInput.value = noteToEdit?.measurements?.error_code || '';
+
+    // Observations
+    if (formText) {
+      if (noteToEdit) {
+        formText.value = noteToEdit.text || '';
       } else {
-        created = {
-          id: 'note_' + Date.now(),
-          ...newNote,
-          created_at: new Date().toISOString()
-        };
-        if (!window.notes) window.notes = [];
-        window.notes.unshift(created);
-      }
-      addTimelineEvent(item.id, {
-        type: 'note',
-        title: 'Nota Técnica Criada',
-        detail: `Nota "${newNote.title}" associada ao caso.`
-      });
-      saveSLACaseApi(item);
-      renderNotesSubTab(item);
-      if (typeof window.openNote === 'function' && created && created.id) {
-        window.openNote(created.id);
-      }
-    } catch (err) {
-      console.warn('Note API encountered error, falling back locally:', err);
-      const fallbackNote = {
-        id: 'note_' + Date.now(),
-        ...newNote,
-        created_at: new Date().toISOString()
-      };
-      if (!window.notes) window.notes = [];
-      window.notes.unshift(fallbackNote);
-      addTimelineEvent(item.id, {
-        type: 'note',
-        title: 'Nota Técnica Criada (Local)',
-        detail: `Nota "${newNote.title}" associada localmente.`
-      });
-      saveSLACaseApi(item);
-      renderNotesSubTab(item);
-      if (typeof window.openNote === 'function') {
-        window.openNote(fallbackNote.id);
+        // Custom blank starter (user can write directly or load case data)
+        formText.value = '';
       }
     }
+    if (aiStatus) aiStatus.textContent = '';
+
+    // Bind real-time update listeners for live preview
+    const updatePreview = () => updateSLANoteLivePreview(item);
+
+    document.querySelectorAll('.sla-rule-chk').forEach(chk => {
+      chk.onchange = updatePreview;
+    });
+    if (catSelect) catSelect.onchange = updatePreview;
+    if (authorInput) authorInput.oninput = updatePreview;
+    if (vacInput) vacInput.oninput = updatePreview;
+    if (vdcInput) vdcInput.oninput = updatePreview;
+    if (risoInput) risoInput.oninput = updatePreview;
+    if (errorInput) errorInput.oninput = updatePreview;
+    if (formText) formText.oninput = updatePreview;
+
+    // Load Case Data button
+    const loadCaseBtn = document.getElementById('sla-note-load-case-btn');
+    if (loadCaseBtn) {
+      loadCaseBtn.onclick = () => {
+        const sn = item.equipment?.serial_numbers?.[0] || 'N/A';
+        const mfr = item.equipment?.manufacturer || 'Inversor';
+        const model = item.equipment?.model || '';
+        const prob = item.problem_summary || '';
+        
+        let draft = `Vistoria técnica e análise de conformidade para o inversor ${mfr} ${model} (SN: ${sn}).\n\n`;
+        draft += `Constatações preliminares em campo: Apresenta comportamento condizente com ${prob || 'falha operacional no sistema'}.\n`;
+        draft += `Realizados ensaios de continuidade, medição de grandezas elétricas e verificação de integridade das proteções CA/CC conforme normas vigentes.`;
+
+        if (formText) formText.value = draft;
+        updatePreview();
+      };
+    }
+
+    // AI Rephrase button
+    const aiBtn = document.getElementById('sla-note-ai-rephrase-btn');
+    if (aiBtn) {
+      aiBtn.onclick = () => rephraseSLANoteWithTarsAI(item);
+    }
+
+    // Modal Close and Cancel buttons
+    const closeBtn = document.getElementById('sla-note-modal-close');
+    const cancelBtn = document.getElementById('sla-note-modal-cancel');
+    const saveBtn = document.getElementById('sla-note-modal-save');
+
+    if (closeBtn) closeBtn.onclick = () => modal.classList.remove('visible');
+    if (cancelBtn) cancelBtn.onclick = () => modal.classList.remove('visible');
+    if (saveBtn) saveBtn.onclick = () => saveCurrentSLANote(item);
+
+    // Initial preview render
+    updatePreview();
+
+    // Show modal
+    modal.classList.add('visible');
+  }
+
+  // Real-time Live Preview Renderer
+  function updateSLANoteLivePreview(item) {
+    const previewEl = document.getElementById('sla-note-live-preview-content');
+    const previewBadge = document.getElementById('sla-preview-badge');
+    const countBadge = document.getElementById('sla-note-checklist-count');
+    if (!previewEl) return;
+
+    const catSelect = document.getElementById('sla-note-form-category');
+    const authorInput = document.getElementById('sla-note-form-author');
+    const vacInput = document.getElementById('sla-note-meas-vac');
+    const vdcInput = document.getElementById('sla-note-meas-vdc');
+    const risoInput = document.getElementById('sla-note-meas-riso');
+    const errorInput = document.getElementById('sla-note-meas-error');
+    const formText = document.getElementById('sla-note-form-text');
+
+    const catKey = catSelect ? catSelect.value : 'acionamento_garantia';
+    const catMeta = SLA_NOTE_CATEGORIES[catKey] || SLA_NOTE_CATEGORIES.acionamento_garantia;
+    const author = authorInput ? (authorInput.value.trim() || 'Especialista Solar') : 'Especialista Solar';
+
+    const vac = vacInput ? vacInput.value.trim() : '';
+    const vdc = vdcInput ? vdcInput.value.trim() : '';
+    const riso = risoInput ? risoInput.value.trim() : '';
+    const errCode = errorInput ? errorInput.value.trim() : '';
+    const obs = formText ? formText.value.trim() : '';
+
+    // Count checked
+    let checkedCount = 0;
+    const checkedDefs = [];
+    SLA_CHECKLIST_DEFS.forEach(def => {
+      const chk = document.getElementById(def.elId);
+      if (chk && chk.checked) {
+        checkedCount++;
+        checkedDefs.push(def);
+      }
+    });
+
+    if (countBadge) {
+      countBadge.textContent = `${checkedCount}/9 Marcados`;
+      countBadge.style.color = checkedCount >= 7 ? '#22c55e' : (checkedCount >= 4 ? '#f59e0b' : 'var(--muted)');
+    }
+
+    if (previewBadge) {
+      previewBadge.textContent = checkedCount === 9 ? 'CONFORME ABNT' : (checkedCount >= 6 ? 'APTO P/ GARANTIA' : 'EM ELABORAÇÃO');
+      previewBadge.style.color = checkedCount >= 7 ? '#22c55e' : '#f59e0b';
+      previewBadge.style.background = checkedCount >= 7 ? 'rgba(34,197,94,0.2)' : 'rgba(245,158,11,0.2)';
+    }
+
+    const percent = Math.round((checkedCount / 9) * 100);
+
+    previewEl.innerHTML = `
+      <div style="background:rgba(255,255,255,0.02); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:10px;">
+        <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:2px;">DOCUMENTO TÉCNICO FORMAL</div>
+        <div style="font-size:0.92rem; font-weight:700; color:${catMeta.color}; margin-bottom:6px;">${catMeta.label}</div>
+        <div style="font-size:0.75rem; color:var(--muted); line-height:1.4;">
+          Caso: <b>${escapeHtml(item.id)}</b> · Equipamento: <b>${escapeHtml(item.equipment?.manufacturer || '')} ${escapeHtml(item.equipment?.model || '')}</b><br>
+          SN: <span style="font-family:monospace; color:var(--amber); font-weight:600;">${escapeHtml(item.equipment?.serial_numbers?.[0] || 'N/A')}</span> · Autor: <b>${escapeHtml(author)}</b>
+        </div>
+      </div>
+
+      <!-- Conformity Progress -->
+      <div style="margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:4px;">
+          <span>Conformidade com Normas ABNT:</span>
+          <b style="color:${percent >= 70 ? '#22c55e' : '#f59e0b'};">${checkedCount}/9 Requisitos (${percent}%)</b>
+        </div>
+        <div style="height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden;">
+          <div style="width:${percent}%; height:100%; background:${percent >= 70 ? '#22c55e' : '#f59e0b'}; transition:width 0.25s ease;"></div>
+        </div>
+      </div>
+
+      <!-- Electrical Measurements Summary -->
+      <div style="background:rgba(0,0,0,0.2); border:1px solid var(--line); border-radius:6px; padding:8px 10px; margin-bottom:10px;">
+        <div style="font-size:0.72rem; text-transform:uppercase; color:var(--muted); font-weight:600; margin-bottom:4px;">Medições Registradas:</div>
+        <div style="display:grid; grid-template-columns:repeat(2, 1fr); gap:6px; font-size:0.78rem; font-family:monospace;">
+          <div>Vac: <b style="color:var(--text);">${escapeHtml(vac || '—')}</b></div>
+          <div>Vdc: <b style="color:var(--text);">${escapeHtml(vdc || '—')}</b></div>
+          <div>Riso: <b style="color:#22c55e;">${escapeHtml(riso || '—')}</b></div>
+          <div>Alarme: <b style="color:#ef4444;">${escapeHtml(errCode || '—')}</b></div>
+        </div>
+      </div>
+
+      <!-- Standards Checklist Summary -->
+      ${checkedDefs.length ? `
+        <div style="margin-bottom:10px;">
+          <div style="font-size:0.72rem; text-transform:uppercase; color:var(--muted); font-weight:600; margin-bottom:4px;">Itens Verificados:</div>
+          <div style="display:flex; flex-direction:column; gap:3px;">
+            ${checkedDefs.map(d => `
+              <div style="font-size:0.74rem; color:var(--text); display:flex; align-items:center; gap:6px;">
+                <span style="color:#22c55e;">✓</span>
+                <span>${escapeHtml(d.standard)}: ${escapeHtml(d.label)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : `
+        <div style="font-size:0.75rem; color:var(--muted); font-style:italic; margin-bottom:10px;">
+          Nenhum item do checklist ABNT selecionado ainda.
+        </div>
+      `}
+
+      <!-- Diagnosis & Text -->
+      <div>
+        <div style="font-size:0.72rem; text-transform:uppercase; color:var(--muted); font-weight:600; margin-bottom:4px;">Parecer Conclusivo:</div>
+        <div style="font-size:0.8rem; line-height:1.5; color:var(--text); white-space:pre-wrap; background:rgba(0,0,0,0.15); padding:8px; border-radius:6px; border:1px solid var(--line);">
+          ${escapeHtml(obs || 'Descreva os procedimentos e parecer técnico no campo ao lado para visualização prévia em tempo real.')}
+        </div>
+      </div>
+    `;
+  }
+
+  // AI Rephrase caller for SLA Notes
+  async function rephraseSLANoteWithTarsAI(item) {
+    const formText = document.getElementById('sla-note-form-text');
+    const aiStatus = document.getElementById('sla-note-ai-status');
+    const catSelect = document.getElementById('sla-note-form-category');
+    const vacInput = document.getElementById('sla-note-meas-vac');
+    const vdcInput = document.getElementById('sla-note-meas-vdc');
+    const risoInput = document.getElementById('sla-note-meas-riso');
+    const errorInput = document.getElementById('sla-note-meas-error');
+    const authorInput = document.getElementById('sla-note-form-author');
+
+    if (!formText) return;
+
+    const draft = formText.value.trim();
+    const catKey = catSelect ? catSelect.value : 'acionamento_garantia';
+    const catMeta = SLA_NOTE_CATEGORIES[catKey] || SLA_NOTE_CATEGORIES.acionamento_garantia;
+
+    const checkedItems = [];
+    SLA_CHECKLIST_DEFS.forEach(def => {
+      const chk = document.getElementById(def.elId);
+      if (chk && chk.checked) checkedItems.push(def.label);
+    });
+
+    const measurements = {
+      vac: vacInput?.value?.trim() || '',
+      vdc: vdcInput?.value?.trim() || '',
+      riso: risoInput?.value?.trim() || '',
+      error_code: errorInput?.value?.trim() || ''
+    };
+
+    if (aiStatus) {
+      aiStatus.textContent = '⚡ TARS AI estruturando redação técnica de engenharia...';
+      aiStatus.style.color = 'var(--amber)';
+    }
+
+    try {
+      const res = await fetch('/api/sla-notes/rephrase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          note: {
+            text: draft,
+            category: catKey,
+            category_label: catMeta.label,
+            author: authorInput?.value || 'Engenharia Solar',
+            measurements,
+            checklist: checkedItems
+          },
+          caseItem: {
+            id: item.id,
+            customer: item.customer,
+            equipment: item.equipment,
+            problem_summary: item.problem_summary,
+            status: item.status
+          }
+        })
+      });
+
+      const data = await res.json();
+      if (data.rephrasedText) {
+        formText.value = data.rephrasedText;
+        updateSLANoteLivePreview(item);
+        if (aiStatus) {
+          aiStatus.textContent = '✓ Parecer técnico reescrito com sucesso em linguagem formal de garantia!';
+          aiStatus.style.color = '#22c55e';
+          setTimeout(() => { if (aiStatus) aiStatus.textContent = ''; }, 4000);
+        }
+      } else {
+        throw new Error(data.error || 'Falha ao reescrever parecer');
+      }
+    } catch (err) {
+      console.warn('Rephrase failed, applying local engineering structuring:', err);
+      // Local fallback formatter
+      let formal = `LAUDO TÉCNICO FORMAL — ${catMeta.label.toUpperCase()}\n`;
+      formal += `Equipamento: ${item.equipment?.manufacturer || 'Inversor'} ${item.equipment?.model || ''} | Nº Série: ${item.equipment?.serial_numbers?.[0] || 'N/A'}\n\n`;
+      formal += `1. DIAGNÓSTICO E CONSTATACÕES DE ENGENHARIA:\n`;
+      formal += `${draft || 'Em análise técnica in loco e telemetria, constatou-se a necessidade de acionamento de protocolo de assistência técnica e garantia.'}\n\n`;
+      formal += `2. ENSAIOS E CONFORMIDADE NORMATIVA (ABNT NBR 16149 / 16274):\n`;
+      if (measurements.vac || measurements.vdc || measurements.riso || measurements.error_code) {
+        formal += `- Parâmetros Aferidos: Vac=${measurements.vac || 'N/A'}, Vdc=${measurements.vdc || 'N/A'}, Riso=${measurements.riso || 'N/A'}, Alarme=${measurements.error_code || 'N/A'}.\n`;
+      }
+      if (checkedItems.length) {
+        formal += `- Requisitos Validados: ${checkedItems.join('; ')}.\n`;
+      }
+      formal += `\n3. PARECER CONCLUSIVO:\nConclui-se que o equipamento atende aos critérios para prosseguimento do protocolo de assistência/substituição junto ao fabricante.`;
+
+      formText.value = formal;
+      updateSLANoteLivePreview(item);
+      if (aiStatus) {
+        aiStatus.textContent = '✓ Laudo estruturado localmente.';
+        aiStatus.style.color = '#22c55e';
+        setTimeout(() => { if (aiStatus) aiStatus.textContent = ''; }, 3500);
+      }
+    }
+  }
+
+  // Save the current SLA Note
+  function saveCurrentSLANote(item) {
+    const catSelect = document.getElementById('sla-note-form-category');
+    const authorInput = document.getElementById('sla-note-form-author');
+    const vacInput = document.getElementById('sla-note-meas-vac');
+    const vdcInput = document.getElementById('sla-note-meas-vdc');
+    const risoInput = document.getElementById('sla-note-meas-riso');
+    const errorInput = document.getElementById('sla-note-meas-error');
+    const formText = document.getElementById('sla-note-form-text');
+
+    const catKey = catSelect ? catSelect.value : 'acionamento_garantia';
+    const catMeta = SLA_NOTE_CATEGORIES[catKey] || SLA_NOTE_CATEGORIES.acionamento_garantia;
+    const author = authorInput ? (authorInput.value.trim() || 'Eng. Técnico de Suporte Solar') : 'Eng. Técnico de Suporte Solar';
+    const text = formText ? formText.value.trim() : '';
+
+    if (!text) {
+      alert('Por favor, informe o parecer técnico ou diagnóstico antes de salvar.');
+      return;
+    }
+
+    const checkedKeys = [];
+    SLA_CHECKLIST_DEFS.forEach(def => {
+      const chk = document.getElementById(def.elId);
+      if (chk && chk.checked) checkedKeys.push(def.key);
+    });
+
+    const measurements = {
+      vac: vacInput?.value?.trim() || '',
+      vdc: vdcInput?.value?.trim() || '',
+      riso: risoInput?.value?.trim() || '',
+      error_code: errorInput?.value?.trim() || ''
+    };
+
+    if (!item.technical_notes) item.technical_notes = [];
+
+    if (currentEditingNoteId) {
+      // Update existing
+      const idx = item.technical_notes.findIndex(n => n.id === currentEditingNoteId);
+      if (idx !== -1) {
+        item.technical_notes[idx] = {
+          ...item.technical_notes[idx],
+          category: catKey,
+          category_label: catMeta.label,
+          author,
+          text,
+          measurements,
+          checklist: checkedKeys,
+          checklist_count: checkedKeys.length,
+          checklist_total: 9,
+          updated_at: new Date().toISOString()
+        };
+      }
+    } else {
+      // Create new
+      const newNote = {
+        id: 'slanote_' + Date.now(),
+        sla_case_id: item.id,
+        category: catKey,
+        category_label: catMeta.label,
+        author,
+        text,
+        measurements,
+        checklist: checkedKeys,
+        checklist_count: checkedKeys.length,
+        checklist_total: 9,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      item.technical_notes.unshift(newNote);
+    }
+
+    addTimelineEvent(item.id, {
+      type: 'note',
+      title: `Laudo Técnico Emitido: ${catMeta.label}`,
+      detail: `${checkedKeys.length}/9 conformidades ABNT validadas por ${author}.`
+    });
+
+    saveSLACaseApi(item);
+    renderNotesSubTab(item);
+
+    const modal = document.getElementById('sla-note-editor-modal-backdrop');
+    if (modal) modal.classList.remove('visible');
   }
 
   // 5. Equipment Panel
@@ -1550,16 +2188,52 @@
     }
   }
 
-  // 6. Protocols Panel
+  // 6. Protocols Panel (Hyperflow, Jira, Hoymiles)
   function renderProtocolsPanel(item) {
     const hfInput = document.getElementById('sla-proto-hf-input');
+    const hfUrlInput = document.getElementById('sla-proto-hf-url-input');
     const hfBadge = document.getElementById('sla-proto-hf-badge');
+    const hfOpenLink = document.getElementById('sla-proto-hf-open-link');
+    const hfSyncBtn = document.getElementById('sla-proto-hf-sync-bridge-btn');
+
     const jiraNum = document.getElementById('sla-proto-jira-num');
     const jiraBoard = document.getElementById('sla-proto-jira-board');
     const jiraBadge = document.getElementById('sla-proto-jira-badge');
 
-    if (hfInput) hfInput.value = item.protocols?.hyperflow_id || '';
-    if (hfBadge) hfBadge.textContent = item.protocols?.hyperflow_id ? `Linked: ${item.protocols.hyperflow_id}` : 'Not Linked';
+    const hfId = item.protocols?.hyperflow_id || item.conversation?.protocol || '';
+    const hfUrl = item.protocols?.hyperflow_url || item.conversation?.conversation_url || '';
+
+    if (hfInput) hfInput.value = hfId;
+    if (hfUrlInput) hfUrlInput.value = hfUrl;
+
+    if (hfBadge) {
+      if (hfId && hfUrl) {
+        hfBadge.textContent = `VINCULADO: ${hfId} (CHAT ATIVO)`;
+        hfBadge.style.background = 'rgba(34,197,94,0.15)';
+        hfBadge.style.color = '#22c55e';
+      } else if (hfId) {
+        hfBadge.textContent = `PROTOCOLO: ${hfId}`;
+        hfBadge.style.background = 'rgba(245,158,11,0.15)';
+        hfBadge.style.color = '#f59e0b';
+      } else {
+        hfBadge.textContent = 'NÃO VINCULADO';
+        hfBadge.style.background = 'rgba(255,255,255,0.06)';
+        hfBadge.style.color = 'var(--muted)';
+      }
+    }
+
+    if (hfOpenLink) {
+      if (hfUrl) {
+        hfOpenLink.href = hfUrl;
+        hfOpenLink.style.display = 'inline-flex';
+      } else {
+        hfOpenLink.style.display = 'none';
+      }
+    }
+
+    if (hfSyncBtn) {
+      hfSyncBtn.onclick = () => syncConversationFromTarsBridge(item);
+    }
 
     const primaryJira = item.protocols?.jira?.[0];
     if (primaryJira) {
@@ -2377,7 +3051,7 @@
 
     // Notes Sub-Tab bindings
     document.getElementById('sla-new-case-note-btn')?.addEventListener('click', () => {
-      if (currentSLACase) createCaseNote(currentSLACase);
+      if (currentSLACase) openSLANoteEditorModal(currentSLACase);
     });
     document.getElementById('sla-attach-unassigned-note-btn')?.addEventListener('click', () => {
       if (!currentSLACase) return;
@@ -2402,11 +3076,18 @@
     document.getElementById('sla-proto-save-btn')?.addEventListener('click', () => {
       if (!currentSLACase) return;
       const hfVal = document.getElementById('sla-proto-hf-input')?.value.trim();
+      const hfUrl = document.getElementById('sla-proto-hf-url-input')?.value.trim();
       const board = document.getElementById('sla-proto-jira-board')?.value;
       const issueKey = document.getElementById('sla-proto-jira-num')?.value.trim();
 
       if (!currentSLACase.protocols) currentSLACase.protocols = {};
+      if (!currentSLACase.conversation) currentSLACase.conversation = {};
+
       currentSLACase.protocols.hyperflow_id = hfVal;
+      currentSLACase.protocols.hyperflow_url = hfUrl;
+      currentSLACase.conversation.protocol = hfVal;
+      currentSLACase.conversation.conversation_url = hfUrl;
+
       if (issueKey) {
         currentSLACase.protocols.jira = [
           { board: board, issue_key: issueKey, summary: `Warranty protocol for ${currentSLACase.id}`, status: 'In Progress' }
@@ -2414,12 +3095,13 @@
       }
       addTimelineEvent(currentSLACase.id, {
         type: 'jira_update',
-        title: 'Protocols Updated',
-        detail: `Hyperflow: ${hfVal || 'None'} | Jira: ${board}-${issueKey || 'None'}`
+        title: 'Protocolos Atualizados',
+        detail: `Hyperflow: ${hfVal || 'None'} ${hfUrl ? `(Link: ${hfUrl})` : ''} | Jira: ${board}-${issueKey || 'None'}`
       });
       saveSLACaseApi(currentSLACase);
       renderProtocolsPanel(currentSLACase);
-      alert('Protocols saved successfully!');
+      renderConversationPanel(currentSLACase);
+      alert('Protocolos salvos com sucesso!');
     });
 
     // Jira Open Button

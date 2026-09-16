@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TARS Vision Bridge",
-  "version": "1.2.37",
-  "description": "TARS Vision Bridge with Hyperflow memory, Hoymiles installer automation, SLA webhook layer, and diagnostics.",
+  "version": "1.2.81",
+  "description": "TARS Vision Bridge (v1.2.81) Observer Mode: Passive event collection, Hyperflow observation, SLA layer, and diagnostics.",
   "permissions": [
     "activeTab",
     "scripting",

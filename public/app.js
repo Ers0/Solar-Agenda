@@ -221,11 +221,12 @@ document.getElementById("tab-agenda").addEventListener("click", () => switchView
 document.getElementById("tab-history").addEventListener("click", () => switchView("history"));
 document.getElementById("tab-calendar")?.addEventListener("click", () => switchView("calendar"));
 document.getElementById("tab-sla")?.addEventListener("click", () => switchView("sla"));
+document.getElementById("tab-observer")?.addEventListener("click", () => switchView("observer"));
 document.getElementById("tab-notebooks")?.addEventListener("click", () => switchView("notebooks"));
 document.getElementById("tab-settings")?.addEventListener("click", () => switchView("settings"));
 function switchView(view){
   TarsContext.page = view;
-  ["agenda","history","calendar","sla","notebooks","galaxy","settings"].forEach(v => {
+  ["agenda","history","calendar","sla","observer","notebooks","galaxy","settings"].forEach(v => {
     const el = document.getElementById("view-" + v);
     if(el) el.classList.toggle("hidden", v !== view);
     document.getElementById("tab-" + v)?.classList.toggle("active", v === view);
@@ -240,6 +241,7 @@ function switchView(view){
   requestAnimationFrame(() => setRain());
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if(view === "sla"){ if(window.SLAHub) window.SLAHub.render(); }
+  if(view === "observer"){ if(window.TARSObserverUI) window.TARSObserverUI.render(); }
   if(view === "calendar") renderCalendar();
   if(view === "history") renderHistory();
   if(view === "settings") renderSettings();
@@ -9401,6 +9403,7 @@ const VIEW_HEAD = {
   history:   { title:'Case history',    sub: () => `${(cases||[]).filter(x=>x.status==='resolvido').length} CLOSED RECORDS` },
   calendar:  { title:'Calendar',        sub: () => `${new Date().toLocaleDateString(undefined,{month:'long',year:'numeric'}).toUpperCase()} · ${(cases||[]).length} CASES` },
   sla:       { title:'SLA Hub',         sub: () => `${(Array.isArray(window.slaCases) ? window.slaCases : []).filter(x=>!['RESOLVED','CLOSED','CANCELED'].includes(x.status)).length} ACTIVE CASES · PERSISTENT CONTROL LAYER` },
+  observer:  { title:'TARS Observer Hub', sub: () => 'PASSIVE OBSERVER MODE (v1.2.81) · EVENT-SOURCED LEARNING' },
   notebooks: { title:'Notebooks',       sub: () => `${(notes||[]).length} NOTES · ${(notebooks||[]).length} NOTEBOOKS` },
   settings:  { title:'Settings',        sub: () => 'ASSISTANT · VOICE · WRITING · KNOWLEDGE' },
 };
@@ -11023,6 +11026,9 @@ const VisionBridge = {
       domLength: msg.domLength || 0,
       at: Date.now(),
     };
+    try {
+      window.dispatchEvent(new CustomEvent('tars-bridge-frame', { detail: this.pending }));
+    } catch (_) {}
 
     // Previously this called Screen_.ask() directly, which returns a
     // DESCRIPTION and nothing else — no tools, no grounding, no confidence.
@@ -11145,6 +11151,7 @@ const VisionBridge = {
   },
 };
 VisionBridge.install();
+window.VisionBridge = VisionBridge;
 
 
 // Page context, expressed as part of the question. Kept small: a whole page of

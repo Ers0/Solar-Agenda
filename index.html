@@ -63,6 +63,7 @@
     <button class="bn-item rail-item" data-view="history" title="History"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 8v4l3 2"/></svg><span>Log</span></button>
     <button class="bn-item rail-item" data-view="calendar" title="Calendar"><svg viewBox="0 0 24 24"><path d="M4 6h16v14H4zM4 10h16M8 4v4M16 4v4"/></svg><span>Cal</span></button>
     <button class="bn-item rail-item" data-view="sla" title="SLA Hub" id="rail-sla-btn"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="3"/><path d="M12 10v2l1 1"/></svg><span>SLA</span></button>
+    <button class="bn-item rail-item" data-view="observer" title="TARS Observer Mode (v1.2.81)" id="rail-observer-btn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><path d="M12 9v1M12 14v1"/></svg><span>Observer</span></button>
     <button class="bn-item rail-item" data-view="galaxy" title="Knowledge galaxy"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M6 6l12 12M18 6L6 18"/></svg><span>Galaxy</span></button>
     <button class="bn-item rail-item" data-view="settings" title="Settings"><svg viewBox="0 0 24 24"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6M12 2v3M12 19v3M4 4l2 2M18 18l2 2M2 12h3M19 12h3M4 20l2-2M18 6l2-2"/></svg><span>Set</span></button>
     <div class="rail-gap"></div>
@@ -95,6 +96,7 @@
         <button class="nav-tab" id="tab-history">History</button>
         <button class="nav-tab" id="tab-calendar">Calendar</button>
         <button class="nav-tab" id="tab-sla">SLA</button>
+        <button class="nav-tab" id="tab-observer">Observer</button>
         <button class="nav-tab" id="tab-settings">Settings</button>
       </div>
       <span class="user-pill" id="user-pill"></span>
@@ -118,6 +120,9 @@
     </button>
     <button class="bn-item" data-view="sla">
       <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="3"/><path d="M12 10v2l1 1"/></svg><span>SLA</span>
+    </button>
+    <button class="bn-item" data-view="observer">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg><span>Observer</span>
     </button>
     <button class="bn-item" data-view="galaxy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 3v18M3 12h18M6 6l12 12M18 6L6 18"/></svg><span>Galaxy</span></button><button class="bn-item" data-view="settings">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.6 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 8 2.6h.1A2 2 0 1 1 12 2.6"/></svg><span>Settings</span>
@@ -1096,6 +1101,176 @@
     </div>
   </div>
 
+  <!-- TARS Observer Hub View -->
+  <div id="view-observer" class="hidden">
+    <div class="obs-container">
+      <div class="obs-header-bar">
+        <div class="obs-heading">
+          <h2>
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#58a6ff" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+            TARS Observer Hub
+          </h2>
+          <p>Passive Observer Mode (v1.2.81) — Event-Sourced Operations, Human Validation & Learning Pipeline</p>
+          <div class="obs-badge-row">
+            <span class="obs-safety-badge" title="Hard safety boundary active">🛡️ Limite Rígido de Segurança: Passivo (Zero Interação com Cliente)</span>
+            <span class="obs-api-badge" title="Ingestion API active">🔌 Bridge Ingestion: POST /api/tars/observer/events</span>
+          </div>
+        </div>
+        <div class="obs-top-actions">
+          <button class="btn-primary" id="obs-sim-btn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+            ⚡ Simular Evento
+          </button>
+          <button class="btn-ghost" id="obs-export-btn" title="Exportar casos validados em formato JSONL para fine-tuning">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Exportar Dataset (.JSONL)
+          </button>
+          <button class="btn-ghost" id="obs-refresh-btn" title="Atualizar Casos">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Atualizar
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI Metrics Strip -->
+      <div class="obs-stats-grid">
+        <div class="obs-stat-card">
+          <div class="obs-stat-label">Total em Observação</div>
+          <div class="obs-stat-val" id="obs-stat-total">0</div>
+          <div class="obs-stat-sub">Casos interceptados pela bridge</div>
+        </div>
+        <div class="obs-stat-card alert">
+          <div class="obs-stat-label">Revisão Humana Obrigatória</div>
+          <div class="obs-stat-val" id="obs-stat-hr">0</div>
+          <div class="obs-stat-sub">Baixa confiança (&lt; 70%) ou incerteza</div>
+        </div>
+        <div class="obs-stat-card">
+          <div class="obs-stat-label">Ativos / Em Processamento</div>
+          <div class="obs-stat-val" id="obs-stat-active">0</div>
+          <div class="obs-stat-sub">Em atendimento ou diagnóstico</div>
+        </div>
+        <div class="obs-stat-card">
+          <div class="obs-stat-label">Validados & Fechados</div>
+          <div class="obs-stat-val" id="obs-stat-closed">0</div>
+          <div class="obs-stat-sub">Casos arquivados com sucesso</div>
+        </div>
+        <div class="obs-stat-card candidate">
+          <div class="obs-stat-label">Candidatos a Treinamento</div>
+          <div class="obs-stat-val" id="obs-stat-candidates">0</div>
+          <div class="obs-stat-sub">Dataset dourado de aprendizado</div>
+        </div>
+      </div>
+
+      <!-- Toolbar -->
+      <div class="obs-toolbar">
+        <div class="obs-search-shell">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="obs-search-input" placeholder="Buscar por protocolo, ID conversa, cliente, inversor, número de série...">
+        </div>
+        <div class="obs-filters-row">
+          <button class="obs-filter-pill active" data-filter="all">Todos os Casos</button>
+          <button class="obs-filter-pill" data-filter="active">⚡ Em Atendimento Ativo</button>
+          <button class="obs-filter-pill" data-filter="human_review">⚠️ Revisão Humana Obrigatória</button>
+          <button class="obs-filter-pill" data-filter="closed">✅ Fechados & Validados</button>
+          <button class="obs-filter-pill" data-filter="candidates">★ Golden Cases (Treinamento)</button>
+        </div>
+      </div>
+
+      <!-- Cases Grid -->
+      <div class="obs-cases-grid" id="tars-observer-cases-grid"></div>
+    </div>
+  </div>
+
+  <!-- Deep-dive Case Modal / Drawer -->
+  <div class="obs-modal-backdrop" id="tars-obs-modal">
+    <div class="obs-modal-window">
+      <div class="obs-modal-header">
+        <div>
+          <div id="obs-modal-title"></div>
+          <div class="obs-modal-subtitle" id="obs-modal-subtitle"></div>
+        </div>
+        <button class="obs-modal-close-btn" id="obs-modal-close-btn" title="Fechar">&times;</button>
+      </div>
+
+      <div class="obs-modal-tabs">
+        <button class="obs-modal-tab-btn active" data-tab="timeline">Linha do Tempo (Eventos)</button>
+        <button class="obs-modal-tab-btn" data-tab="messages">Transcrição & Evidências</button>
+        <button class="obs-modal-tab-btn" data-tab="observations">Interpretações & Validação</button>
+        <button class="obs-modal-tab-btn" data-tab="closure">Encerramento & Aprendizado</button>
+      </div>
+
+      <div class="obs-modal-body">
+        <div id="obs-modal-hr-alert" class="obs-hr-alert-box hidden"></div>
+
+        <div class="obs-modal-tab-content" id="obs-tab-timeline">
+          <div id="obs-tab-timeline-content"></div>
+        </div>
+
+        <div class="obs-modal-tab-content hidden" id="obs-tab-messages">
+          <div id="obs-tab-messages-content"></div>
+        </div>
+
+        <div class="obs-modal-tab-content hidden" id="obs-tab-observations">
+          <div id="obs-tab-observations-content"></div>
+        </div>
+
+        <div class="obs-modal-tab-content hidden" id="obs-tab-closure">
+          <div id="obs-tab-closure-content"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Simulation Modal -->
+  <div class="obs-modal-backdrop" id="obs-sim-modal">
+    <div class="obs-modal-window" style="max-width:550px;">
+      <div class="obs-modal-header">
+        <div style="font-weight:700; color:#f0f6fc; font-size:1.1rem;">⚡ Simular Evento de Atendimento (Observer Mode)</div>
+      </div>
+      <div class="obs-modal-body">
+        <p class="text-muted" style="margin-bottom:12px; font-size:0.85rem;">
+          Este simulador despacha um payload idêntico ao gerado pelo <code>TARS Vision Bridge v1.2.81</code> para testar a extração heurística, detecção de alarmes e cálculo de confiança.
+        </p>
+
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>Mensagem interceptada do cliente / técnico:</label>
+          <textarea id="sim-text" class="obs-textarea" rows="3">Cliente relata que o inversor Deye SUN-8K está apresentando alarme F30. Medição de tensão AC indica 224V e o relé interno está estalando.</textarea>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px;">
+          <div class="form-group">
+            <label>Protocolo:</label>
+            <input id="sim-protocol" class="obs-input" value="HF-8942">
+          </div>
+          <div class="form-group">
+            <label>ID Conversa (Hyperflow):</label>
+            <input id="sim-conv-id" class="obs-input" value="hf_conv_99418">
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; margin-bottom:16px;">
+          <div class="form-group">
+            <label>Fabricante:</label>
+            <input id="sim-mfr" class="obs-input" value="Deye">
+          </div>
+          <div class="form-group">
+            <label>Modelo:</label>
+            <input id="sim-model" class="obs-input" value="SUN-8K">
+          </div>
+          <div class="form-group">
+            <label>Número de Série:</label>
+            <input id="sim-sn" class="obs-input" value="230419824102">
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:10px;">
+          <button type="button" class="btn-ghost" id="obs-sim-cancel-btn">Cancelar</button>
+          <button type="button" class="btn-primary" id="obs-sim-submit-btn">Despachar Evento</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="view-notebooks" class="hidden">
     <div class="nb-filters" id="nb-filters">
         <button class="hist-f active" data-nbf="all">All notes</button>
@@ -1791,28 +1966,56 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
       <!-- 3. Conversation Panel -->
       <div class="sla-subpanel hidden" id="sla-panel-conversation">
         <div class="sla-section-card">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h4 class="sla-section-title">💬 Hyperflow Customer Context</h4>
-            <button class="btn-ghost" id="sla-conv-reextract-btn" style="font-size:0.8rem;">⚡ Re-analyze with TARS</button>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <h4 class="sla-section-title" style="margin:0;">💬 Atendimento & Conversa Hyperflow</h4>
+              <span id="sla-conv-bridge-status-badge" class="sla-id-badge" style="font-size:0.72rem; background:rgba(34,197,94,0.15); color:#22c55e;">Bridge Ativo</span>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <a id="sla-conv-open-link-btn" href="#" target="_blank" class="btn-ghost" style="font-size:0.8rem; display:none; text-decoration:none; color:#38bdf8;">🔗 Abrir no Hyperflow ↗</a>
+              <button type="button" class="btn-ghost" id="sla-conv-sync-bridge-btn" style="font-size:0.8rem; color:#f2a71b;">🔄 Sincronizar do TARS Bridge</button>
+              <button type="button" class="btn-ghost" id="sla-conv-guide-btn" style="font-size:0.8rem;">ℹ️ Como Extrair com Extensão</button>
+            </div>
           </div>
-          <div id="sla-modal-conversation-meta" style="font-size:0.82rem; color:var(--muted); line-height:1.5;"></div>
-          <div id="sla-modal-conversation-chat" style="max-height:360px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:12px; background:rgba(0,0,0,0.25); border-radius:8px; border:1px solid var(--line);"></div>
+
+          <!-- Quick Link / Protocol Input Bar -->
+          <div style="background:rgba(0,0,0,0.18); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:12px;">
+            <div style="display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center;">
+              <div>
+                <label style="font-size:0.72rem; color:var(--muted); display:block; margin-bottom:3px;">Link da Conversa no Hyperflow (URL direta)</label>
+                <input type="text" id="sla-conv-url-input" placeholder="ex: https://conversas.hyperflow.global/chat/wamid.HBgMNTU..." style="width:100%; font-size:0.82rem;">
+              </div>
+              <div style="align-self:flex-end;">
+                <button type="button" class="btn-primary" id="sla-conv-url-save-btn" style="padding:6px 14px; font-size:0.82rem; white-space:nowrap;">Salvar Link</button>
+              </div>
+            </div>
+            <div id="sla-conv-url-feedback" style="font-size:0.75rem; margin-top:4px; color:var(--muted);"></div>
+          </div>
+
+          <div id="sla-modal-conversation-meta" style="font-size:0.82rem; color:var(--muted); line-height:1.5; margin-bottom:8px;"></div>
+          <div id="sla-modal-conversation-chat" style="max-height:380px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:12px; background:rgba(0,0,0,0.25); border-radius:8px; border:1px solid var(--line);"></div>
         </div>
       </div>
 
-      <!-- 4. Notes Panel (Rich Notes Sub-Tab) -->
+      <!-- 4. Notes Panel (Dedicated Strict SLA Technical Notes Sub-Tab) -->
       <div class="sla-subpanel hidden" id="sla-panel-notes">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
           <div>
-            <h4 style="margin:0; font-size:0.95rem; font-weight:700;">Case Technical Notes</h4>
-            <p style="margin:2px 0 0; font-size:0.78rem; color:var(--muted);">Rich text, handwriting/ink, checklists, and diagnosis runbooks</p>
+            <h4 style="margin:0; font-size:1rem; font-weight:700; display:flex; align-items:center; gap:6px;">
+              <span>📋 Laudos & Notas Técnicas do SLA</span>
+              <span id="sla-notes-count-badge" class="sla-id-badge" style="font-size:0.72rem;">0 notas</span>
+            </h4>
+            <p style="margin:2px 0 0; font-size:0.78rem; color:var(--muted);">Pareceres técnicos formais com medições elétricas, checklist ABNT NBR 16149/16274 e formatação com IA</p>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn-primary" id="sla-new-case-note-btn">+ New Case Note</button>
-            <button class="btn-ghost" id="sla-attach-unassigned-note-btn">📎 Attach Existing Note</button>
+            <button type="button" class="btn-primary" id="sla-new-case-note-btn" style="display:flex; align-items:center; gap:6px;">
+              <span>⚡ + Novo Laudo Técnico (SLA)</span>
+            </button>
           </div>
         </div>
-        <div id="sla-modal-notes-list" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px;"></div>
+
+        <!-- Strict SLA Notes List Container -->
+        <div id="sla-modal-notes-list" style="display:flex; flex-direction:column; gap:12px;"></div>
       </div>
 
       <!-- 5. Equipment Panel -->
@@ -1831,18 +2034,38 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
       <!-- 6. Protocols Panel -->
       <div class="sla-subpanel hidden" id="sla-panel-protocols">
         <div class="sla-section-card">
-          <h4 class="sla-section-title">🔗 Protocols & External Reference Tracking</h4>
+          <h4 class="sla-section-title">🔗 Protocolos & Rastreamento Externo</h4>
           <div style="display:flex; flex-direction:column; gap:16px;">
-            <!-- Hyperflow -->
-            <div style="background:rgba(0,0,0,0.18); border:1px solid var(--line); border-radius:8px; padding:12px;">
-              <div style="font-weight:600; margin-bottom:6px; font-size:0.88rem; color:var(--text); display:flex; justify-content:space-between;">
-                <span>💬 Hyperflow Conversation Protocol</span>
-                <span id="sla-proto-hf-badge" class="sla-id-badge" style="font-size:0.74rem;"></span>
+            <!-- Hyperflow Protocol (Dedicated Standalone Protocol) -->
+            <div style="background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.3); border-radius:8px; padding:14px;">
+              <div style="font-weight:600; margin-bottom:6px; font-size:0.9rem; color:var(--text); display:flex; justify-content:space-between; align-items:center;">
+                <span style="display:flex; align-items:center; gap:6px;">
+                  <span>💬 Protocolo Hyperflow (Atendimento & SAC)</span>
+                </span>
+                <span id="sla-proto-hf-badge" class="sla-id-badge" style="background:rgba(56,189,248,0.2); color:#38bdf8; font-size:0.75rem;">NÃO VINCULADO</span>
               </div>
-              <div class="field">
-                <input type="text" id="sla-proto-hf-input" placeholder="Hyperflow ID or URL (e.g. https://app.hyperflow.com.br/chat/1842)">
+              <p class="hint" style="margin:0 0 10px;">Protocolo unificado de SAC e link direto da conversa no portal Hyperflow. Sincronizado automaticamente via Webhook e TARS Vision Bridge.</p>
+              <div style="display:grid; grid-template-columns:1fr 2fr auto; gap:8px; margin-bottom:10px;">
+                <div>
+                  <label style="font-size:0.72rem; color:var(--muted); display:block; margin-bottom:4px;">Nº Protocolo Hyperflow</label>
+                  <input type="text" id="sla-proto-hf-input" placeholder="ex: HF-83921 ou 2026-9481">
+                </div>
+                <div>
+                  <label style="font-size:0.72rem; color:var(--muted); display:block; margin-bottom:4px;">Link da Conversa (URL direta)</label>
+                  <input type="text" id="sla-proto-hf-url-input" placeholder="ex: https://conversas.hyperflow.global/chat/...">
+                </div>
+                <div style="align-self:flex-end;">
+                  <a id="sla-proto-hf-open-link" href="#" target="_blank" class="btn-ghost" style="display:none; padding:8px 12px; text-decoration:none; color:#38bdf8; font-size:0.82rem;">Abrir Chat ↗</a>
+                </div>
+              </div>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <button type="button" class="btn-ghost" id="sla-proto-hf-sync-bridge-btn" style="font-size:0.78rem; padding:4px 10px; color:#38bdf8;">
+                  🔄 Puxar da Conversa Ativa (TARS Bridge)
+                </button>
+                <span id="sla-proto-hf-status" style="font-size:0.78rem; color:var(--muted);"></span>
               </div>
             </div>
+
             <!-- Jira -->
             <div style="background:rgba(0,0,0,0.18); border:1px solid var(--line); border-radius:8px; padding:12px;">
               <div style="font-weight:600; margin-bottom:6px; font-size:0.88rem; color:var(--text); display:flex; justify-content:space-between;">
@@ -1886,7 +2109,7 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
               </div>
             </div>
 
-            <button class="btn-primary" id="sla-proto-save-btn" style="align-self:flex-start;">Save Protocols</button>
+            <button class="btn-primary" id="sla-proto-save-btn" style="align-self:flex-start;">Salvar Protocolos</button>
           </div>
         </div>
       </div>
@@ -2184,6 +2407,202 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
   </div>
 </div>
 
+<!-- 5. Dedicated Strict SLA Technical Note Editor Modal -->
+<div class="modal-backdrop" id="sla-note-editor-modal-backdrop" style="z-index:180;">
+  <div class="modal" style="max-width:980px; width:95%; max-height:92vh; display:flex; flex-direction:column; overflow:hidden; padding:20px;">
+    <!-- Modal Header -->
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:12px;">
+      <div>
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+          <h3 style="margin:0; font-size:1.18rem; font-weight:700; color:var(--text);">📋 Elaboração de Laudo & Parecer Técnico SLA</h3>
+          <span id="sla-note-modal-case-badge" class="sla-id-badge" style="background:rgba(245,158,11,0.2); color:#f59e0b;">SLA-CASE</span>
+        </div>
+        <div id="sla-note-modal-context" style="font-size:0.8rem; color:var(--muted);"></div>
+      </div>
+      <button class="btn-ghost" id="sla-note-modal-close" style="font-size:1.4rem; padding:2px 10px; cursor:pointer;">×</button>
+    </div>
+
+    <!-- Modal Two-Column Body: Form vs Quick Preview -->
+    <div style="display:grid; grid-template-columns:1.2fr 1fr; gap:16px; overflow-y:auto; padding-right:4px; flex:1;">
+      
+      <!-- Left Column: Form & Strict SLA Checklists -->
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        
+        <!-- Category & Author -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div class="field">
+            <label style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted);">Tipo de Laudo / Parecer</label>
+            <select id="sla-note-form-category" class="sla-sort-select" style="width:100%;">
+              <option value="diagnostico_campo">Diagnóstico Técnico em Campo</option>
+              <option value="acionamento_garantia" selected>Parecer para Acionamento de Garantia</option>
+              <option value="inspecao_comissionamento">Inspeção e Comissionamento (ABNT)</option>
+              <option value="avaria_sobretensao">Laudo Pericial de Avaria / Sobretensão</option>
+              <option value="registro_substituicao">Registro de Troca / Substituição (RMA)</option>
+              <option value="homologacao_fabricante">Homologação com Fabricante</option>
+            </select>
+          </div>
+          <div class="field">
+            <label style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted);">Responsável Técnico</label>
+            <input type="text" id="sla-note-form-author" placeholder="Nome do Especialista / Engenheiro" style="font-size:0.85rem;">
+          </div>
+        </div>
+
+        <!-- Strict SLA Compliance Checklist -->
+        <div style="background:rgba(0,0,0,0.18); border:1px solid var(--line); border-radius:8px; padding:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <label style="font-size:0.78rem; font-weight:700; color:var(--text); text-transform:uppercase; letter-spacing:0.5px;">
+              ✅ Checklist Rigoroso de Conformidade SLA
+            </label>
+            <span id="sla-note-checklist-count" style="font-size:0.75rem; font-weight:600; color:var(--amber);">0/9 Marcados</span>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:7px; font-size:0.8rem;" id="sla-note-checklist-container">
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-vac" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Tensão Fase-Neutro CA</b> aferida nos limites ABNT NBR 16149 (198V a 242V)</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-vdc" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Tensão CC dos Strings (Voc / Vmpp)</b> aferida e polaridade conferida</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-riso" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Resistência de Isolamento Dielétrico (Riso)</b> > 1 MΩ (ou > 50 MΩ)</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-ground" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Aterramento e DPS</b> inspecionados (continuidade e classe de proteção)</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-mc4" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Conectores MC4 & aperto dos bornes CA</b> inspecionados sem oxidação/folga</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-error" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Código de falha / alarme</b> registrado no display do inversor documentado</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-photos" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Fotos da placa de identificação, SN e instalação</b> anexadas</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-fw" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Firmware e módulo de comunicação (Wi-Fi/4G)</b> verificados</span>
+            </label>
+            <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="sla-chk-mfr" class="sla-rule-chk" style="margin-top:2px;">
+              <span><b>Homologação de garantia / RMA</b> validada com suporte do fabricante</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Strict Measurement Fields -->
+        <div style="background:rgba(0,0,0,0.18); border:1px solid var(--line); border-radius:8px; padding:12px;">
+          <label style="font-size:0.78rem; font-weight:700; color:var(--text); text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:8px;">
+            ⚡ Medições de Campo Aferidas
+          </label>
+          <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px;">
+            <div>
+              <label style="font-size:0.72rem; color:var(--muted); display:block; margin-bottom:3px;">Tensão CA (Vac)</label>
+              <input type="text" id="sla-note-meas-vac" placeholder="ex: 221.4 V" style="font-size:0.8rem;">
+            </div>
+            <div>
+              <label style="font-size:0.72rem; color:var(--muted); display:block; margin-bottom:3px;">Tensão CC (Vdc)</label>
+              <input type="text" id="sla-note-meas-vdc" placeholder="ex: 378.0 V" style="font-size:0.8rem;">
+            </div>
+            <div>
+              <label style="font-size:0.72rem; color:var(--muted); display:block; margin-bottom:3px;">Isolamento (Riso)</label>
+              <input type="text" id="sla-note-meas-riso" placeholder="ex: > 50 MΩ" style="font-size:0.8rem;">
+            </div>
+            <div>
+              <label style="font-size:0.72rem; color:var(--muted); display:block; margin-bottom:3px;">Alarme / Erro</label>
+              <input type="text" id="sla-note-meas-error" placeholder="ex: F23 / Low Riso" style="font-size:0.8rem;">
+            </div>
+          </div>
+        </div>
+
+        <!-- Observations & Findings -->
+        <div class="field">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted);">
+              Parecer Técnico & Diagnóstico do Especialista
+            </label>
+            <div style="display:flex; gap:6px;">
+              <button type="button" class="btn-ghost" id="sla-note-load-case-btn" style="font-size:0.75rem; padding:2px 8px;">
+                📄 Carregar Dados do Caso
+              </button>
+              <button type="button" class="btn-ghost" id="sla-note-ai-rephrase-btn" style="font-size:0.75rem; padding:2px 8px; color:var(--amber); font-weight:600;">
+                ⚡ Formatar com TARS AI (Rephrase)
+              </button>
+            </div>
+          </div>
+          <textarea id="sla-note-form-text" rows="5" placeholder="Descreva os testes executados, condições encontradas e o laudo técnico conclusivo..." style="width:100%; border-radius:8px; padding:10px; background:var(--bg); border:1px solid var(--line); color:var(--text); font-size:0.85rem; outline:none; resize:vertical; line-height:1.45;"></textarea>
+          <div id="sla-note-ai-status" style="font-size:0.75rem; margin-top:4px; color:var(--muted); min-height:16px;"></div>
+        </div>
+
+      </div>
+
+      <!-- Right Column: Quick Live Preview of Changes -->
+      <div style="display:flex; flex-direction:column; background:rgba(0,0,0,0.25); border:1px solid var(--line); border-radius:10px; padding:14px; position:sticky; top:0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+          <div style="font-size:0.82rem; font-weight:700; color:var(--text); text-transform:uppercase; letter-spacing:0.5px; display:flex; align-items:center; gap:6px;">
+            <span>👁️ Visualização Rápida do Laudo (Preview)</span>
+          </div>
+          <span id="sla-preview-badge" class="sla-id-badge" style="font-size:0.72rem; background:rgba(245,158,11,0.2); color:#f59e0b;">EM ELABORAÇÃO</span>
+        </div>
+
+        <div id="sla-note-live-preview-content" style="font-size:0.84rem; line-height:1.5; color:var(--text); overflow-y:auto; flex:1;">
+          <!-- Live Preview rendered here -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Modal Actions -->
+    <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:14px; border-top:1px solid var(--line); padding-top:12px;">
+      <button type="button" class="btn-ghost" id="sla-note-modal-cancel" style="padding:8px 18px;">Cancelar</button>
+      <button type="button" class="btn-primary" id="sla-note-modal-save" style="padding:8px 22px; font-weight:600;">💾 Salvar Laudo no Caso SLA</button>
+    </div>
+  </div>
+</div>
+
+<!-- 6. Hyperflow TARS Extension Guide Modal -->
+<div class="modal-backdrop" id="sla-hyperflow-guide-modal-backdrop" style="z-index:185;">
+  <div class="modal" style="max-width:580px; padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+      <h3 style="margin:0; font-size:1.15rem; font-weight:700; color:var(--text); display:flex; align-items:center; gap:8px;">
+        <span>⚡ Como Vincular e Extrair com TARS Bridge</span>
+      </h3>
+      <button class="btn-ghost" id="sla-hf-guide-modal-close" style="font-size:1.3rem; padding:2px 8px; cursor:pointer;">×</button>
+    </div>
+    
+    <div style="font-size:0.86rem; line-height:1.6; color:var(--text); display:flex; flex-direction:column; gap:12px;">
+      <div style="background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.25); border-radius:8px; padding:12px;">
+        <div style="font-weight:700; color:#38bdf8; margin-bottom:4px;">1. Abra o Atendimento no Hyperflow</div>
+        <div style="color:var(--muted); font-size:0.82rem;">Navegue até a conversa do cliente no portal Hyperflow (ex: <code>conversas.hyperflow.global</code>).</div>
+      </div>
+
+      <div style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:8px; padding:12px;">
+        <div style="font-weight:700; color:#f59e0b; margin-bottom:4px;">2. Clique na Extensão TARS Vision Bridge</div>
+        <div style="color:var(--muted); font-size:0.82rem;">Abra a extensão no topo do Chrome. Ela detecta automaticamente o <b>Protocolo</b>, <b>Telefone do Cliente</b>, <b>Link Direto da Conversa</b> e as mensagens do chat.</div>
+      </div>
+
+      <div style="background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.25); border-radius:8px; padding:12px;">
+        <div style="font-weight:700; color:#22c55e; margin-bottom:4px;">3. Clique em "Sincronizar com Solar Agenda"</div>
+        <div style="color:var(--muted); font-size:0.82rem;">A extensão envia o webhook com o protocolo Hyperflow e o link da conversa diretamente para este caso de SLA.</div>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:8px; padding:12px;">
+        <div style="font-weight:700; color:var(--text); margin-bottom:4px;">4. Ou Puxe em Tempo Real no Solar Agenda</div>
+        <div style="color:var(--muted); font-size:0.82rem;">Com a aba do Hyperflow aberta, basta clicar em <b>"🔄 Sincronizar do TARS Bridge"</b> na aba Atendimento ou nos Protocolos para capturar o chat atual.</div>
+      </div>
+    </div>
+
+    <div style="margin-top:16px; display:flex; justify-content:flex-end;">
+      <button type="button" class="btn-primary" id="sla-hf-guide-confirm-btn" style="padding:6px 18px;">Entendi</button>
+    </div>
+  </div>
+</div>
+
 </div><!-- /#app-root -->
 
 <script src="/vendor/jspdf.umd.min.js"></script>
@@ -2191,6 +2610,7 @@ model = FastLanguageModel.get_peft_model(model, r=16, lora_alpha=16)
 <script src="/pdf-export.js"></script>
 <script src="/i18n.js"></script>
 <script src="/sla-hub.js"></script>
+<script src="/tars-observer-ui.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
