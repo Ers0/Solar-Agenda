@@ -1,444 +1,1472 @@
-import { sendResponse, handleCors, parseJsonBody } from "../_smtp.js";
-import fs from "fs";
-import path from "path";
+import { handleCors, parseJsonBody } from "../_smtp.js";
+import { readAppStorage, writeAppStorage } from "../_observer-engine.js";
 
-const STORAGE_FILE = path.join(process.env.TMPDIR || "/tmp", "solar_agenda_storage.json");
+const MAX_LOGS = 100;
+const MAX_PROCESSED_EVENTS = 1000;
 
-function readStorage() {
-  try {
-    if (fs.existsSync(STORAGE_FILE)) {
-      return JSON.parse(fs.readFileSync(STORAGE_FILE, "utf-8"));
-    }
-  } catch (e) {}
-  return { contacts: null, smtpConfig: null, slaCases: null, jiraConfig: null, jiraWebhookLogs: [], slaWebhookLogs: [] };
+function send(res, status, body) {
+  return res.status(status).json(body);
 }
 
-function writeStorage(data) {
-  try {
-    const current = readStorage();
-    const merged = {
-      contacts: data.contacts !== undefined ? data.contacts : current.contacts,
-      smtpConfig: data.smtpConfig !== undefined ? data.smtpConfig : current.smtpConfig,
-      slaCases: data.slaCases !== undefined ? data.slaCases : current.slaCases,
-      jiraConfig: data.jiraConfig !== undefined ? data.jiraConfig : current.jiraConfig,
-      jiraWebhookLogs: data.jiraWebhookLogs !== undefined ? data.jiraWebhookLogs : (current.jiraWebhookLogs || []),
-      slaWebhookLogs: data.slaWebhookLogs !== undefined ? data.slaWebhookLogs : (current.slaWebhookLogs || []),
-      updatedAt: new Date().toISOString()
-    };
-    fs.writeFileSync(STORAGE_FILE, JSON.stringify(merged, null, 2), "utf-8");
-    return merged;
-  } catch (e) {
-    return null;
+function clean(value) {
+  return value == null ? "" : String(value).trim();
+}
+
+function normalizePhone(value) {
+  return clean(value).replace(/\D/g, "");
+}
+
+function lower(value) {
+  return clean(value).toLowerCase();
+}
+
+function firstNonEmpty(...values) {
+  return values.find(v => clean(v)) || "";
+}
+
+function makeEventId(payload, index = 0) {
+  return clean(
+    payload.eventId ||
+    payload.id ||
+    payload.data?.eventId ||
+    `${payload.event || payload.eventType || "sla.generic.event"}:${payload.conversationId || payload.case?.conversationId || "no-conversation"}:${payload.occurredAt || payload.observedAt || Date.now()}:${index}`
+  );
+}
+
+function normalizeIncoming(raw) {
+  // The current Bridge sends a flat event. The Observer Engine uses events[].
+  // Accept both so the webhook is not coupled to one producer format.
+  if (Array.isArray(raw?.events)) {
+    return raw.events.map((ev, index) => normalizeObserverEvent(ev, index));
   }
+
+  return [normalizeFlatEvent(raw, 0)];
+}
+
+function normalizeObserverEvent(ev, index) {
+  const data = ev?.data || {};
+  const event = clean(
+    ev?.eventType ||
+    ev?.event ||
+    data.event ||
+    "sla.generic.event"
+  );
+
+  const caseData = ev?.case || {};
+
+  return {
+    ...ev,
+
+    event,
+
+    eventId: makeEventId(ev, index),
+
+    occurredAt: firstNonEmpty(
+      ev?.observedAt,
+      ev?.occurredAt,
+      data?.occurredAt,
+      new Date().toISOString()
+    ),
+
+    conversationId: firstNonEmpty(
+      caseData.conversationId,
+      ev?.conversationId,
+      data?.conversationId
+    ),
+
+    protocol: firstNonEmpty(
+      caseData.protocol,
+      ev?.protocol,
+      data?.protocol
+    ),
+
+    source: firstNonEmpty(
+      ev?.source,
+      data?.source,
+      "tars-vision-bridge"
+    ),
+
+    bridgeVersion: firstNonEmpty(
+      ev?.bridgeVersion,
+      data?.bridgeVersion,
+      "1.2.80"
+    ),
+
+    status: firstNonEmpty(
+      ev?.status,
+      data?.status,
+      "COMPLETED"
+    ),
+
+    customer: {
+      ...(caseData.customer || {}),
+      ...(data.customer || {}),
+
+      name: firstNonEmpty(
+        caseData.customer?.name,
+        caseData.customerName,
+        data.customer?.name,
+        ev?.customer?.name
+      ),
+
+      phone: firstNonEmpty(
+        caseData.customer?.phone,
+        caseData.customerPhone,
+        data.customer?.phone,
+        ev?.customer?.phone
+      ),
+
+      email: firstNonEmpty(
+        caseData.customer?.email,
+        data.customer?.email,
+        ev?.customer?.email
+      )
+    },
+
+    organization:
+      data.organization ||
+      ev?.organization ||
+      {},
+
+    account:
+      data.account ||
+      ev?.account ||
+      {},
+
+    messages:
+      Array.isArray(data.messages)
+        ? data.messages
+        : Array.isArray(ev?.messages)
+          ? ev.messages
+          : [],
+
+    conversationUrl: firstNonEmpty(
+      data.conversationUrl,
+      ev?.conversationUrl,
+      ev?.conversationLink,
+      ev?.url
+    ),
+
+    caseId: firstNonEmpty(
+      caseData.caseId,
+      ev?.caseId,
+      ev?.slaCaseId,
+      data.caseId
+    )
+  };
+}
+
+function normalizeFlatEvent(payload) {
+  return {
+    ...payload,
+
+    event: clean(
+      payload?.event ||
+      payload?.eventType ||
+      "sla.generic.event"
+    ),
+
+    eventId: makeEventId(payload),
+
+    occurredAt: firstNonEmpty(
+      payload?.occurredAt,
+      payload?.observedAt,
+      new Date().toISOString()
+    ),
+
+    conversationId: firstNonEmpty(
+      payload?.conversationId,
+      payload?.case?.conversationId
+    ),
+
+    protocol: firstNonEmpty(
+      payload?.protocol,
+      payload?.hyperflowProtocol,
+      payload?.case?.protocol
+    ),
+
+    source: firstNonEmpty(
+      payload?.source,
+      "tars-vision-bridge"
+    ),
+
+    bridgeVersion: firstNonEmpty(
+      payload?.bridgeVersion,
+      payload?.version,
+      "1.2.80"
+    ),
+
+    status: firstNonEmpty(
+      payload?.status,
+      "COMPLETED"
+    ),
+
+    customer:
+      payload?.customer ||
+      {},
+
+    organization:
+      payload?.organization ||
+      {},
+
+    account:
+      payload?.account ||
+      {},
+
+    messages:
+      Array.isArray(payload?.messages)
+        ? payload.messages
+        : [],
+
+    conversationUrl: firstNonEmpty(
+      payload?.conversationUrl,
+      payload?.conversationLink,
+      payload?.url
+    ),
+
+    caseId: firstNonEmpty(
+      payload?.caseId,
+      payload?.slaCaseId
+    )
+  };
+}
+
+function getProtocolIds(protocols) {
+  const out = [];
+
+  if (!protocols || typeof protocols !== "object") {
+    return out;
+  }
+
+  if (clean(protocols.hyperflow_id)) {
+    out.push(clean(protocols.hyperflow_id));
+  }
+
+  if (clean(protocols.hyperflow_url)) {
+    out.push(clean(protocols.hyperflow_url));
+  }
+
+  const hf = protocols.hyperflow;
+
+  if (Array.isArray(hf)) {
+    for (const item of hf) {
+      if (typeof item === "string") {
+        out.push(item);
+      } else if (item && typeof item === "object") {
+        out.push(
+          clean(item.protocol),
+          clean(item.conversation_id),
+          clean(item.conversation_url)
+        );
+      }
+    }
+  } else if (hf && typeof hf === "object") {
+    out.push(
+      clean(hf.protocol),
+      clean(hf.conversation_id),
+      clean(hf.conversation_url)
+    );
+  }
+
+  return out.filter(Boolean);
+}
+
+function caseMatches(c, ev, identity) {
+  const protocols = c?.protocols || {};
+
+  const values = getProtocolIds(protocols)
+    .map(lower);
+
+  const conversationId =
+    lower(identity.conversationId);
+
+  const protocol =
+    lower(identity.protocol);
+
+  const conversationUrl =
+    lower(identity.conversationUrl);
+
+  const email =
+    lower(
+      identity.loginEmail ||
+      identity.customerEmail
+    );
+
+  const phone =
+    normalizePhone(identity.customerPhone);
+
+  const caseId =
+    lower(identity.caseId);
+
+  if (
+    caseId &&
+    lower(c?.id) === caseId
+  ) {
+    return true;
+  }
+
+  if (
+    protocol &&
+    values.includes(protocol)
+  ) {
+    return true;
+  }
+
+  if (
+    conversationId &&
+    values.includes(conversationId)
+  ) {
+    return true;
+  }
+
+  if (
+    conversationUrl &&
+    values.includes(conversationUrl)
+  ) {
+    return true;
+  }
+
+  const cEmail =
+    lower(c?.customer?.email);
+
+  const cPhone =
+    normalizePhone(c?.customer?.phone);
+
+  if (
+    email &&
+    cEmail &&
+    email === cEmail
+  ) {
+    return true;
+  }
+
+  if (
+    phone.length >= 8 &&
+    cPhone &&
+    (
+      cPhone === phone ||
+      cPhone.endsWith(phone) ||
+      phone.endsWith(cPhone)
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    email &&
+    Array.isArray(protocols.hoymiles) &&
+    protocols.hoymiles.some(
+      h =>
+        lower(h?.account_email) === email
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isHyperflowEvent(ev) {
+  const event = lower(ev.event);
+
+  return (
+    event.startsWith("hyperflow") ||
+    Boolean(ev.conversationUrl) ||
+    Boolean(ev.protocol) ||
+    ev.messages.length > 0
+  );
+}
+
+function appendTimeline(c, item) {
+  if (!Array.isArray(c.timeline)) {
+    c.timeline = [];
+  }
+
+  c.timeline.push(item);
+
+  if (c.timeline.length > 200) {
+    c.timeline =
+      c.timeline.slice(-200);
+  }
+}
+
+function buildIdentity(ev) {
+  const customer =
+    ev.customer || {};
+
+  const organization =
+    ev.organization || {};
+
+  const account =
+    ev.account || {};
+
+  const customerName =
+    firstNonEmpty(
+      customer.name,
+      organization.name,
+      ev.customerName,
+      "Cliente Solar"
+    );
+
+  const customerEmail =
+    firstNonEmpty(
+      customer.email,
+      account.loginEmail,
+      ev.email
+    );
+
+  const customerPhone =
+    firstNonEmpty(
+      customer.phone,
+      ev.phone
+    );
+
+  const customerState =
+    firstNonEmpty(
+      customer.state,
+      ev.state
+    );
+
+  const orgName =
+    firstNonEmpty(
+      organization.name,
+      ev.company
+    );
+
+  const parentOrg =
+    firstNonEmpty(
+      organization.parentOrganization,
+      "APItest"
+    );
+
+  const role =
+    firstNonEmpty(
+      organization.role,
+      "Installer"
+    );
+
+  const loginEmail =
+    lower(
+      firstNonEmpty(
+        account.loginEmail,
+        customerEmail
+      )
+    );
+
+  const conversationId =
+    clean(ev.conversationId);
+
+  const conversationUrl =
+    clean(ev.conversationUrl);
+
+  const protocol =
+    firstNonEmpty(
+      ev.protocol,
+      conversationId
+        ? `HF-${conversationId
+            .replace(/^hyperflow:/i, "")
+            .slice(0, 12)}`
+        : ""
+    );
+
+  return {
+    customerName,
+    customerEmail,
+    customerPhone,
+    customerState,
+    orgName,
+    parentOrg,
+    role,
+    loginEmail,
+    conversationId,
+    conversationUrl,
+    protocol,
+    caseId: clean(ev.caseId)
+  };
+}
+
+function updateCase(c, ev, identity) {
+  c.protocols =
+    c.protocols || {};
+
+  const now =
+    new Date().toISOString();
+
+  if (isHyperflowEvent(ev)) {
+    const proto =
+      identity.protocol ||
+      c.protocols.hyperflow_id ||
+      `HF-${identity.conversationId || Date.now()}`;
+
+    const url =
+      identity.conversationUrl ||
+      c.protocols.hyperflow_url ||
+      (
+        identity.conversationId
+          ? `https://conversas.hyperflow.global/chat/${identity.conversationId}`
+          : ""
+      );
+
+    c.protocols.hyperflow = {
+      protocol: proto,
+
+      conversation_url: url,
+
+      conversation_id:
+        identity.conversationId ||
+        c.protocols.hyperflow?.conversation_id ||
+        "",
+
+      status: "LINKED",
+
+      synced_at:
+        ev.occurredAt,
+
+      customer_name:
+        identity.customerName,
+
+      customer_phone:
+        identity.customerPhone
+    };
+
+    c.protocols.hyperflow_id =
+      proto;
+
+    c.protocols.hyperflow_url =
+      url;
+
+    c.conversation =
+      c.conversation || {};
+
+    c.conversation.source =
+      "Hyperflow";
+
+    c.conversation.channel =
+      "WhatsApp";
+
+    c.conversation.conversation_url =
+      url;
+
+    c.conversation.protocol =
+      proto;
+
+    if (ev.messages.length) {
+      c.conversation.messages =
+        ev.messages;
+    }
+
+    appendTimeline(c, {
+      id:
+        `tl-hf-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 7)}`,
+
+      eventId:
+        ev.eventId,
+
+      type:
+        "hyperflow_protocol_linked",
+
+      eventType:
+        "hyperflow_protocol_linked",
+
+      title:
+        `Protocolo Hyperflow Vinculado: ${proto}`,
+
+      detail:
+        `Conversa sincronizada via TARS Bridge. Total de mensagens: ${c.conversation.messages?.length || 0}.`,
+
+      author:
+        `TARS Vision Bridge v${ev.bridgeVersion}`,
+
+      timestamp:
+        ev.occurredAt
+    });
+  } else {
+    c.protocols.hoymiles =
+      Array.isArray(c.protocols.hoymiles)
+        ? c.protocols.hoymiles
+        : [];
+
+    if (
+      !c.protocols.hoymiles.some(
+        h =>
+          lower(h?.account_email) ===
+          identity.loginEmail
+      )
+    ) {
+      c.protocols.hoymiles.push({
+        account_email:
+          identity.loginEmail,
+
+        org_name:
+          identity.orgName,
+
+        parent_org:
+          identity.parentOrg,
+
+        role:
+          identity.role,
+
+        created_at:
+          ev.occurredAt,
+
+        conversation_id:
+          identity.conversationId,
+
+        status:
+          ev.status
+      });
+    }
+
+    const hf =
+      c.protocols.hyperflow;
+
+    if (identity.conversationId) {
+      if (Array.isArray(hf)) {
+        if (
+          !hf.includes(
+            identity.conversationId
+          )
+        ) {
+          hf.push(
+            identity.conversationId
+          );
+        }
+      } else if (
+        hf &&
+        typeof hf === "object"
+      ) {
+        hf.conversation_id =
+          identity.conversationId;
+      } else {
+        c.protocols.hyperflow = [
+          identity.conversationId
+        ];
+      }
+    }
+
+    appendTimeline(c, {
+      id:
+        `tl-hoy-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 7)}`,
+
+      eventId:
+        ev.eventId,
+
+      type:
+        "hoymiles_account_created",
+
+      eventType:
+        "hoymiles_account_created",
+
+      title:
+        `Conta Hoymiles Criada: ${identity.loginEmail || "sem e-mail"}`,
+
+      detail:
+        `Conta de Instalador criada no portal Hoymiles vinculada a ${identity.parentOrg} (${identity.orgName || "organização"}). Credenciais entregues via Hyperflow.`,
+
+      author:
+        `TARS Vision Bridge v${ev.bridgeVersion}`,
+
+      timestamp:
+        ev.occurredAt
+    });
+
+    if (
+      [
+        "aberto",
+        "em_analise",
+        "aguardando_terceiros"
+      ].includes(
+        lower(c.status)
+      )
+    ) {
+      c.status =
+        "concluido";
+
+      c.resolved_at =
+        ev.occurredAt;
+    }
+  }
+
+  c.updated_at =
+    now;
+
+  return c;
+}
+
+function createCase(ev, identity) {
+  const caseNum =
+    `${Date.now()
+      .toString(36)
+      .slice(-5)}${Math.floor(
+      Math.random() * 1000
+    )}`.toUpperCase();
+
+  const hf =
+    isHyperflowEvent(ev);
+
+  if (hf) {
+    const id =
+      `SLA-HF-${caseNum}`;
+
+    const proto =
+      identity.protocol ||
+      `HF-${caseNum}`;
+
+    const url =
+      identity.conversationUrl ||
+      (
+        identity.conversationId
+          ? `https://conversas.hyperflow.global/chat/${identity.conversationId}`
+          : ""
+      );
+
+    return {
+      id,
+
+      title:
+        `Atendimento Hyperflow — ${identity.customerName}`,
+
+      priority:
+        ev.priority || "alta",
+
+      status:
+        ev.status || "aberto",
+
+      created_at:
+        ev.occurredAt,
+
+      updated_at:
+        ev.occurredAt,
+
+      sla_deadline:
+        new Date(
+          Date.now() +
+          24 * 3600000
+        ).toISOString(),
+
+      sla_limit_hours:
+        24,
+
+      responsible_tech:
+        "Suporte Solar (TARS Bridge)",
+
+      customer: {
+        name:
+          identity.customerName,
+
+        email:
+          identity.customerEmail,
+
+        phone:
+          identity.customerPhone,
+
+        state:
+          identity.customerState,
+
+        site_location:
+          ev.site_location || ""
+      },
+
+      equipment:
+        ev.equipment || {
+          manufacturer:
+            ev.manufacturer ||
+            "Inversor Solar",
+
+          model:
+            ev.model ||
+            "Equipamento em Diagnóstico",
+
+          serial_numbers:
+            ev.serial_number
+              ? [ev.serial_number]
+              : (
+                  ev.serial_numbers ||
+                  []
+                )
+        },
+
+      problem_summary:
+        ev.problem_summary ||
+        (
+          ev.messages?.[0]?.text
+            ? `Conversa Hyperflow: ${String(
+                ev.messages[0].text
+              ).slice(0, 180)}`
+            : "Atendimento importado via TARS Bridge."
+        ),
+
+      next_action:
+        "Avaliar protocolo e histórico do cliente via conversa Hyperflow vinculada.",
+
+      protocols: {
+        hyperflow: {
+          protocol:
+            proto,
+
+          conversation_url:
+            url,
+
+          conversation_id:
+            identity.conversationId,
+
+          status:
+            "LINKED",
+
+          synced_at:
+            ev.occurredAt,
+
+          customer_name:
+            identity.customerName,
+
+          customer_phone:
+            identity.customerPhone
+        },
+
+        hyperflow_id:
+          proto,
+
+        hyperflow_url:
+          url,
+
+        jira:
+          [],
+
+        hoymiles:
+          []
+      },
+
+      conversation: {
+        source:
+          "Hyperflow",
+
+        channel:
+          "WhatsApp",
+
+        conversation_url:
+          url,
+
+        protocol:
+          proto,
+
+        messages:
+          ev.messages
+      },
+
+      timeline: [{
+        id:
+          `tl-hf-init-${Date.now()}`,
+
+        type:
+          "hyperflow_protocol_linked",
+
+        eventType:
+          "hyperflow_protocol_linked",
+
+        eventId:
+          ev.eventId,
+
+        title:
+          `Caso Aberto via Hyperflow: ${proto}`,
+
+        detail:
+          `Atendimento recebido via TARS Bridge Webhook com link direto da conversa: ${url || "N/A"}.`,
+
+        author:
+          `TARS Vision Bridge v${ev.bridgeVersion}`,
+
+        timestamp:
+          ev.occurredAt
+      }]
+    };
+  }
+
+  const id =
+    `SLA-HOY-${caseNum}`;
+
+  return {
+    id,
+
+    title:
+      `Criação de Conta Hoymiles — ${identity.orgName || identity.customerName}`,
+
+    priority:
+      "media",
+
+    status:
+      "concluido",
+
+    created_at:
+      ev.occurredAt,
+
+    updated_at:
+      ev.occurredAt,
+
+    resolved_at:
+      ev.occurredAt,
+
+    sla_limit_hours:
+      24,
+
+    responsible_tech:
+      "TARS Vision Bridge",
+
+    customer: {
+      name:
+        identity.customerName,
+
+      email:
+        identity.customerEmail ||
+        identity.loginEmail,
+
+      phone:
+        identity.customerPhone,
+
+      state:
+        identity.customerState,
+
+      company:
+        identity.orgName
+    },
+
+    equipment: {
+      manufacturer:
+        "Hoymiles",
+
+      model:
+        "S-Miles Cloud (Portal do Instalador)",
+
+      serial_numbers:
+        ["N/A - Conta Web/App"]
+    },
+
+    problem_summary:
+      `Criação automatizada de conta de Instalador Hoymiles para ${identity.customerName} (${identity.orgName || "organização"}). Login: ${identity.loginEmail || "N/A"}. Credenciais entregues via Hyperflow.`,
+
+    protocols: {
+      hoymiles: [{
+        account_email:
+          identity.loginEmail,
+
+        org_name:
+          identity.orgName,
+
+        parent_org:
+          identity.parentOrg,
+
+        role:
+          identity.role,
+
+        created_at:
+          ev.occurredAt,
+
+        conversation_id:
+          identity.conversationId,
+
+        status:
+          ev.status
+      }],
+
+      hyperflow:
+        identity.conversationId
+          ? [identity.conversationId]
+          : []
+    },
+
+    conversation:
+      identity.conversationId
+        ? {
+            source:
+              "Hyperflow",
+
+            channel:
+              "WhatsApp",
+
+            conversation_url:
+              identity.conversationUrl ||
+              `https://conversas.hyperflow.global/chat/${identity.conversationId}`,
+
+            protocol:
+              identity.protocol,
+
+            messages:
+              ev.messages
+          }
+        : undefined,
+
+    timeline: [{
+      id:
+        `tl-hoy-init-${Date.now()}`,
+
+      type:
+        "hoymiles_account_created",
+
+      eventType:
+        "hoymiles_account_created",
+
+      eventId:
+        ev.eventId,
+
+      title:
+        "Conta Hoymiles Criada & Entregue",
+
+      detail:
+        `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${identity.parentOrg} (${identity.orgName || "organização"}). Status: ${ev.status}. Credenciais e links repassados ao cliente via Hyperflow.`,
+
+      author:
+        `TARS Vision Bridge v${ev.bridgeVersion}`,
+
+      timestamp:
+        ev.occurredAt
+    }],
+
+    notes:
+      `Evento recebido via Webhook SLA (${ev.event}) da extensão TARS Vision Bridge v${ev.bridgeVersion}. Senhas não são armazenadas no Solar Agenda.`
+  };
+}
+
+function processEvent(storage, ev) {
+  const identity =
+    buildIdentity(ev);
+
+  const cases =
+    Array.isArray(storage.slaCases)
+      ? [...storage.slaCases]
+      : [];
+
+  const processed =
+    Array.isArray(
+      storage.tarsProcessedSlaWebhookEvents
+    )
+      ? [
+          ...storage.tarsProcessedSlaWebhookEvents
+        ]
+      : [];
+
+  if (
+    processed.includes(
+      ev.eventId
+    )
+  ) {
+    return {
+      duplicate:
+        true,
+
+      caseId:
+        null,
+
+      isNewCase:
+        false,
+
+      log: {
+        id:
+          `sla-wh-dup-${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2, 6)}`,
+
+        receivedAt:
+          new Date().toISOString(),
+
+        event:
+          ev.event,
+
+        eventId:
+          ev.eventId,
+
+        source:
+          ev.source,
+
+        bridgeVersion:
+          ev.bridgeVersion,
+
+        status:
+          "DUPLICATE",
+
+        customer:
+          identity.customerName,
+
+        email:
+          identity.loginEmail,
+
+        company:
+          identity.orgName,
+
+        conversationId:
+          identity.conversationId ||
+          null,
+
+        matchedCaseId:
+          null,
+
+        isNewCase:
+          false
+      },
+
+      cases,
+
+      processed
+    };
+  }
+
+  let index =
+    cases.findIndex(
+      c =>
+        caseMatches(
+          c,
+          ev,
+          identity
+        )
+    );
+
+  let isNewCase =
+    false;
+
+  let caseId;
+
+  if (index >= 0) {
+    cases[index] =
+      updateCase(
+        { ...cases[index] },
+        ev,
+        identity
+      );
+
+    caseId =
+      cases[index].id;
+  } else {
+    const newCase =
+      createCase(
+        ev,
+        identity
+      );
+
+    cases.unshift(
+      newCase
+    );
+
+    caseId =
+      newCase.id;
+
+    isNewCase =
+      true;
+  }
+
+  processed.unshift(
+    ev.eventId
+  );
+
+  const log = {
+    id:
+      `sla-wh-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 7)}`,
+
+    receivedAt:
+      new Date().toISOString(),
+
+    event:
+      ev.event,
+
+    eventId:
+      ev.eventId,
+
+    source:
+      ev.source,
+
+    bridgeVersion:
+      ev.bridgeVersion,
+
+    status:
+      ev.status,
+
+    customer:
+      identity.customerName,
+
+    email:
+      identity.loginEmail,
+
+    company:
+      identity.orgName,
+
+    conversationId:
+      identity.conversationId ||
+      null,
+
+    matchedCaseId:
+      caseId,
+
+    isNewCase
+  };
+
+  return {
+    duplicate:
+      false,
+
+    caseId,
+
+    isNewCase,
+
+    log,
+
+    cases,
+
+    processed:
+      processed.slice(
+        0,
+        MAX_PROCESSED_EVENTS
+      )
+  };
 }
 
 export default async function handler(req, res) {
-  if (handleCors(req, res)) return;
+  if (handleCors(req, res)) {
+    return;
+  }
 
   if (req.method === "GET") {
-    const data = readStorage();
-    return sendResponse(res, 200, { ok: true, logs: data.slaWebhookLogs || [] });
-  }
+    const storage =
+      readAppStorage();
 
-  if (req.method === "POST") {
-    try {
-      const payload = await parseJsonBody(req);
-      const url = new URL(req.url, "http://localhost");
-      const action = url.searchParams.get("action") || payload?.action;
+    const logs =
+      Array.isArray(
+        storage.slaWebhookLogs
+      )
+        ? storage.slaWebhookLogs
+        : [];
 
-      if (action === "test") {
-        const testCaseNum = Math.floor(1000 + Math.random() * 9000);
-        const testCaseId = `SLA-HOY-${testCaseNum}`;
-        const testPayload = {
-          event: "hoymiles.account.created (TEST)",
-          occurredAt: new Date().toISOString(),
-          status: "COMPLETED",
-          conversationId: payload.conversationId || "hyperflow-test-conv-99",
-          customer: {
-            name: payload.name || payload.customer?.name || "Engenheiro Marcelo Rocha",
-            email: payload.email || payload.customer?.email || "marcelo.solar@teste.com.br",
-            phone: payload.phone || payload.customer?.phone || "11988776655",
-            state: payload.state || payload.customer?.state || "São Paulo"
-          },
-          organization: {
-            name: payload.company || payload.organization?.name || "SolarTech Brasil Teste",
-            parentOrganization: "APItest",
-            role: "Installer"
-          },
-          account: {
-            loginEmail: payload.email || payload.account?.loginEmail || "marcelo.solar@teste.com.br",
-            passwordSharedWithCustomer: true
-          }
-        };
+    const cases =
+      Array.isArray(
+        storage.slaCases
+      )
+        ? storage.slaCases
+        : [];
 
-        const storage = readStorage();
-        const list = Array.isArray(storage.slaCases) ? [...storage.slaCases] : [];
-        const newCase = {
-          id: testCaseId,
-          title: `Criação de Conta Hoymiles — ${testPayload.organization.name}`,
-          priority: "media",
-          status: "concluido",
-          created_at: testPayload.occurredAt,
-          resolved_at: testPayload.occurredAt,
-          sla_limit_hours: 24,
-          responsible_tech: "TARS Vision Bridge",
-          customer: testPayload.customer,
-          equipment: {
-            manufacturer: "Hoymiles",
-            model: "S-Miles Cloud (Portal do Instalador)",
-            serial_numbers: ["N/A - Conta Web/App"]
-          },
-          problem_summary: `[TESTE SIMULADO] Criação de conta Hoymiles para ${testPayload.customer.name} (${testPayload.organization.name}). Login: ${testPayload.account.loginEmail}. Senha entregue via Hyperflow.`,
-          protocols: {
-            hoymiles: [{
-              account_email: testPayload.account.loginEmail,
-              org_name: testPayload.organization.name,
-              parent_org: "APItest",
-              role: "Installer",
-              created_at: testPayload.occurredAt,
-              conversation_id: testPayload.conversationId,
-              status: "COMPLETED"
-            }],
-            hyperflow: [testPayload.conversationId]
-          },
-          timeline: [{
-            id: `tl-sim-${Date.now()}`,
-            type: "hoymiles_account_created",
-            title: "Teste de Webhook SLA Executado",
-            detail: `Simulação de criação de conta Hoymiles via painel Solar Agenda. Conta vinculada a APItest (${testPayload.organization.name}).`,
-            author: "TARS Webhook Simulator",
-            timestamp: testPayload.occurredAt
-          }],
-          notes: "Caso de teste gerado pelo simulador de webhook SLA."
-        };
-        list.unshift(newCase);
+    // GET is intentionally a read/sync endpoint.
+    // It does not fabricate an event and now exposes
+    // the same SLA state that POST updates.
+    return send(res, 200, {
+      ok:
+        true,
 
-        const logs = Array.isArray(storage.slaWebhookLogs) ? [...storage.slaWebhookLogs] : [];
-        const testLog = {
-          id: `sla-wh-test-${Date.now()}`,
-          receivedAt: new Date().toISOString(),
-          event: "hoymiles.account.created (TEST)",
-          source: "tars-vision-bridge-test",
-          bridgeVersion: "1.2.37",
-          status: "COMPLETED",
-          customer: testPayload.customer.name,
-          email: testPayload.account.loginEmail,
-          company: testPayload.organization.name,
-          conversationId: testPayload.conversationId,
-          matchedCaseId: testCaseId,
-          isNewCase: true
-        };
-        logs.unshift(testLog);
+      service:
+        "solar-agenda-sla-webhook",
 
-        writeStorage({
-          slaCases: list,
-          slaWebhookLogs: logs.slice(0, 50)
-        });
+      receiver:
+        "tars-vision-bridge",
 
-        return sendResponse(res, 200, {
-          ok: true,
-          tested: true,
-          caseId: testCaseId,
-          customer: testPayload.customer.name,
-          email: testPayload.account.loginEmail,
-          company: testPayload.organization.name,
-          log: testLog
-        });
-      }
+      accepts:
+        ["POST"],
 
-      const eventType = payload.event || "sla.generic.event";
-      const occurredAt = payload.occurredAt || new Date().toISOString();
-      const conversationId = (payload.conversationId || "").trim();
-      const source = payload.source || "tars-vision-bridge";
-      const bridgeVersion = payload.bridgeVersion || "1.2.37";
-      const eventStatus = payload.status || "COMPLETED";
+      logs:
+        logs.slice(
+          0,
+          MAX_LOGS
+        ),
 
-      const customerObj = payload.customer || {};
-      const orgObj = payload.organization || {};
-      const accountObj = payload.account || {};
+      cases,
 
-      const customerName = (customerObj.name || orgObj.name || payload.customerName || "Cliente Solar").trim();
-      const customerEmail = (customerObj.email || accountObj.loginEmail || payload.email || "").trim();
-      const customerPhone = (customerObj.phone || payload.phone || "").trim();
-      const customerState = (customerObj.state || payload.state || "").trim();
+      latest:
+        logs[0] ||
+        null,
 
-      // Hyperflow specific fields
-      const conversationUrl = (payload.conversationUrl || payload.conversationLink || payload.url || "").trim();
-      const hyperflowProtocol = (payload.protocol || payload.hyperflowProtocol || (conversationId ? `HF-${conversationId.replace(/^hyperflow:/, '').slice(0, 8)}` : "")).trim();
-      const isHyperflowEvent = eventType.startsWith("hyperflow") || !!conversationUrl || !!payload.protocol || !!payload.messages;
+      counts: {
+        logs:
+          logs.length,
 
-      const orgName = (orgObj.name || payload.company || "").trim();
-      const parentOrg = (orgObj.parentOrganization || "APItest").trim();
-      const orgRole = (orgObj.role || "Installer").trim();
-      const loginEmail = (accountObj.loginEmail || customerEmail).trim().toLowerCase();
+        cases:
+          cases.length,
 
-      const storage = readStorage();
-      const list = Array.isArray(storage.slaCases) ? [...storage.slaCases] : [];
-      let matchedCaseId = null;
-      let isNewCase = false;
-
-      // 1. Look for matching case
-      const targetCaseId = (payload.caseId || payload.slaCaseId || "").trim();
-      for (let i = 0; i < list.length; i++) {
-        const c = { ...list[i] };
-        const cEmail = (c.customer?.email || "").toLowerCase();
-        const cPhone = (c.customer?.phone || "").replace(/\D/g, "");
-        const searchPhone = customerPhone.replace(/\D/g, "");
-
-        const matchesDirectId = Boolean(targetCaseId && c.id.toLowerCase() === targetCaseId.toLowerCase());
-        const matchesProtocol = Boolean(
-          hyperflowProtocol && (
-            (c.protocols?.hyperflow_id && String(c.protocols.hyperflow_id).toLowerCase() === hyperflowProtocol.toLowerCase()) ||
-            (c.protocols?.hyperflow?.protocol && String(c.protocols.hyperflow.protocol).toLowerCase() === hyperflowProtocol.toLowerCase()) ||
-            (c.conversation?.protocol && String(c.conversation.protocol).toLowerCase() === hyperflowProtocol.toLowerCase())
+        processedEvents:
+          Array.isArray(
+            storage.tarsProcessedSlaWebhookEvents
           )
-        );
-        const matchesConv = Boolean(conversationId && (
-          (c.protocols?.hyperflow_id && String(c.protocols.hyperflow_id).includes(conversationId)) ||
-          (c.protocols?.hyperflow?.conversation_id === conversationId) ||
-          (Array.isArray(c.protocols?.hyperflow) && c.protocols.hyperflow.includes(conversationId))
-        ));
-        const matchesConvUrl = Boolean(conversationUrl && (
-          (c.protocols?.hyperflow_url && c.protocols.hyperflow_url === conversationUrl) ||
-          (c.protocols?.hyperflow?.conversation_url === conversationUrl) ||
-          (c.conversation?.conversation_url === conversationUrl)
-        ));
-        const matchesEmail = Boolean(loginEmail && cEmail && (cEmail === loginEmail));
-        const matchesPhone = Boolean(searchPhone.length >= 8 && cPhone && (cPhone === searchPhone || cPhone.endsWith(searchPhone) || searchPhone.endsWith(cPhone)));
-        const matchesHoymilesProto = Boolean(loginEmail && Array.isArray(c.protocols?.hoymiles) && c.protocols.hoymiles.some(h => (h.account_email || "").toLowerCase() === loginEmail));
+            ? storage
+                .tarsProcessedSlaWebhookEvents
+                .length
+            : 0
+      },
 
-        if (matchesDirectId || matchesProtocol || matchesConv || matchesConvUrl || matchesEmail || matchesPhone || matchesHoymilesProto) {
-          matchedCaseId = c.id;
-          c.protocols = c.protocols || {};
-
-          if (isHyperflowEvent) {
-            const protoCode = hyperflowProtocol || c.protocols.hyperflow_id || (conversationId ? `HF-${conversationId}` : "HF-AUTO");
-            c.protocols.hyperflow = {
-              protocol: protoCode,
-              conversation_url: conversationUrl || c.protocols.hyperflow_url || (conversationId ? `https://conversas.hyperflow.global/chat/${conversationId}` : ""),
-              conversation_id: conversationId || c.protocols.hyperflow?.conversation_id || "",
-              status: "LINKED",
-              synced_at: occurredAt,
-              customer_name: customerName,
-              customer_phone: customerPhone
-            };
-            c.protocols.hyperflow_id = protoCode;
-            c.protocols.hyperflow_url = c.protocols.hyperflow.conversation_url;
-
-            c.conversation = c.conversation || {};
-            c.conversation.source = "Hyperflow";
-            c.conversation.channel = "WhatsApp";
-            c.conversation.conversation_url = c.protocols.hyperflow.conversation_url;
-            c.conversation.protocol = protoCode;
-
-            if (Array.isArray(payload.messages) && payload.messages.length > 0) {
-              c.conversation.messages = payload.messages;
-            }
-
-            if (!Array.isArray(c.timeline)) c.timeline = [];
-            c.timeline.push({
-              id: `tl-hf-${Date.now()}`,
-              type: "hyperflow_protocol_linked",
-              title: `Protocolo Hyperflow Vinculado: ${protoCode}`,
-              detail: `Conversa sincronizada via TARS Bridge. Link: ${c.protocols.hyperflow.conversation_url || 'N/A'}. Total de mensagens: ${c.conversation.messages?.length || 0}.`,
-              author: `TARS Vision Bridge v${bridgeVersion}`,
-              timestamp: occurredAt
-            });
-          } else {
-            c.protocols.hoymiles = Array.isArray(c.protocols.hoymiles) ? [...c.protocols.hoymiles] : [];
-            if (!c.protocols.hoymiles.some(h => (h.account_email || "").toLowerCase() === loginEmail)) {
-              c.protocols.hoymiles.push({
-                account_email: loginEmail,
-                org_name: orgName,
-                parent_org: parentOrg,
-                role: orgRole,
-                created_at: occurredAt,
-                conversation_id: conversationId,
-                status: eventStatus
-              });
-            }
-
-            if (conversationId && Array.isArray(c.protocols.hyperflow) && !c.protocols.hyperflow.includes(conversationId)) {
-              c.protocols.hyperflow.push(conversationId);
-            }
-
-            if (!Array.isArray(c.timeline)) c.timeline = [];
-            c.timeline.push({
-              id: `tl-wh-${Date.now()}`,
-              type: "hoymiles_account_created",
-              title: `Conta Hoymiles Criada: ${loginEmail}`,
-              detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Credenciais entregues via Hyperflow.`,
-              author: `TARS Vision Bridge v${bridgeVersion}`,
-              timestamp: occurredAt
-            });
-
-            if (["aberto", "em_analise", "aguardando_terceiros"].includes(c.status)) {
-              c.status = "concluido";
-              c.resolved_at = occurredAt;
-            }
-          }
-
-          c.updated_at = new Date().toISOString();
-          list[i] = c;
-          break;
-        }
-      }
-
-      // 2. If no case exists, auto-create documented SLA case
-      if (!matchedCaseId) {
-        isNewCase = true;
-        const caseNum = Math.floor(1000 + Math.random() * 9000);
-
-        if (isHyperflowEvent) {
-          matchedCaseId = `SLA-HF-${caseNum}`;
-          const protoCode = hyperflowProtocol || `HF-${caseNum}`;
-          const hfUrl = conversationUrl || (conversationId ? `https://conversas.hyperflow.global/chat/${conversationId}` : "");
-
-          const newCase = {
-            id: matchedCaseId,
-            title: `Atendimento Hyperflow — ${customerName}`,
-            priority: payload.priority || "alta",
-            status: payload.status || "aberto",
-            created_at: occurredAt,
-            updated_at: occurredAt,
-            sla_deadline: new Date(Date.now() + 24 * 3600000).toISOString(),
-            sla_limit_hours: 24,
-            responsible_tech: "Suporte Solar (TARS Bridge)",
-            customer: {
-              name: customerName,
-              email: customerEmail,
-              phone: customerPhone,
-              state: customerState,
-              site_location: payload.site_location || ""
-            },
-            equipment: payload.equipment || {
-              manufacturer: payload.manufacturer || "Inversor Solar",
-              model: payload.model || "Equipamento em Diagnóstico",
-              serial_numbers: payload.serial_number ? [payload.serial_number] : (payload.serial_numbers || [])
-            },
-            problem_summary: payload.problem_summary || (payload.messages?.[0]?.text ? `Conversa Hyperflow: ${payload.messages[0].text.slice(0, 180)}` : "Atendimento importado via TARS Bridge."),
-            next_action: "Avaliar protocolo e histórico do cliente via conversa Hyperflow vinculada.",
-            protocols: {
-              hyperflow: {
-                protocol: protoCode,
-                conversation_url: hfUrl,
-                conversation_id: conversationId,
-                status: "LINKED",
-                synced_at: occurredAt,
-                customer_name: customerName,
-                customer_phone: customerPhone
-              },
-              hyperflow_id: protoCode,
-              hyperflow_url: hfUrl,
-              jira: [],
-              hoymiles: []
-            },
-            conversation: {
-              source: "Hyperflow",
-              channel: "WhatsApp",
-              conversation_url: hfUrl,
-              protocol: protoCode,
-              messages: Array.isArray(payload.messages) ? payload.messages : []
-            },
-            timeline: [
-              {
-                id: `tl-hf-init-${Date.now()}`,
-                type: "hyperflow_protocol_linked",
-                title: `Caso Aberto via Hyperflow Protocol: ${protoCode}`,
-                detail: `Atendimento recebido via TARS Bridge Webhook com link direto da conversa: ${hfUrl || 'N/A'}.`,
-                author: `TARS Vision Bridge v${bridgeVersion}`,
-                timestamp: occurredAt
-              }
-            ]
-          };
-          list.unshift(newCase);
-        } else {
-          matchedCaseId = `SLA-HOY-${caseNum}`;
-          const newCase = {
-            id: matchedCaseId,
-            title: `Criação de Conta Hoymiles — ${orgName || customerName}`,
-            priority: "media",
-            status: "concluido",
-            created_at: occurredAt,
-            resolved_at: occurredAt,
-            sla_limit_hours: 24,
-            responsible_tech: "TARS Vision Bridge",
-            customer: {
-              name: customerName,
-              email: customerEmail || loginEmail,
-              phone: customerPhone,
-              state: customerState,
-              company: orgName
-            },
-            equipment: {
-              manufacturer: "Hoymiles",
-              model: "S-Miles Cloud (Portal do Instalador)",
-              serial_numbers: ["N/A - Conta Web/App"]
-            },
-            problem_summary: `Criação automatizada de conta de Instalador Hoymiles para ${customerName} (${orgName}). Login: ${loginEmail}. Senha padrão configurada e entregue via Hyperflow.`,
-            protocols: {
-              hoymiles: [{
-                account_email: loginEmail,
-                org_name: orgName,
-                parent_org: parentOrg,
-                role: orgRole,
-                created_at: occurredAt,
-                conversation_id: conversationId,
-                status: eventStatus
-              }],
-              hyperflow: conversationId ? [conversationId] : []
-            },
-            timeline: [
-              {
-                id: `tl-sla-init-${Date.now()}`,
-                type: "hoymiles_account_created",
-                title: "Conta Hoymiles Criada & Entregue",
-                detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Status: ${eventStatus}. Credenciais e links de treinamento repassados ao cliente via chat Hyperflow.`,
-                author: `TARS Vision Bridge v${bridgeVersion}`,
-                timestamp: occurredAt
-              }
-            ],
-            notes: `Evento recebido via Webhook SLA (${eventType}) da extensão TARS Vision Bridge v${bridgeVersion}. Senhas não são armazenadas no Solar Agenda por segurança.`
-          };
-          list.unshift(newCase);
-        }
-      }
-
-      // 3. Log event
-      const logs = Array.isArray(storage.slaWebhookLogs) ? [...storage.slaWebhookLogs] : [];
-      const logEntry = {
-        id: `sla-wh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        receivedAt: new Date().toISOString(),
-        event: eventType,
-        source,
-        bridgeVersion,
-        status: eventStatus,
-        customer: customerName,
-        email: loginEmail,
-        company: orgName,
-        conversationId: conversationId || null,
-        matchedCaseId,
-        isNewCase
-      };
-      logs.unshift(logEntry);
-
-      writeStorage({
-        slaCases: list,
-        slaWebhookLogs: logs.slice(0, 50)
-      });
-
-      return sendResponse(res, 200, {
-        ok: true,
-        message: "SLA webhook event successfully processed and persisted.",
-        caseId: matchedCaseId,
-        isNewCase,
-        event: eventType,
-        logId: logEntry.id
-      });
-    } catch (err) {
-      return sendResponse(res, 500, { ok: false, error: err.message });
-    }
+      now:
+        new Date().toISOString()
+    });
   }
 
-  return sendResponse(res, 405, { ok: false, error: "Method not allowed" });
+  if (req.method !== "POST") {
+    res.setHeader(
+      "Allow",
+      "GET, POST, OPTIONS"
+    );
+
+    return send(
+      res,
+      405,
+      {
+        ok:
+          false,
+
+        error:
+          "method_not_allowed"
+      }
+    );
+  }
+
+  try {
+    const raw =
+      await parseJsonBody(req);
+
+    const events =
+      normalizeIncoming(
+        raw || {}
+      );
+
+    if (!events.length) {
+      return send(
+        res,
+        400,
+        {
+          ok:
+            false,
+
+          error:
+            "no_events"
+        }
+      );
+    }
+
+    let storage =
+      readAppStorage();
+
+    const results =
+      [];
+
+    for (const ev of events) {
+      const result =
+        processEvent(
+          storage,
+          ev
+        );
+
+      storage = {
+        ...storage,
+
+        slaCases:
+          result.cases,
+
+        slaWebhookLogs: [
+          result.log,
+          ...(Array.isArray(
+            storage.slaWebhookLogs
+          )
+            ? storage.slaWebhookLogs
+            : [])
+        ].slice(
+          0,
+          MAX_LOGS
+        ),
+
+        tarsProcessedSlaWebhookEvents:
+          result.processed
+      };
+
+      const persisted =
+        writeAppStorage({
+          slaCases:
+            storage.slaCases,
+
+          slaWebhookLogs:
+            storage.slaWebhookLogs,
+
+          tarsProcessedSlaWebhookEvents:
+            storage.tarsProcessedSlaWebhookEvents
+        });
+
+      if (!persisted) {
+        throw new Error(
+          "Solar Agenda storage write failed"
+        );
+      }
+
+      results.push({
+        eventId:
+          ev.eventId,
+
+        event:
+          ev.event,
+
+        caseId:
+          result.caseId,
+
+        isNewCase:
+          result.isNewCase,
+
+        duplicate:
+          result.duplicate,
+
+        receivedAt:
+          result.log.receivedAt
+      });
+    }
+
+    return send(
+      res,
+      200,
+      {
+        ok:
+          true,
+
+        received:
+          true,
+
+        processed:
+          results.length,
+
+        results,
+
+        // Kept for compatibility with
+        // the original single-event response.
+        caseId:
+          results.length === 1
+            ? results[0].caseId
+            : undefined,
+
+        isNewCase:
+          results.length === 1
+            ? results[0].isNewCase
+            : undefined,
+
+        event:
+          results.length === 1
+            ? results[0].event
+            : "batch",
+
+        logId:
+          results.length === 1
+            ? storage
+                .slaWebhookLogs[0]?.id
+            : undefined
+      }
+    );
+  } catch (err) {
+    console.error(
+      "[TARS SLA WEBHOOK] ERROR",
+      err
+    );
+
+    return send(
+      res,
+      400,
+      {
+        ok:
+          false,
+
+        error:
+          err?.message ||
+          "invalid_webhook_payload"
+      }
+    );
+  }
 }
