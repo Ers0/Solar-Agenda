@@ -3,7 +3,7 @@
 // the extension into the Hyperflow document. It then starts the real capture
 // layer exactly once.
 (() => {
-  const VERSION = '1.2.37';
+  const VERSION = '1.2.83';
   const mark = () => {
     try {
       document.documentElement.dataset.tarsHyperflowBoot = 'active';

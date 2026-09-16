@@ -1,20 +1,22 @@
 {
   "manifest_version": 3,
   "name": "TARS Vision Bridge",
-  "version": "1.2.81",
-  "description": "TARS Vision Bridge (v1.2.81) Observer Mode: Passive event collection, Hyperflow observation, SLA layer, and diagnostics.",
+  "version": "1.2.83",
+  "description": "Solar Agenda TARS Vision Bridge with passive Observer Mode, cross-site workflow learning, Hyperflow memory, Hoymiles automation, page vision, and safety controls.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "alarms"
   ],
   "host_permissions": [
     "https://conversas.hyperflow.global/*",
     "https://global.hoymiles.com/*",
     "https://solar-agenda.vercel.app/*",
     "http://localhost:3000/*",
-    "https://*.run.app/*"
+    "https://*.run.app/*",
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
@@ -37,7 +39,8 @@
       ],
       "js": [
         "hyperflow_boot.js",
-        "hyperflow.js"
+        "hyperflow.js",
+        "observer.js"
       ],
       "run_at": "document_start",
       "all_frames": false
@@ -47,14 +50,21 @@
         "https://global.hoymiles.com/*"
       ],
       "js": [
-        "hoymiles.js"
+        "hoymiles.js",
+        "observer.js"
       ],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
   "action": {
-    "default_title": "TARS Vision Bridge — SLA & Hoymiles Lab",
-    "default_popup": "popup.html"
+    "default_title": "Ask TARS about this page",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   }
 }

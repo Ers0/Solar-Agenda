@@ -1269,6 +1269,21 @@ app.post("/api/sla/webhook/test", async (req, res) => {
 // =============================================================================
 
 // 1. Ingest Batched Events from TARS Vision Bridge
+app.get("/api/tars/observer/events", (req, res) => {
+  const currentCases = getObserverCases();
+  return res.json({
+    ok: true,
+    service: "Solar Agenda TARS Observer Events API",
+    status: "ACTIVE",
+    mode: "PASSIVE_OBSERVER",
+    safetyBoundary: "ZERO_CUSTOMER_INTERACTION_ENFORCED",
+    endpoint: "/api/tars/observer/events",
+    methods: ["POST", "GET"],
+    casesCount: currentCases.length,
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.post("/api/tars/observer/events", async (req, res) => {
   try {
     const payload: IngestEventsBatchPayload = req.body || { events: [] };

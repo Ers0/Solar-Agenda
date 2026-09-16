@@ -13,10 +13,73 @@ const HANDSHAKE_TIMEOUT_MS = 5000;
 // alive in the SPA, rather than waiting for a TARS Vision click.
 let appTabId = null;
 
+const AUTOMATION_ENABLED_KEY = 'tarsAutomationEnabled';
+const EMERGENCY_STOP_KEY = 'tarsEmergencyStop';
+const EMERGENCY_STOP_AT_KEY = 'tarsEmergencyStopAt';
+const OBSERVER_MODE_KEY = 'tarsObserverMode';
+const LEARNING_MODE_KEY = 'tarsLearningMode';
+const TARS_OBSERVER_BACKEND_KEY = 'tarsObserverBackendUrl';
+const DEFAULT_TARS_OBSERVER_BACKEND = 'https://solar-agenda.vercel.app/api/tars/observer/events';
+const OBSERVER_404_PAUSE_KEY = 'tarsObserverBackend404';
+let observerActiveCases = new Map();
+let observerQueue = [];
+let observerFlushTimer = null;
+let observerBackendPaused = false;
+const windowActiveCases = new Map();
+const injectedLearningTabs = new Set();
+
+async function ensureObserverDefaults() {
+  try {
+    const r = await chrome.storage.local.get([OBSERVER_MODE_KEY, LEARNING_MODE_KEY, OBSERVER_404_PAUSE_KEY]);
+    if (r[OBSERVER_MODE_KEY] === undefined) {
+      await chrome.storage.local.set({ [OBSERVER_MODE_KEY]: true, [LEARNING_MODE_KEY]: false, [AUTOMATION_ENABLED_KEY]: false });
+      console.info('[TARS Observer] default observer mode enabled; customer automation disabled');
+    }
+  } catch (error) { console.warn('[TARS Observer] could not initialize observer defaults', error); }
+}
+
+chrome.runtime.onInstalled.addListener(() => ensureObserverDefaults());
+chrome.runtime.onStartup.addListener(() => ensureObserverDefaults());
+ensureObserverDefaults();
+
+
+chrome.tabs.onActivated.addListener(({tabId, windowId}) => {
+  if (learningEnabled().catch(() => false)) observeTab(tabId, 'tab_activated');
+});
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' || changeInfo.url) observeTab(tabId, changeInfo.url ? 'url_changed' : 'page_loaded');
+});
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  injectedLearningTabs.delete(tabId);
+  observerActiveCases.delete(tabId);
+});
+
+
+async function automationEmergencyStopped() {
+  const r = await chrome.storage.local.get([EMERGENCY_STOP_KEY]);
+  return r[EMERGENCY_STOP_KEY] === true;
+}
+
+async function broadcastEmergencyStop() {
+  const tabs = await chrome.tabs.query({});
+  const results = [];
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id)) continue;
+    const url = String(tab.url || '');
+    if (!/^https:\/\/(conversas\.hyperflow\.global|global\.hoymiles\.com|solar-agenda\.vercel\.app)\//i.test(url)) continue;
+    try {
+      const response = await new Promise(resolve => chrome.tabs.sendMessage(tab.id, { type: 'TARS_EMERGENCY_STOP' }, r => resolve(chrome.runtime.lastError ? { ok:false, error:chrome.runtime.lastError.message } : (r || {ok:true}))));
+      results.push({ tabId: tab.id, ok: response?.ok !== false, error: response?.error || null });
+    } catch (error) { results.push({ tabId: tab.id, ok:false, error:String(error?.message || error) }); }
+  }
+  return results;
+}
+
+
 // ---------------------------------------------------------------- app tab ---
 
 async function findAppTab() {
-  const tabs = await chrome.tabs.query({ url: [APP_URL_MATCH, 'http://localhost:3000/*', 'https://*.run.app/*'] });
+  const tabs = await chrome.tabs.query({ url: APP_URL_MATCH });
   // Prefer a tab that is already loaded; a discarded one cannot answer.
   const live = tabs.find(t => t.status === 'complete') || tabs[0];
   return live || null;
@@ -88,19 +151,19 @@ async function handshake(tabId) {
   return { ok: true };
 }
 
+async function waitForAppReady(tabId) {
+  const deadline = Date.now() + HANDSHAKE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const r = await handshake(tabId);
+    if (r.ok) return r;
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  return { ok: false, error: 'solar_agenda_not_ready' };
+}
+
 
 // ------------------------------------------------------------------ capture ---
 // ------------------------------------------------------- Hyperflow memory ---
-
-// Hyperflow memory is deliberately NOT part of the Vision critical path.
-// The Hyperflow content script is declared in manifest.json and can capture
-// independently. A failure there must never prevent the original bridge from
-// reaching Solar Agenda.
-
-// The extension captures the BROWSER TAB you are looking at. It cannot see a
-// shared window from the app's own screen share — that is a separate stream
-// living in the app tab — and it does not need to: for anything outside the
-// browser, the app's share is the right tool.
 
 async function captureActiveTab() {
   console.info('[bridge] captureActiveTab start');
@@ -193,9 +256,7 @@ async function captureActiveTab() {
       thread = res.result.thread || null;
       domLength = res.result.fullLength || 0;
     }
-  } catch (e) {
-    // Page with strict CSP
-  }
+  } catch (e) {}
 
   console.info('[bridge] captureActiveTab success', { url: tab.url, domLength });
 
@@ -254,7 +315,7 @@ async function getActiveHoymilesTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tab = tabs[0];
   if (!tab?.id || !String(tab.url || '').startsWith('https://global.hoymiles.com/')) {
-    return { error: 'Torne a aba do Hoymiles ativa primeiro no navegador.' };
+    return { error: 'Make the Hoymiles tab active first.' };
   }
   return { tab };
 }
@@ -310,6 +371,50 @@ function sendToHoymiles(tabId, message, timeoutMs = HOYMILES_AUTOMATION_TIMEOUT_
   });
 }
 
+async function waitForHoymilesNavigation(tabId, timeoutMs = 30000) {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = value => {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve(value);
+    };
+    const onUpdated = (id, info, updatedTab) => {
+      if (id !== tabId) return;
+      if (info.status === 'complete') finish(updatedTab || { id: tabId });
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    setTimeout(() => finish({ id: tabId }), timeoutMs);
+  });
+}
+
+async function ensureHoymilesHome(tabId) {
+  const state = await sendToHoymiles(tabId, { type: 'HOYMILES_PREFLIGHT' }, 4000);
+  console.info('[TARS Hoymiles BG] preflight: where am I?', state);
+
+  if (state?.isHome) {
+    console.info('[TARS Hoymiles BG] preflight: already on the right page');
+    return { ok: true, navigated: false, state };
+  }
+
+  console.info('[TARS Hoymiles BG] preflight: wrong page, navigating to Hoymiles home', {
+    from: state?.url || null,
+    page: state?.page || 'UNKNOWN'
+  });
+  const navigationWait = waitForHoymilesNavigation(tabId, 30000);
+  await chrome.tabs.update(tabId, { url: HOYMILES_URL, active: true });
+  await navigationWait;
+
+  const ready = await waitForHoymilesReady(tabId);
+  if (!ready) return { ok: false, error: 'hoymiles_home_not_ready' };
+
+  const after = await sendToHoymiles(tabId, { type: 'HOYMILES_PREFLIGHT' }, 4000);
+  console.info('[TARS Hoymiles BG] preflight: now at', after);
+  if (!after?.isHome) return { ok: false, error: 'hoymiles_home_navigation_failed', state: after };
+  return { ok: true, navigated: true, state: after };
+}
+
 async function waitForHoymilesReady(tabId) {
   console.info('[TARS Hoymiles BG] waiting for adapter', { tabId });
   const started = Date.now();
@@ -336,79 +441,6 @@ async function waitForHoymilesReady(tabId) {
   return false;
 }
 
-// --------------------------------------------------- TARS Observer Mode (v1.2.81) ---
-// Hard Safety Boundary: Passive Observer ONLY — ZERO interaction with customer
-const TARS_OBSERVER_VERSION = '1.2.81';
-const TARS_OBSERVER_ENDPOINT_KEY = 'tarsObserverEndpointUrl';
-const DEFAULT_OBSERVER_ENDPOINT = 'https://solar-agenda.vercel.app/api/tars/observer/events';
-
-let observerEventQueue = [];
-let observerFlushTimer = null;
-const OBSERVER_FLUSH_INTERVAL_MS = 2000;
-const OBSERVER_MAX_BATCH_SIZE = 25;
-
-async function getObserverEndpointUrl() {
-  const stored = await chrome.storage.local.get([TARS_OBSERVER_ENDPOINT_KEY]);
-  return String(stored[TARS_OBSERVER_ENDPOINT_KEY] || DEFAULT_OBSERVER_ENDPOINT).trim();
-}
-
-function queueObserverEvent(event) {
-  if (!event || !event.eventType) return;
-  const enriched = {
-    eventId: event.eventId || `obs-ev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    eventType: event.eventType,
-    observedAt: event.observedAt || new Date().toISOString(),
-    origin: event.origin || 'tars-vision-bridge',
-    page: event.page || '',
-    title: event.title || '',
-    tabId: event.tabId || null,
-    case: event.case || {},
-    data: event.data || {}
-  };
-  observerEventQueue.push(enriched);
-
-  if (observerEventQueue.length >= OBSERVER_MAX_BATCH_SIZE) {
-    flushObserverEvents();
-  } else if (!observerFlushTimer) {
-    observerFlushTimer = setTimeout(flushObserverEvents, OBSERVER_FLUSH_INTERVAL_MS);
-  }
-}
-
-async function flushObserverEvents() {
-  if (observerFlushTimer) {
-    clearTimeout(observerFlushTimer);
-    observerFlushTimer = null;
-  }
-  if (observerEventQueue.length === 0) return;
-
-  const eventsToSend = observerEventQueue.splice(0, OBSERVER_MAX_BATCH_SIZE);
-  const endpoint = await getObserverEndpointUrl();
-  const payload = {
-    version: '1.0',
-    source: 'tars-vision-bridge',
-    bridgeVersion: TARS_OBSERVER_VERSION,
-    events: eventsToSend
-  };
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    if (!response.ok) {
-      console.warn('[TARS Observer Bridge] Event batch delivery returned status', response.status);
-    } else {
-      console.info(`[TARS Observer Bridge] Ingested ${eventsToSend.length} observer events.`);
-    }
-  } catch (err) {
-    console.warn('[TARS Observer Bridge] Error transmitting event batch:', err);
-  }
-}
-
-// --------------------------------------------------- Solar Agenda SLA Webhook ---
 const TARS_SLA_WEBHOOK_STORAGE_KEY = 'tarsSlaWebhookUrl';
 const DEFAULT_SLA_WEBHOOK_URL = 'https://solar-agenda.vercel.app/api/sla/webhook';
 
@@ -416,6 +448,204 @@ async function getSlaWebhookUrl() {
   const stored = await chrome.storage.local.get([TARS_SLA_WEBHOOK_STORAGE_KEY]);
   return String(stored[TARS_SLA_WEBHOOK_STORAGE_KEY] || DEFAULT_SLA_WEBHOOK_URL).trim();
 }
+
+async function findHyperflowTab(preferredTabId = null) {
+  if (preferredTabId) {
+    try {
+      const tab = await chrome.tabs.get(preferredTabId);
+      if (tab?.id && /^https:\/\/conversas\.hyperflow\.global\//i.test(String(tab.url || ''))) return tab;
+    } catch (_) {}
+  }
+  const tabs = await chrome.tabs.query({ url: 'https://conversas.hyperflow.global/*' });
+  return tabs.find(t => t.active && t.status === 'complete')
+    || tabs.find(t => t.status === 'complete')
+    || tabs[0]
+    || null;
+}
+
+async function reportHyperflowConversationToSlaWebhook(snapshot) {
+  const url = await getSlaWebhookUrl();
+  if (!url) return { ok: false, skipped: true, error: 'sla_webhook_not_configured' };
+  const payload = {
+    event: 'hyperflow.conversation.synced',
+    version: '1.0',
+    source: 'tars-vision-bridge',
+    bridgeVersion: '1.2.61',
+    occurredAt: new Date().toISOString(),
+    status: 'SYNCED',
+    protocol: snapshot?.protocol || null,
+    conversationUrl: snapshot?.conversationUrl || null,
+    conversationId: snapshot?.conversationId || null,
+    messageCount: Number(snapshot?.messageCount || 0),
+    timeline: Array.isArray(snapshot?.timeline) ? snapshot.timeline : [],
+    customer: snapshot?.customer || null,
+    privacy: snapshot?.privacy || { sensitiveFieldsOmitted: true, messagePiiRedacted: true }
+  };
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TARS-Webhook-Event': 'hyperflow.conversation.synced' },
+      body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
+    });
+    const responseText = await response.text().catch(() => '');
+    if (!response.ok) return { ok: false, status: response.status, error: `sla_webhook_http_${response.status}`, response: responseText.slice(0, 500) };
+    return { ok: true, status: response.status, response: responseText.slice(0, 500), protocol: payload.protocol, messageCount: payload.messageCount };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error), url };
+  }
+}
+
+async function ensureHyperflowCapture(tabId) {
+  if (!Number.isInteger(tabId)) return { ok: false, error: 'invalid_hyperflow_tab' };
+
+  const sendStatus = () => new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, { type: 'HYPERFLOW_STATUS' }, response => {
+      if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'no_receiver' });
+      resolve(response || { ok: false, error: 'empty_status_response' });
+    });
+  });
+
+  let status = await sendStatus();
+  if (status?.ok && status?.active !== undefined) return { ok: true, status, injected: false };
+
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['hyperflow.js', 'observer.js'] });
+  } catch (error) {
+    return { ok: false, error: `hyperflow_injection_failed:${String(error?.message || error)}` };
+  }
+
+  await new Promise(r => setTimeout(r, 150));
+  status = await sendStatus();
+  if (status?.ok) return { ok: true, status, injected: true };
+  return { ok: false, error: status?.error || 'hyperflow_capture_not_ready' };
+}
+
+async function syncHyperflowToSla(preferredTabId = null) {
+  const tab = await findHyperflowTab(preferredTabId);
+  if (!tab?.id) return { ok: false, error: 'no_hyperflow_tab' };
+
+  const ready = await ensureHyperflowCapture(tab.id);
+  if (!ready.ok) return { ok: false, error: ready.error };
+
+  const snapshotResult = await new Promise(resolve => {
+    chrome.tabs.sendMessage(tab.id, { type: 'HYPERFLOW_GET_SLA_SNAPSHOT' }, response => {
+      if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'hyperflow_snapshot_failed' });
+      resolve(response || { ok: false, error: 'empty_hyperflow_snapshot' });
+    });
+  });
+  if (!snapshotResult?.ok || !snapshotResult.snapshot) return { ok: false, error: snapshotResult?.error || 'hyperflow_snapshot_failed' };
+  const webhook = await reportHyperflowConversationToSlaWebhook(snapshotResult.snapshot);
+  console.info('[TARS SLA] Hyperflow conversation sync', {
+    tabId: tab.id,
+    protocol: snapshotResult.snapshot.protocol,
+    messageCount: snapshotResult.snapshot.messageCount,
+    webhook
+  });
+  return { ok: webhook.ok, tabId: tab.id, snapshot: snapshotResult.snapshot, webhook };
+}
+
+const HYPERFLOW_SYNC_ALARM = 'tars-hyperflow-sync-5min';
+const HYPERFLOW_EOD_ALARM = 'tars-hyperflow-eod-purge';
+const HYPERFLOW_SYNC_STATE_KEY = 'tarsHyperflowLastWebhookSync';
+
+async function getHyperflowSyncState() {
+  const data = await chrome.storage.local.get([HYPERFLOW_SYNC_STATE_KEY]);
+  return data[HYPERFLOW_SYNC_STATE_KEY] || {};
+}
+
+async function setHyperflowSyncState(state) {
+  await chrome.storage.local.set({ [HYPERFLOW_SYNC_STATE_KEY]: state });
+}
+
+async function syncHyperflowDirtyConversations() {
+  const tabs = await chrome.tabs.query({ url: 'https://conversas.hyperflow.global/*' });
+  if (!tabs.length) return { ok: true, tabs: 0, conversations: 0 };
+  const state = await getHyperflowSyncState();
+  const seen = new Set();
+  let synced = 0;
+  let failed = 0;
+
+  for (const tab of tabs) {
+    if (!tab?.id || tab.status !== 'complete') continue;
+    const result = await new Promise(resolve => {
+      chrome.tabs.sendMessage(tab.id, { type: 'HYPERFLOW_GET_SLA_SNAPSHOTS_FOR_SYNC' }, response => {
+        if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'snapshot_failed' });
+        resolve(response || { ok: false, error: 'empty_snapshot_response' });
+      });
+    });
+    if (!result?.ok) { failed++; continue; }
+
+    for (const snapshot of (result.snapshots || [])) {
+      const cid = String(snapshot?.conversationId || '');
+      if (!cid || seen.has(cid)) continue;
+      const last = state[cid] || '';
+      if (last && String(snapshot.updatedAt || '') <= last) continue;
+      seen.add(cid);
+      const webhook = await reportHyperflowConversationToSlaWebhook(snapshot);
+      if (webhook.ok) {
+        state[cid] = snapshot.updatedAt || snapshot.capturedAt || new Date().toISOString();
+        synced++;
+      } else {
+        failed++;
+      }
+    }
+  }
+
+  const cutoff = Date.now() - 48 * 60 * 60 * 1000;
+  for (const [cid, ts] of Object.entries(state)) {
+    if (!ts || Date.parse(ts) < cutoff) delete state[cid];
+  }
+  await setHyperflowSyncState(state);
+  console.info('[TARS SLA] 5-minute Hyperflow sync', { tabs: tabs.length, conversations: synced, failed });
+  return { ok: failed === 0, tabs: tabs.length, conversations: synced, failed };
+}
+
+async function purgeHyperflowLocalCaptureAtEod() {
+  const tabs = await chrome.tabs.query({ url: 'https://conversas.hyperflow.global/*' });
+  let purged = 0;
+  for (const tab of tabs) {
+    if (!tab?.id || tab.status !== 'complete') continue;
+    const result = await new Promise(resolve => {
+      chrome.tabs.sendMessage(tab.id, { type: 'HYPERFLOW_PURGE_LOCAL_CAPTURE' }, response => {
+        if (chrome.runtime.lastError) return resolve({ ok: false });
+        resolve(response || { ok: false });
+      });
+    });
+    if (result?.ok) purged++;
+  }
+  await chrome.storage.local.remove([HYPERFLOW_SYNC_STATE_KEY]);
+  console.info('[TARS SLA] EOD local Hyperflow capture purge', { tabs: tabs.length, purged });
+  return { ok: true, tabs: tabs.length, purged };
+}
+
+function scheduleHyperflowEodPurge() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(18, 10, 0, 0);
+  if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  chrome.alarms.create(HYPERFLOW_EOD_ALARM, { when: next.getTime(), periodInMinutes: 24 * 60 });
+}
+
+chrome.alarms.onAlarm.addListener(async alarm => {
+  try {
+    if (alarm.name === HYPERFLOW_SYNC_ALARM) await syncHyperflowDirtyConversations();
+    if (alarm.name === HYPERFLOW_EOD_ALARM) {
+      await purgeHyperflowLocalCaptureAtEod();
+      scheduleHyperflowEodPurge();
+    }
+  } catch (error) {
+    console.warn('[TARS SLA] scheduled Hyperflow task failed', error);
+  }
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create(HYPERFLOW_SYNC_ALARM, { delayInMinutes: 5, periodInMinutes: 5 });
+  scheduleHyperflowEodPurge();
+});
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(HYPERFLOW_SYNC_ALARM, { delayInMinutes: 5, periodInMinutes: 5 });
+  scheduleHyperflowEodPurge();
+});
 
 async function reportHoymilesAccountToSlaWebhook({ data, conversationId, reporting }) {
   const url = await getSlaWebhookUrl();
@@ -425,7 +655,7 @@ async function reportHoymilesAccountToSlaWebhook({ data, conversationId, reporti
     event: 'hoymiles.account.created',
     version: '1.0',
     source: 'tars-vision-bridge',
-    bridgeVersion: '1.2.37',
+    bridgeVersion: '1.2.59',
     occurredAt: new Date().toISOString(),
     status: reporting?.ok ? 'COMPLETED' : 'ACCOUNT_CREATED',
     conversationId: conversationId || null,
@@ -443,7 +673,6 @@ async function reportHoymilesAccountToSlaWebhook({ data, conversationId, reporti
     },
     account: {
       loginEmail: data?.email || null,
-      // Do not transmit/store the generated password in the SLA webhook by default.
       passwordSharedWithCustomer: true
     },
     reporting: reporting || null
@@ -467,50 +696,33 @@ async function reportHoymilesAccountToSlaWebhook({ data, conversationId, reporti
   }
 }
 
-async function reportHyperflowProtocolToSlaWebhook({ data, conversationId, protocol, conversationUrl, messages, caseId }) {
-  const url = await getSlaWebhookUrl();
-  if (!url) return { ok: false, skipped: true, error: 'sla_webhook_not_configured' };
-
-  const protoCode = protocol || (conversationId ? `HF-${String(conversationId).replace(/^hyperflow:/, '').slice(0, 8)}` : 'HF-AUTO');
-  const chatLink = conversationUrl || (conversationId ? `https://conversas.hyperflow.global/chat/${conversationId}` : '');
-
-  const payload = {
-    event: 'hyperflow.protocol.linked',
-    version: '1.0',
-    source: 'tars-vision-bridge',
-    bridgeVersion: '1.2.37',
-    occurredAt: new Date().toISOString(),
-    status: 'COMPLETED',
-    caseId: caseId || null,
-    conversationId: conversationId || null,
-    protocol: protoCode,
-    conversationUrl: chatLink,
-    conversationLink: chatLink,
-    customer: {
-      name: data?.fullName || data?.name || null,
-      email: data?.email || null,
-      phone: data?.phone || null,
-      state: data?.state || null
-    },
-    messages: Array.isArray(messages) ? messages : []
-  };
-
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      credentials: 'omit',
-      cache: 'no-store'
+async function sendHoymilesHelpPromptToHyperflow(tabId, conversationId) {
+  if (!tabId) return { ok: false, error: 'no_hyperflow_tab' };
+  const text = 'Por hora, posso auxiliar com algo mais?';
+  console.info('[TARS Hoymiles BG] asking customer if further help is needed', { tabId, conversationId });
+  return await new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, { type: 'HYPERFLOW_DO_SEND_REPLY', text, conversationId }, response => {
+      if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'hyperflow_send_failed' });
+      resolve(response || { ok: false, error: 'empty_hyperflow_response' });
     });
-    const responseText = await response.text().catch(() => '');
-    if (!response.ok) {
-      return { ok: false, status: response.status, error: `sla_webhook_http_${response.status}`, response: responseText.slice(0, 500) };
-    }
-    return { ok: true, status: response.status, payload, response: responseText.slice(0, 500) };
-  } catch (error) {
-    return { ok: false, error: String(error?.message || error), url };
-  }
+  });
+}
+
+async function closeHoymilesConversationAsSuccess(tabId, conversationId) {
+  if (!tabId || !conversationId) return { ok: false, error: 'missing_hyperflow_context' };
+  console.info('[TARS Hoymiles BG] requesting safe Hyperflow close', { tabId, conversationId });
+  return await new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, {
+      type: 'HYPERFLOW_CLOSE_SUCCESS',
+      conversationId
+    }, response => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message || 'hyperflow_close_failed' });
+        return;
+      }
+      resolve(response || { ok: false, error: 'empty_hyperflow_close_response' });
+    });
+  });
 }
 
 async function sendHoymilesSuccessToHyperflow(tabId, conversationId, data) {
@@ -538,6 +750,7 @@ async function sendHoymilesSuccessToHyperflow(tabId, conversationId, data) {
 }
 
 async function runHoymilesAutomation(data) {
+  if (await automationEmergencyStopped()) return { ok:false, error:'emergency_stopped' };
   console.info('[TARS Hoymiles BG] automation start', { email: data?.email, company: data?.company, state: data?.state });
   let tab = await findHoymilesTab();
   console.info('[TARS Hoymiles BG] existing tab', tab ? { id: tab.id, url: tab.url, status: tab.status } : null);
@@ -551,17 +764,240 @@ async function runHoymilesAutomation(data) {
   await chrome.tabs.update(tab.id, { active: true });
   const ready = await waitForHoymilesReady(tab.id);
   if (!ready) return { ok: false, error: 'hoymiles_adapter_not_ready' };
-  console.info('[TARS Hoymiles BG] sending HOYMILES_RUN_INSTALLER', { tabId: tab.id });
+
+  const preflight = await ensureHoymilesHome(tab.id);
+  if (!preflight.ok) return preflight;
+
+  console.info('[TARS Hoymiles BG] sending HOYMILES_RUN_INSTALLER', { tabId: tab.id, preflight });
   const result = await sendToHoymiles(tab.id, { type: 'HOYMILES_RUN_INSTALLER', data });
   console.info('[TARS Hoymiles BG] automation result', result);
+  if (await automationEmergencyStopped()) return { ok:false, error:'emergency_stopped', interruptedResult:result };
+
   return result;
 }
 
+async function learningEnabled() {
+  const r = await chrome.storage.local.get([LEARNING_MODE_KEY]);
+  return r[LEARNING_MODE_KEY] === true;
+}
+
+async function anyObservationEnabled() {
+  const r = await chrome.storage.local.get([OBSERVER_MODE_KEY, LEARNING_MODE_KEY]);
+  return r[OBSERVER_MODE_KEY] === true || r[LEARNING_MODE_KEY] === true;
+}
+
+function tabIsWebPage(tab) {
+  return !!tab && Number.isInteger(tab.id) && /^https?:\/\//i.test(String(tab.url || '')) && !/^https:\/\/solar-agenda\.vercel\.app\//i.test(String(tab.url || ''));
+}
+
+async function injectLearningObserver(tabId) {
+  if (!(await learningEnabled())) return { ok:false, skipped:true };
+  if (injectedLearningTabs.has(tabId)) return { ok:true, already:true };
+  try {
+    await chrome.scripting.executeScript({ target: { tabId, allFrames:false }, files:['observer.js'] });
+    injectedLearningTabs.add(tabId);
+    return { ok:true };
+  } catch (error) {
+    return { ok:false, error:String(error?.message || error) };
+  }
+}
+
+async function observeTab(tabId, reason='tab') {
+  if (!(await learningEnabled())) return;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tabIsWebPage(tab)) return;
+    const caseHint = windowActiveCases.get(tab.windowId) || null;
+    queueObserverEvent({
+      eventId: crypto.randomUUID(), eventType:'SITE_ACCESSED', observedAt:new Date().toISOString(),
+      reason, url: String(tab.url || '').split('#')[0].slice(0,500),
+      title: String(tab.title || '').slice(0,180), windowId: tab.windowId,
+      caseHint: caseHint ? { conversationId:caseHint.conversationId||null, protocol:caseHint.protocol||null } : null
+    }, tab.id, caseHint);
+    await injectLearningObserver(tab.id);
+  } catch (_) {}
+}
+
+async function getObserverBackendUrl() {
+  const r = await chrome.storage.local.get([TARS_OBSERVER_BACKEND_KEY]);
+  return String(r[TARS_OBSERVER_BACKEND_KEY] || DEFAULT_TARS_OBSERVER_BACKEND).trim();
+}
+
+async function observerEnabled() {
+  const r = await chrome.storage.local.get([OBSERVER_MODE_KEY]);
+  return r[OBSERVER_MODE_KEY] === true;
+}
+
+function queueObserverEvent(event, senderTabId = null, conversation = null) {
+  const active = conversation || (senderTabId != null ? observerActiveCases.get(senderTabId) : null) || null;
+  observerQueue.push({
+    eventId: event.eventId || crypto.randomUUID(),
+    eventType: event.eventType || 'OBSERVER_EVENT',
+    observedAt: event.observedAt || new Date().toISOString(),
+    source: 'tars-vision-bridge',
+    bridgeVersion: '1.2.83',
+    tabId: senderTabId,
+    case: active ? {
+      conversationId: active.conversationId || null,
+      protocol: active.protocol || null,
+      conversationUrl: active.conversationUrl || null
+    } : null,
+    event
+  });
+  if (observerQueue.length > 250) observerQueue.splice(0, observerQueue.length - 250);
+  scheduleObserverFlush();
+}
+
+function scheduleObserverFlush() {
+  if (observerFlushTimer) return;
+  observerFlushTimer = setTimeout(() => { observerFlushTimer = null; flushObserverQueue(); }, 1000);
+}
+
+async function flushObserverQueue() {
+  if (!(await anyObservationEnabled())) return;
+  if (observerBackendPaused) return;
+  if (!observerQueue.length) return;
+  const url = await getObserverBackendUrl();
+  if (!/^https:\/\//i.test(url)) return;
+  const batch = observerQueue.splice(0, 25);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TARS-Event': 'observer' },
+      credentials: 'omit', cache: 'no-store',
+      body: JSON.stringify({ version: '1.0', source: 'tars-vision-bridge', bridgeVersion: '1.2.83', events: batch })
+    });
+    if (!response.ok) {
+      if (response.status === 404) {
+        observerBackendPaused = true;
+        await chrome.storage.local.set({ [OBSERVER_404_PAUSE_KEY]: true });
+        observerQueue.unshift(...batch);
+        console.warn('[TARS Observer] backend endpoint returned 404; delivery paused until backend URL is changed or extension is reloaded after the route is deployed');
+        return;
+      }
+      throw new Error(`observer_backend_http_${response.status}`);
+    }
+    console.info('[TARS Observer] batch delivered', { count: batch.length, status: response.status });
+  } catch (error) {
+    observerQueue.unshift(...batch);
+    if (observerQueue.length > 250) observerQueue.splice(0, observerQueue.length - 250);
+    console.warn('[TARS Observer] delivery failed; queued locally', String(error?.message || error));
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+
+  if (msg && msg.type === 'TARS_OBSERVER_CASE_ACTIVE') {
+    if (Number.isInteger(sender?.tab?.id)) {
+      observerActiveCases.set(sender.tab.id, msg.conversation || null);
+      if (Number.isInteger(sender?.tab?.windowId)) windowActiveCases.set(sender.tab.windowId, msg.conversation || null);
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_OBSERVER_HYPERFLOW_BATCH') {
+    if (Number.isInteger(sender?.tab?.id)) {
+      observerActiveCases.set(sender.tab.id, msg.conversation || null);
+      if (Number.isInteger(sender?.tab?.windowId)) windowActiveCases.set(sender.tab.windowId, msg.conversation || null);
+    }
+    const conversation = msg.conversation || null;
+    for (const m of (msg.messages || [])) {
+      queueObserverEvent({
+        eventId: m.id ? `hf:${m.id}` : crypto.randomUUID(),
+        eventType: 'HYPERFLOW_MESSAGE',
+        observedAt: m.capturedAt || new Date().toISOString(),
+        direction: m.direction,
+        speaker: m.speaker,
+        messageId: m.id || null,
+        timestamp: m.timestamp || null,
+        text: String(m.text || '').slice(0, 12000),
+        attachmentCount: Number(m.attachmentCount || 0),
+        page: 'https://conversas.hyperflow.global/'
+      }, sender?.tab?.id || null, conversation);
+    }
+    sendResponse({ ok: true, queued: (msg.messages || []).length });
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_OBSERVER_EVENT') {
+    queueObserverEvent(msg.event || {}, sender?.tab?.id || null);
+    sendResponse({ ok: true, queued: true });
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_OBSERVER_SET_LEARNING') {
+    (async () => {
+      const enabled = !!msg.enabled;
+      await chrome.storage.local.set({ [LEARNING_MODE_KEY]: enabled });
+      if (enabled) {
+        const tabs = await chrome.tabs.query({});
+        for (const tab of tabs) if (tabIsWebPage(tab)) observeTab(tab.id, 'learning_enabled');
+      } else {
+        injectedLearningTabs.clear();
+      }
+      return { ok:true, enabled };
+    })().then(sendResponse).catch(error => sendResponse({ok:false,error:String(error?.message || error)}));
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_OBSERVER_BACKEND_RESET') {
+    observerBackendPaused = false;
+    chrome.storage.local.remove([OBSERVER_404_PAUSE_KEY]).then(() => { scheduleObserverFlush(); sendResponse({ok:true}); }).catch(error => sendResponse({ok:false,error:String(error?.message || error)}));
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_EMERGENCY_STOP') {
+    (async () => {
+      const now = new Date().toISOString();
+      await chrome.storage.local.set({
+        [EMERGENCY_STOP_KEY]: true,
+        [EMERGENCY_STOP_AT_KEY]: now,
+        [AUTOMATION_ENABLED_KEY]: false
+      });
+      const results = await broadcastEmergencyStop();
+      console.warn('[TARS SAFETY] EMERGENCY STOP ACTIVE', { at: now, results });
+      return { ok: true, stopped: true, at: now, results };
+    })().then(sendResponse).catch(error => sendResponse({ ok:false, error:String(error?.message || error) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_EMERGENCY_RESUME') {
+    (async () => {
+      const now = new Date().toISOString();
+      await chrome.storage.local.set({
+        [EMERGENCY_STOP_KEY]: false,
+        [AUTOMATION_ENABLED_KEY]: true
+      });
+      console.info('[TARS SAFETY] EMERGENCY STOP RELEASED — new automation permitted', { at: now });
+      return { ok: true, stopped: false, resumed: true, at: now };
+    })().then(sendResponse).catch(error => sendResponse({ ok:false, error:String(error?.message || error) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_AUTOMATION_SET') {
+    (async () => {
+      const enabled = !!msg.enabled;
+      if (enabled) {
+        await chrome.storage.local.set({ [AUTOMATION_ENABLED_KEY]: true, [EMERGENCY_STOP_KEY]: false });
+        console.info('[TARS SAFETY] automation re-enabled for NEW runs; previously stopped runs do not resume');
+      } else {
+        await chrome.storage.local.set({ [AUTOMATION_ENABLED_KEY]: false });
+      }
+      return { ok:true, enabled, emergencyStopped: enabled ? false : await automationEmergencyStopped() };
+    })().then(sendResponse).catch(error => sendResponse({ok:false,error:String(error?.message || error)}));
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_SLA_SYNC_HYPERFLOW') {
+    syncHyperflowToSla(msg.tabId || sender?.tab?.id || null).then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
   if (msg && msg.type === 'TARS_SLA_WEBHOOK_SET') {
     (async () => {
       const url = String(msg.url || '').trim();
-      if (url && !/^https?:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_http_or_https' };
+      if (url && !/^https:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_https' };
       await chrome.storage.local.set({ [TARS_SLA_WEBHOOK_STORAGE_KEY]: url });
       return { ok: true, url: url || DEFAULT_SLA_WEBHOOK_URL };
     })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
@@ -577,91 +1013,159 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const url = String(msg.url || await getSlaWebhookUrl()).trim();
       if (!url) return { ok: false, error: 'sla_webhook_not_configured' };
-      const testData = msg.data || {
-        company: 'SolarTech Brasil Teste',
-        fullName: 'Eng. Marcelo Rocha',
-        email: 'marcelo.solar@teste.com.br',
-        phone: '11988776655',
-        state: 'São Paulo'
+      if (!/^https:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_https', url };
+      const payload = {
+        event: 'hoymiles.account.created', version: '1.0', source: 'tars-vision-bridge',
+        bridgeVersion: '1.2.59', occurredAt: new Date().toISOString(), status: 'COMPLETED', test: true,
+        conversationId: 'TEST-WEBHOOK-' + Date.now(),
+        customer: { name: 'TARS Webhook Test', email: 'webhook-test@example.invalid', phone: '', state: 'São Paulo' },
+        organization: { name: 'TARS Webhook Test Org', parentOrganization: 'APItest', type: 'Installer', role: 'Installer' },
+        account: { loginEmail: 'webhook-test@example.invalid', passwordSharedWithCustomer: true },
+        reporting: { ok: true, method: 'test' }
       };
-      const result = await reportHoymilesAccountToSlaWebhook({
-        data: testData,
-        conversationId: 'hyperflow-test-' + Date.now().toString().slice(-4),
-        reporting: { ok: true, method: 'manual_extension_test' }
+      console.info('[TARS SLA] sending explicit webhook test', { url, payload });
+      try {
+        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TARS-Webhook-Test': '1' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store' });
+        const responseText = await response.text().catch(() => '');
+        return { ok: response.ok, status: response.status, url, response: responseText.slice(0, 1000), payload };
+      } catch (error) {
+        return { ok: false, url, error: String(error?.message || error), payload };
+      }
+    })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (msg && ['TARS_STORAGE_GET','TARS_STORAGE_SET','TARS_STORAGE_REMOVE'].includes(msg.type)) {
+    (async () => {
+      try {
+        if (msg.type === 'TARS_STORAGE_GET') {
+          const data = await chrome.storage.local.get(msg.keys || []);
+          return { ok: true, data };
+        }
+        if (msg.type === 'TARS_STORAGE_SET') {
+          await chrome.storage.local.set(msg.items || {});
+          return { ok: true };
+        }
+        await chrome.storage.local.remove(msg.keys || []);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: String(error?.message || error) };
+      }
+    })().then(sendResponse);
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_HOYMILES_AI_INTENT') {
+    (async () => {
+      let tab = await findAppTab();
+      if (!tab?.id) {
+        console.info('[TARS Hoymiles BG] Solar Agenda tab not found; opening background tab for AI intent');
+        try {
+          tab = await openAppTab();
+        } catch (error) {
+          return { ok: false, error: 'solar_agenda_tab_open_failed', detail: String(error?.message || error) };
+        }
+      }
+      if (!tab?.id) return { ok: false, error: 'solar_agenda_tab_not_found_after_open' };
+      const ready = await waitForAppReady(tab.id);
+      if (!ready.ok) return ready;
+      const prompt = String(msg.prompt || '').trim();
+      if (!prompt) return { ok: false, error: 'empty_intent_prompt' };
+      const result = await new Promise(resolve => {
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'TARS_HOYMILES_AI_CLASSIFY_PAGE',
+          prompt
+        }, response => {
+          if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'ai_content_message_failed' });
+          resolve(response || { ok: false, error: 'empty_ai_reply' });
+        });
       });
       return result;
     })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
 
-  if (msg && msg.type === 'TARS_HYPERFLOW_SEND_PROTOCOL') {
-    (async () => {
-      const result = await reportHyperflowProtocolToSlaWebhook(msg.payload || msg);
-      return result;
-    })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
-    return true;
-  }
-
-  if (msg && msg.type === 'TARS_GET_SLA_INFO') {
-    (async () => {
-      const webhookUrl = await getSlaWebhookUrl();
-      const mem = await chrome.storage.local.get([
-        'tarsHoymilesLastEmail',
-        'tarsHoymilesLastCreatedAt',
-        'tarsHoymilesLastCompany',
-        'tarsHoymilesLastConversationId'
-      ]);
-      return {
-        ok: true,
-        webhookUrl,
-        defaultWebhookUrl: DEFAULT_SLA_WEBHOOK_URL,
-        version: '1.2.37',
-        lastCreated: {
-          email: mem.tarsHoymilesLastEmail || null,
-          company: mem.tarsHoymilesLastCompany || null,
-          createdAt: mem.tarsHoymilesLastCreatedAt || null,
-          conversationId: mem.tarsHoymilesLastConversationId || null
+  if (msg && msg.type === 'TARS_HOYMILES_DEBUG_GET_ORIGIN') {
+    chrome.storage.local.get(['tarsHoymilesOrigin']).then(async r => {
+      const origin = r.tarsHoymilesOrigin || null;
+      let live = null;
+      if (origin?.tabId != null) {
+        try {
+          const tab = await chrome.tabs.get(origin.tabId);
+          live = { id: tab.id, windowId: tab.windowId, active: !!tab.active, status: tab.status, url: tab.url || null, title: tab.title || null };
+        } catch (error) {
+          live = { error: String(error?.message || error) };
         }
-      };
-    })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
-    return true;
-  }
-
-  if (msg && msg.type === 'OPEN_SOLAR_AGENDA_SLA') {
-    (async () => {
-      let tab = await findAppTab();
-      if (tab) {
-        chrome.tabs.update(tab.id, { active: true });
-        chrome.tabs.sendMessage(tab.id, { type: 'NAVIGATE_VIEW', view: 'sla' }, () => {});
-        return { ok: true, opened: false, focused: true };
       }
-      const newTab = await chrome.tabs.create({ url: APP_ORIGIN + '#view-sla', active: true });
-      return { ok: true, opened: true, tabId: newTab.id };
+      sendResponse({ ok: true, origin, live });
+    }).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_HOYMILES_DEBUG_STATUS') {
+    chrome.storage.local.get(['tarsHoymilesOrigin', 'tarsHoymilesLastEmail', 'tarsHoymilesLastConversationId', 'tarsHoymilesStates']).then(async r => {
+      sendResponse({
+        ok: true,
+        origin: r.tarsHoymilesOrigin || null,
+        lastEmail: r.tarsHoymilesLastEmail || null,
+        lastConversationId: r.tarsHoymilesLastConversationId || null,
+        states: r.tarsHoymilesStates || {}
+      });
+    }).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TARS_HOYMILES_DEBUG_RETURN_TO_ORIGIN') {
+    (async () => {
+      const r = await chrome.storage.local.get(['tarsHoymilesOrigin']);
+      const origin = r.tarsHoymilesOrigin || null;
+      if (!Number.isInteger(origin?.tabId)) return { ok: false, error: 'no_stored_origin', origin };
+      let lastError = null;
+      const attempts = [];
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const step = { attempt };
+        try {
+          const tab = await chrome.tabs.get(origin.tabId);
+          const windowId = Number.isInteger(origin.windowId) ? origin.windowId : tab.windowId;
+          const win = await chrome.windows.get(windowId);
+          step.before = { tabId: tab.id, windowId: tab.windowId, active: !!tab.active, url: tab.url || null, windowState: win.state };
+          await chrome.windows.update(windowId, { state: win.state === 'minimized' ? 'normal' : win.state, focused: true });
+          await chrome.tabs.update(origin.tabId, { active: true });
+          await new Promise(r => setTimeout(r, 200));
+          const verify = await chrome.tabs.get(origin.tabId);
+          const active = await chrome.tabs.query({ active: true, windowId });
+          step.after = { tabId: verify.id, windowId: verify.windowId, active: !!verify.active, activeTabs: active.map(t => ({ id: t.id, url: t.url || null })) };
+          attempts.push(step);
+          if (verify.active && verify.windowId === windowId) {
+            return { ok: true, tabId: verify.id, windowId, attempts };
+          }
+          lastError = new Error('activation_not_confirmed');
+        } catch (error) {
+          lastError = error;
+          step.error = String(error?.message || error);
+          attempts.push(step);
+        }
+        await new Promise(r => setTimeout(r, 400));
+      }
+      return { ok: false, error: String(lastError?.message || lastError || 'debug_return_failed'), origin, attempts };
     })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
-    return true;
-  }
-
-  // TARS Observer Mode Event Handler
-  if (msg && msg.type === 'TARS_OBSERVER_EVENT') {
-    queueObserverEvent({
-      ...msg.event,
-      tabId: sender?.tab?.id || msg.event?.tabId
-    });
-    sendResponse({ ok: true, queued: true });
-    return true;
-  }
-
-  if (msg && msg.type === 'TARS_OBSERVER_FLUSH') {
-    flushObserverEvents()
-      .then(() => sendResponse({ ok: true }))
-      .catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
 
   if (msg && msg.type === 'HYPERFLOW_SEND_REPLY') {
-    // HARD SAFETY BOUNDARY: In passive Observer Mode (v1.2.81), zero customer interaction is permitted
-    console.warn('[TARS Observer] Outbound reply blocked by passive Observer Mode hard safety boundary.');
-    sendResponse({ ok: false, blocked: true, reason: 'observer_mode_passive_safety_boundary' });
+    (async () => {
+      if (!sender?.tab?.id) return { ok: false, error: 'no_hyperflow_tab' };
+      return await new Promise(resolve => {
+        chrome.tabs.sendMessage(sender.tab.id, {
+          type: 'HYPERFLOW_DO_SEND_REPLY',
+          text: msg.text,
+          conversationId: msg.conversationId
+        }, response => {
+          if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'send_failed' });
+          resolve(response || { ok: false, error: 'empty_send_response' });
+        });
+      });
+    })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
 
@@ -687,13 +1191,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg && msg.type === 'HOYMILES_CREATE_REQUEST') {
+    const originTabId = Number.isInteger(sender?.tab?.id) ? sender.tab.id : null;
+    const originWindowId = Number.isInteger(sender?.tab?.windowId) ? sender.tab.windowId : null;
     console.info('[TARS Hoymiles BG] CREATE_REQUEST received', {
       conversationId: msg.conversation?.conversationId || null,
       email: msg.data?.email || null,
       company: msg.data?.company || null,
-      state: msg.data?.state || null
+      state: msg.data?.state || null,
+      originTabId,
+      originWindowId
     });
+    chrome.storage.local.set({
+      tarsHoymilesOrigin: {
+        tabId: originTabId,
+        windowId: originWindowId,
+        conversationId: msg.conversation?.conversationId || null,
+        url: sender?.tab?.url || null,
+        title: sender?.tab?.title || null,
+        capturedAt: new Date().toISOString()
+      }
+    }).catch(error => console.warn('[TARS Hoymiles BG] failed to persist origin diagnostic', error));
     (async () => {
+      const automationSetting = await chrome.storage.local.get(['tarsAutomationEnabled', 'tarsEmergencyStop']);
+      if (automationSetting.tarsEmergencyStop === true) {
+        console.warn('[TARS Hoymiles BG] automation blocked by EMERGENCY STOP');
+        return { ok: false, error: 'emergency_stopped' };
+      }
+      if (automationSetting.tarsAutomationEnabled === false) {
+        console.warn('[TARS Hoymiles BG] automation blocked by safety switch');
+        return { ok: false, error: 'automation_disabled' };
+      }
       const data = msg.data;
       if (!data?.email) return { ok: false, error: 'missing_email' };
       const memory = await chrome.storage.local.get(['tarsHoymilesLastEmail']);
@@ -705,6 +1232,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (result.ok) {
         const email = String(data.email).trim().toLowerCase();
         const conversationId = msg.conversation?.conversationId || '';
+        const requestedOriginTabId = Number.isInteger(msg.originTabId) ? msg.originTabId : null;
+        const hyperflowTabId = requestedOriginTabId || originTabId;
 
         await chrome.storage.local.set({
           tarsHoymilesLastEmail: email,
@@ -727,11 +1256,106 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await chrome.storage.local.set({ tarsHoymilesStates: map });
         }
 
+        if (await automationEmergencyStopped()) return { ok:false, error:'emergency_stopped_after_creation', accountCreated:true };
+
         const reporting = await sendHoymilesSuccessToHyperflow(
-          sender?.tab?.id,
+          hyperflowTabId,
           conversationId,
           data
         );
+
+        if (await automationEmergencyStopped()) return { ok:false, error:'emergency_stopped_before_reporting', accountCreated:true };
+
+        let helpPrompt = { ok: false, error: 'no_hyperflow_tab' };
+        if (reporting?.ok && hyperflowTabId && conversationId) {
+          await new Promise(r => setTimeout(r, 900));
+          helpPrompt = await sendHoymilesHelpPromptToHyperflow(hyperflowTabId, conversationId);
+        }
+        if (helpPrompt?.ok && conversationId) {
+          const statesAfterHelp = await chrome.storage.local.get(['tarsHoymilesStates']);
+          const helpMap = statesAfterHelp.tarsHoymilesStates || {};
+          helpMap[conversationId] = {
+            ...(helpMap[conversationId] || {}),
+            status: 'AWAITING_HELP_RESPONSE',
+            helpPromptSentAt: new Date().toISOString(),
+            helpPromptText: 'Por hora, posso auxiliar com algo mais?'
+          };
+          await chrome.storage.local.set({ tarsHoymilesStates: helpMap });
+        }
+
+        const restoreOriginHyperflowTab = async () => {
+          const diagnostic = {
+            expectedTabId: hyperflowTabId,
+            expectedWindowId: originWindowId,
+            startedAt: new Date().toISOString(),
+            attempts: []
+          };
+          if (!Number.isInteger(hyperflowTabId)) {
+            diagnostic.error = 'no_origin_hyperflow_tab';
+            console.warn('[TARS Hoymiles BG] RETURN DEBUG', diagnostic);
+            return { ok: false, ...diagnostic };
+          }
+          let lastError = null;
+          for (let attempt = 1; attempt <= 5; attempt++) {
+            const step = { attempt };
+            try {
+              const originTab = await chrome.tabs.get(hyperflowTabId);
+              step.tabExists = true;
+              step.tabUrl = originTab.url || null;
+              step.tabWindowId = originTab.windowId;
+              step.tabActiveBefore = !!originTab.active;
+              step.windowStateBefore = (await chrome.windows.get(originTab.windowId)).state;
+
+              const targetWindowId = Number.isInteger(originWindowId) ? originWindowId : originTab.windowId;
+              step.targetWindowId = targetWindowId;
+
+              try {
+                const targetWindow = await chrome.windows.get(targetWindowId);
+                step.targetWindowState = targetWindow.state;
+                if (targetWindow.state === 'minimized') {
+                  await chrome.windows.update(targetWindowId, { state: 'normal', focused: true });
+                } else {
+                  await chrome.windows.update(targetWindowId, { focused: true });
+                }
+                step.windowFocused = true;
+              } catch (windowError) {
+                step.windowFocusError = String(windowError?.message || windowError);
+                throw windowError;
+              }
+
+              await chrome.tabs.update(hyperflowTabId, { active: true });
+              step.tabActivationRequested = true;
+              await new Promise(r => setTimeout(r, 200));
+
+              const verify = await chrome.tabs.get(hyperflowTabId);
+              const activeTabs = await chrome.tabs.query({ active: true, windowId: targetWindowId });
+              step.tabActiveAfter = !!verify.active;
+              step.verifiedWindowId = verify.windowId;
+              step.activeTabs = activeTabs.map(t => ({ id: t.id, url: t.url || null, active: !!t.active }));
+              diagnostic.attempts.push(step);
+
+              if (verify.active && verify.windowId === targetWindowId) {
+                diagnostic.ok = true;
+                diagnostic.finishedAt = new Date().toISOString();
+                console.info('[TARS Hoymiles BG] RETURN DEBUG success', diagnostic);
+                return { ok: true, tabId: hyperflowTabId, windowId: targetWindowId, diagnostic };
+              }
+              lastError = new Error('hyperflow_tab_activation_not_confirmed');
+            } catch (error) {
+              lastError = error;
+              step.error = String(error?.message || error);
+              diagnostic.attempts.push(step);
+            }
+            await new Promise(r => setTimeout(r, 400));
+          }
+          diagnostic.ok = false;
+          diagnostic.error = String(lastError?.message || lastError || 'tab_activation_failed');
+          diagnostic.finishedAt = new Date().toISOString();
+          console.warn('[TARS Hoymiles BG] RETURN DEBUG failed', diagnostic);
+          return { ok: false, error: diagnostic.error, diagnostic };
+        };
+
+        const restoreResult = await restoreOriginHyperflowTab();
 
         const slaWebhook = await reportHoymilesAccountToSlaWebhook({
           data,
@@ -745,21 +1369,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const map = states.tarsHoymilesStates || {};
           map[conversationId] = {
             ...(map[conversationId] || {}),
-            status: reporting.ok ? 'COMPLETED' : 'REPORTING_FAILED',
+            status: helpPrompt?.ok ? 'AWAITING_HELP_RESPONSE' : (reporting.ok ? 'COMPLETED' : 'REPORTING_FAILED'),
             email,
             company: data.company || '',
             accountCreated: true,
             reporting,
             slaWebhook,
+            restoreResult,
             completedAt: new Date().toISOString()
           };
           await chrome.storage.local.set({ tarsHoymilesStates: map });
         }
 
         await chrome.storage.local.remove('tarsHoymilesPending');
-        return { ...result, reporting, slaWebhook };
+        return { ...result, reporting, helpPrompt };
       }
-
       if (msg.conversation?.conversationId) {
         const states = await chrome.storage.local.get(['tarsHoymilesStates']);
         const map = states.tarsHoymilesStates || {};
