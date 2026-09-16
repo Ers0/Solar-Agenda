@@ -3,13 +3,52 @@ import { getTransporter, formatSmtpError, parseJsonBody, sendResponse, handleCor
 export default async function handler(req, res) {
   if (handleCors(req, res)) return;
 
+  // GET: SMTP status check (consolidated from /api/smtp-status)
+  if (req.method === "GET") {
+    const host = process.env.SMTP_HOST || "mail.mailcorp.com.br";
+    const port = process.env.SMTP_PORT || "587";
+    const user = process.env.SMTP_USER || "";
+    const from = process.env.SMTP_FROM || user || "";
+    const configured = !!(user && process.env.SMTP_PASS);
+
+    return sendResponse(res, 200, {
+      configured,
+      host,
+      port,
+      from,
+      hasServerCredentials: configured,
+    });
+  }
+
   if (req.method !== "POST") {
-    return sendResponse(res, 405, { ok: false, error: "Method not allowed. Use POST." });
+    return sendResponse(res, 405, { ok: false, error: "Method not allowed. Use POST or GET." });
   }
 
   let userEmail = "";
   try {
     const body = await parseJsonBody(req);
+    const url = new URL(req.url, "http://localhost");
+    const action = url.searchParams.get("action") || body?.action;
+
+    // Action: verify connection test (consolidated from /api/test-smtp)
+    if (action === "test" || body?.testConnection) {
+      const smtpConfig = body?.smtpConfig || {};
+      userEmail = smtpConfig?.user || "";
+      const transporter = getTransporter(smtpConfig);
+
+      const verifyPromise = transporter.verify();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Connection timed out after 6 seconds. Please check host and port.")), 6000)
+      );
+
+      await Promise.race([verifyPromise, timeoutPromise]);
+
+      return sendResponse(res, 200, {
+        ok: true,
+        message: `Connection to email server (${smtpConfig.host || 'Gmail'}) verified successfully! Ready to dispatch.`,
+      });
+    }
+
     const { to, cc, subject, text, html, smtpConfig } = body || {};
     userEmail = smtpConfig?.user || "";
 

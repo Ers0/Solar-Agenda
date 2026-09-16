@@ -13037,7 +13037,7 @@ function loadMailcorpSettings(){
   }
   if(fromInput && cfg.from !== undefined) fromInput.value = cfg.from;
 
-  fetch('/api/smtp-status')
+  fetch('/api/send-email')
     .then(r => r.json())
     .then(status => {
       const updateBadgeText = (text, color) => {
@@ -13147,10 +13147,10 @@ document.getElementById('smtp-test-btn')?.addEventListener('click', async () => 
   if(feedback){ feedback.style.color = 'var(--amber)'; feedback.textContent = `Verifying connection to ${user.endsWith('@gmail.com') ? 'Gmail' : host}...`; }
 
   try{
-    const resp = await fetch('/api/test-smtp', {
+    const resp = await fetch('/api/send-email?action=test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ smtpConfig: { user, pass, host, port, secure, provider } })
+      body: JSON.stringify({ action: 'test', smtpConfig: { user, pass, host, port, secure, provider } })
     });
     let data;
     const cType = resp.headers.get('content-type') || '';
@@ -13529,10 +13529,11 @@ async function initSlaWebhookUI() {
         feedback.textContent = 'Disparando evento de teste para o endpoint /api/sla/webhook/test...';
       }
       try {
-        const res = await fetch('/api/sla/webhook/test', {
+        const res = await fetch('/api/sla/webhook?action=test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            action: 'test',
             company: 'SolarTech Brasil Teste',
             name: 'Engenheiro Marcelo Rocha',
             email: 'marcelo.solar@teste.com.br',
@@ -13571,7 +13572,7 @@ async function loadSlaWebhookLogs() {
   const entries = document.getElementById('sla-webhook-log-entries');
   if (!box || !entries) return;
   try {
-    const res = await fetch('/api/sla/webhook/logs');
+    const res = await fetch('/api/sla/webhook');
     const data = await res.json();
     if (data.ok && Array.isArray(data.logs) && data.logs.length > 0) {
       box.style.display = 'block';

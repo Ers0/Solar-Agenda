@@ -80,9 +80,36 @@ function formatSmtpError(err: any, user?: string): string {
   return msg;
 }
 
-// --- API: Send Email ---
-app.post("/api/send-email", async (req, res) => {
+// --- API: Send Email (also handles status on GET and test on action=test) ---
+app.get(["/api/send-email", "/api/smtp-status"], (req, res) => {
+  const storage = readAppStorage();
+  const savedSmtp = storage.smtpConfig;
+  const host = savedSmtp?.host || process.env.SMTP_HOST || "mail.mailcorp.com.br";
+  const port = savedSmtp?.port || process.env.SMTP_PORT || "587";
+  const user = savedSmtp?.user || process.env.SMTP_USER || "";
+  const from = savedSmtp?.from || savedSmtp?.user || process.env.SMTP_FROM || user || "";
+  const configured = !!((user && (savedSmtp?.pass || process.env.SMTP_PASS)) || (process.env.SMTP_USER && process.env.SMTP_PASS));
+
+  res.json({
+    configured,
+    host,
+    port,
+    from,
+    hasServerCredentials: configured,
+    savedUser: user || undefined
+  });
+});
+
+app.post(["/api/send-email", "/api/test-smtp"], async (req, res) => {
   try {
+    const action = req.query?.action || req.body?.action;
+    if (action === "test" || req.path === "/api/test-smtp") {
+      const { smtpConfig } = req.body || {};
+      const transporter = getTransporter(smtpConfig);
+      await transporter.verify();
+      return res.json({ ok: true, message: "Connection to email server verified successfully! Ready to dispatch messages." });
+    }
+
     const { to, cc, subject, text, html, smtpConfig, attachments } = req.body;
 
     if (!to) {
@@ -833,6 +860,108 @@ app.post("/api/jira/webhook/test", async (req, res) => {
 app.post("/api/sla/webhook", async (req, res) => {
   try {
     const payload = req.body || {};
+    const action = req.query?.action || payload?.action;
+
+    if (action === "test") {
+      const testCaseNum = Math.floor(1000 + Math.random() * 9000);
+      const testCaseId = `SLA-HOY-${testCaseNum}`;
+      const testPayload = {
+        event: "hoymiles.account.created (TEST)",
+        occurredAt: new Date().toISOString(),
+        status: "COMPLETED",
+        conversationId: payload.conversationId || "hyperflow-test-conv-99",
+        customer: {
+          name: payload.name || payload.customer?.name || "Engenheiro Marcelo Rocha",
+          email: payload.email || payload.customer?.email || "marcelo.solar@teste.com.br",
+          phone: payload.phone || payload.customer?.phone || "11988776655",
+          state: payload.state || payload.customer?.state || "São Paulo"
+        },
+        organization: {
+          name: payload.company || payload.organization?.name || "SolarTech Brasil Teste",
+          parentOrganization: "APItest",
+          role: "Installer"
+        },
+        account: {
+          loginEmail: payload.email || payload.account?.loginEmail || "marcelo.solar@teste.com.br",
+          passwordSharedWithCustomer: true
+        }
+      };
+
+      const storage = readAppStorage();
+      const list: any[] = Array.isArray(storage.slaCases) ? [...storage.slaCases] : [];
+      const newCase = {
+        id: testCaseId,
+        title: `Criação de Conta Hoymiles — ${testPayload.organization.name}`,
+        priority: "media",
+        status: "concluido",
+        created_at: testPayload.occurredAt,
+        resolved_at: testPayload.occurredAt,
+        sla_limit_hours: 24,
+        responsible_tech: "TARS Vision Bridge",
+        customer: testPayload.customer,
+        equipment: {
+          manufacturer: "Hoymiles",
+          model: "S-Miles Cloud (Portal do Instalador)",
+          serial_numbers: ["N/A - Conta Web/App"]
+        },
+        problem_summary: `[TESTE SIMULADO] Criação de conta Hoymiles para ${testPayload.customer.name} (${testPayload.organization.name}). Login: ${testPayload.account.loginEmail}. Senha entregue via Hyperflow.`,
+        protocols: {
+          hoymiles: [{
+            account_email: testPayload.account.loginEmail,
+            org_name: testPayload.organization.name,
+            parent_org: "APItest",
+            role: "Installer",
+            created_at: testPayload.occurredAt,
+            conversation_id: testPayload.conversationId,
+            status: "COMPLETED"
+          }],
+          hyperflow: [testPayload.conversationId]
+        },
+        timeline: [{
+          id: `tl-sim-${Date.now()}`,
+          type: "hoymiles_account_created",
+          title: "Teste de Webhook SLA Executado",
+          detail: `Simulação de criação de conta Hoymiles via painel Solar Agenda. Conta vinculada a APItest (${testPayload.organization.name}).`,
+          author: "TARS Webhook Simulator",
+          timestamp: testPayload.occurredAt
+        }],
+        notes: "Caso de teste gerado pelo simulador de webhook SLA."
+      };
+      list.unshift(newCase);
+
+      const logs: any[] = Array.isArray(storage.slaWebhookLogs) ? [...storage.slaWebhookLogs] : [];
+      const testLog = {
+        id: `sla-wh-test-${Date.now()}`,
+        receivedAt: new Date().toISOString(),
+        event: "hoymiles.account.created (TEST)",
+        source: "tars-vision-bridge-test",
+        bridgeVersion: "1.2.37",
+        status: "COMPLETED",
+        customer: testPayload.customer.name,
+        email: testPayload.account.loginEmail,
+        company: testPayload.organization.name,
+        conversationId: testPayload.conversationId,
+        matchedCaseId: testCaseId,
+        isNewCase: true
+      };
+      logs.unshift(testLog);
+
+      writeAppStorage({
+        slaCases: list,
+        slaWebhookLogs: logs.slice(0, 50)
+      });
+
+      return res.json({
+        ok: true,
+        tested: true,
+        caseId: testCaseId,
+        customer: testPayload.customer.name,
+        email: testPayload.account.loginEmail,
+        company: testPayload.organization.name,
+        log: testLog
+      });
+    }
+
     const eventType = payload.event || "sla.generic.event";
     const occurredAt = payload.occurredAt || new Date().toISOString();
     const conversationId = (payload.conversationId || "").trim();
@@ -1132,8 +1261,8 @@ app.post("/api/sla/webhook", async (req, res) => {
   }
 });
 
-// GET /api/sla/webhook/logs (and alias /api/sla/logs) - Returns recent SLA webhook events
-app.get(["/api/sla/webhook/logs", "/api/sla/logs"], (req, res) => {
+// GET /api/sla/webhook/logs (and aliases /api/sla/webhook, /api/sla/logs) - Returns recent SLA webhook events
+app.get(["/api/sla/webhook", "/api/sla/webhook/logs", "/api/sla/logs"], (req, res) => {
   const storage = readAppStorage();
   res.json({ ok: true, logs: storage.slaWebhookLogs || [] });
 });

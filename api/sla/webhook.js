@@ -43,6 +43,109 @@ export default async function handler(req, res) {
   if (req.method === "POST") {
     try {
       const payload = await parseJsonBody(req);
+      const url = new URL(req.url, "http://localhost");
+      const action = url.searchParams.get("action") || payload?.action;
+
+      if (action === "test") {
+        const testCaseNum = Math.floor(1000 + Math.random() * 9000);
+        const testCaseId = `SLA-HOY-${testCaseNum}`;
+        const testPayload = {
+          event: "hoymiles.account.created (TEST)",
+          occurredAt: new Date().toISOString(),
+          status: "COMPLETED",
+          conversationId: payload.conversationId || "hyperflow-test-conv-99",
+          customer: {
+            name: payload.name || payload.customer?.name || "Engenheiro Marcelo Rocha",
+            email: payload.email || payload.customer?.email || "marcelo.solar@teste.com.br",
+            phone: payload.phone || payload.customer?.phone || "11988776655",
+            state: payload.state || payload.customer?.state || "São Paulo"
+          },
+          organization: {
+            name: payload.company || payload.organization?.name || "SolarTech Brasil Teste",
+            parentOrganization: "APItest",
+            role: "Installer"
+          },
+          account: {
+            loginEmail: payload.email || payload.account?.loginEmail || "marcelo.solar@teste.com.br",
+            passwordSharedWithCustomer: true
+          }
+        };
+
+        const storage = readStorage();
+        const list = Array.isArray(storage.slaCases) ? [...storage.slaCases] : [];
+        const newCase = {
+          id: testCaseId,
+          title: `Criação de Conta Hoymiles — ${testPayload.organization.name}`,
+          priority: "media",
+          status: "concluido",
+          created_at: testPayload.occurredAt,
+          resolved_at: testPayload.occurredAt,
+          sla_limit_hours: 24,
+          responsible_tech: "TARS Vision Bridge",
+          customer: testPayload.customer,
+          equipment: {
+            manufacturer: "Hoymiles",
+            model: "S-Miles Cloud (Portal do Instalador)",
+            serial_numbers: ["N/A - Conta Web/App"]
+          },
+          problem_summary: `[TESTE SIMULADO] Criação de conta Hoymiles para ${testPayload.customer.name} (${testPayload.organization.name}). Login: ${testPayload.account.loginEmail}. Senha entregue via Hyperflow.`,
+          protocols: {
+            hoymiles: [{
+              account_email: testPayload.account.loginEmail,
+              org_name: testPayload.organization.name,
+              parent_org: "APItest",
+              role: "Installer",
+              created_at: testPayload.occurredAt,
+              conversation_id: testPayload.conversationId,
+              status: "COMPLETED"
+            }],
+            hyperflow: [testPayload.conversationId]
+          },
+          timeline: [{
+            id: `tl-sim-${Date.now()}`,
+            type: "hoymiles_account_created",
+            title: "Teste de Webhook SLA Executado",
+            detail: `Simulação de criação de conta Hoymiles via painel Solar Agenda. Conta vinculada a APItest (${testPayload.organization.name}).`,
+            author: "TARS Webhook Simulator",
+            timestamp: testPayload.occurredAt
+          }],
+          notes: "Caso de teste gerado pelo simulador de webhook SLA."
+        };
+        list.unshift(newCase);
+
+        const logs = Array.isArray(storage.slaWebhookLogs) ? [...storage.slaWebhookLogs] : [];
+        const testLog = {
+          id: `sla-wh-test-${Date.now()}`,
+          receivedAt: new Date().toISOString(),
+          event: "hoymiles.account.created (TEST)",
+          source: "tars-vision-bridge-test",
+          bridgeVersion: "1.2.37",
+          status: "COMPLETED",
+          customer: testPayload.customer.name,
+          email: testPayload.account.loginEmail,
+          company: testPayload.organization.name,
+          conversationId: testPayload.conversationId,
+          matchedCaseId: testCaseId,
+          isNewCase: true
+        };
+        logs.unshift(testLog);
+
+        writeStorage({
+          slaCases: list,
+          slaWebhookLogs: logs.slice(0, 50)
+        });
+
+        return sendResponse(res, 200, {
+          ok: true,
+          tested: true,
+          caseId: testCaseId,
+          customer: testPayload.customer.name,
+          email: testPayload.account.loginEmail,
+          company: testPayload.organization.name,
+          log: testLog
+        });
+      }
+
       const eventType = payload.event || "sla.generic.event";
       const occurredAt = payload.occurredAt || new Date().toISOString();
       const conversationId = (payload.conversationId || "").trim();
