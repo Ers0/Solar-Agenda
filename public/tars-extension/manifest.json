@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TARS Vision Bridge",
-  "version": "1.2.83",
+  "version": "1.2.84",
   "description": "Solar Agenda TARS Vision Bridge with passive Observer Mode, cross-site workflow learning, Hyperflow memory, Hoymiles automation, page vision, and safety controls.",
   "permissions": [
     "activeTab",

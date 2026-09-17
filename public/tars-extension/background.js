@@ -443,10 +443,23 @@ async function waitForHoymilesReady(tabId) {
 
 const TARS_SLA_WEBHOOK_STORAGE_KEY = 'tarsSlaWebhookUrl';
 const DEFAULT_SLA_WEBHOOK_URL = 'https://solar-agenda.vercel.app/api/sla/webhook';
+const FALLBACK_SLA_WEBHOOK_URLS = [
+  'https://solar-agenda-ers0s-projects.vercel.app/api/sla/webhook',
+  'https://solar-agenda-git-main-ers0s-projects.vercel.app/api/sla/webhook'
+];
 
 async function getSlaWebhookUrl() {
   const stored = await chrome.storage.local.get([TARS_SLA_WEBHOOK_STORAGE_KEY]);
   return String(stored[TARS_SLA_WEBHOOK_STORAGE_KEY] || DEFAULT_SLA_WEBHOOK_URL).trim();
+}
+
+async function getCandidateSlaWebhookUrls() {
+  const primary = await getSlaWebhookUrl();
+  const urls = [primary];
+  for (const fb of FALLBACK_SLA_WEBHOOK_URLS) {
+    if (!urls.includes(fb)) urls.push(fb);
+  }
+  return urls;
 }
 
 async function findHyperflowTab(preferredTabId = null) {
@@ -464,13 +477,13 @@ async function findHyperflowTab(preferredTabId = null) {
 }
 
 async function reportHyperflowConversationToSlaWebhook(snapshot) {
-  const url = await getSlaWebhookUrl();
-  if (!url) return { ok: false, skipped: true, error: 'sla_webhook_not_configured' };
+  const candidateUrls = await getCandidateSlaWebhookUrls();
+  if (!candidateUrls.length || !candidateUrls[0]) return { ok: false, skipped: true, error: 'sla_webhook_not_configured' };
   const payload = {
     event: 'hyperflow.conversation.synced',
     version: '1.0',
     source: 'tars-vision-bridge',
-    bridgeVersion: '1.2.61',
+    bridgeVersion: '1.2.84',
     occurredAt: new Date().toISOString(),
     status: 'SYNCED',
     protocol: snapshot?.protocol || null,
@@ -482,18 +495,34 @@ async function reportHyperflowConversationToSlaWebhook(snapshot) {
     messages: Array.isArray(snapshot?.messages) ? snapshot.messages : [],
     privacy: snapshot?.privacy || { sensitiveFieldsOmitted: true, messagePiiRedacted: true }
   };
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-TARS-Webhook-Event': 'hyperflow.conversation.synced' },
-      body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
-    const responseText = await response.text().catch(() => '');
-    if (!response.ok) return { ok: false, status: response.status, error: `sla_webhook_http_${response.status}`, response: responseText.slice(0, 500) };
-    return { ok: true, status: response.status, response: responseText.slice(0, 500), protocol: payload.protocol, messageCount: payload.messageCount };
-  } catch (error) {
-    return { ok: false, error: String(error?.message || error), url };
+
+  let lastError = null;
+  let lastStatus = 500;
+  let lastResponseText = '';
+  for (const url of candidateUrls) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-TARS-Webhook-Event': 'hyperflow.conversation.synced' },
+        body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
+      });
+      const responseText = await response.text().catch(() => '');
+      if (response.ok) {
+        return { ok: true, status: response.status, response: responseText.slice(0, 500), protocol: payload.protocol, messageCount: payload.messageCount, endpoint: url };
+      }
+      lastStatus = response.status;
+      lastResponseText = responseText;
+      lastError = `sla_webhook_http_${response.status}`;
+      // If error is 500 (Vercel invocation error) or 404, try next candidate
+      if (response.status !== 500 && response.status !== 404 && response.status !== 502 && response.status !== 503) {
+        break;
+      }
+    } catch (error) {
+      lastError = String(error?.message || error);
+    }
   }
+
+  return { ok: false, status: lastStatus, error: lastError || 'all_endpoints_failed', response: lastResponseText.slice(0, 500) };
 }
 
 async function ensureHyperflowCapture(tabId) {
@@ -1023,26 +1052,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg && msg.type === 'TARS_SLA_WEBHOOK_TEST') {
     (async () => {
-      const url = String(msg.url || await getSlaWebhookUrl()).trim();
-      if (!url) return { ok: false, error: 'sla_webhook_not_configured' };
-      if (!/^https:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_https', url };
+      const explicitUrl = msg.url ? String(msg.url).trim() : null;
+      const candidateUrls = explicitUrl ? [explicitUrl] : await getCandidateSlaWebhookUrls();
+      if (!candidateUrls.length || !candidateUrls[0]) return { ok: false, error: 'sla_webhook_not_configured' };
       const payload = {
         event: 'hoymiles.account.created', version: '1.0', source: 'tars-vision-bridge',
-        bridgeVersion: '1.2.59', occurredAt: new Date().toISOString(), status: 'COMPLETED', test: true,
+        bridgeVersion: '1.2.84', occurredAt: new Date().toISOString(), status: 'COMPLETED', test: true,
         conversationId: 'TEST-WEBHOOK-' + Date.now(),
         customer: { name: 'TARS Webhook Test', email: 'webhook-test@example.invalid', phone: '', state: 'São Paulo' },
         organization: { name: 'TARS Webhook Test Org', parentOrganization: 'APItest', type: 'Installer', role: 'Installer' },
         account: { loginEmail: 'webhook-test@example.invalid', passwordSharedWithCustomer: true },
         reporting: { ok: true, method: 'test' }
       };
-      console.info('[TARS SLA] sending explicit webhook test', { url, payload });
-      try {
-        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TARS-Webhook-Test': '1' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store' });
-        const responseText = await response.text().catch(() => '');
-        return { ok: response.ok, status: response.status, url, response: responseText.slice(0, 1000), payload };
-      } catch (error) {
-        return { ok: false, url, error: String(error?.message || error), payload };
+
+      let lastRes = null;
+      for (const url of candidateUrls) {
+        if (!/^https:\/\//i.test(url)) continue;
+        console.info('[TARS SLA] sending explicit webhook test to', url);
+        try {
+          const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TARS-Webhook-Test': '1' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store' });
+          const responseText = await response.text().catch(() => '');
+          lastRes = { ok: response.ok, status: response.status, url, response: responseText.slice(0, 1000), payload };
+          if (response.ok) return lastRes;
+          // If invocation failed, attempt next candidate
+          if (response.status !== 500 && response.status !== 404 && response.status !== 502 && response.status !== 503) {
+            return lastRes;
+          }
+        } catch (error) {
+          lastRes = { ok: false, url, error: String(error?.message || error), payload };
+        }
       }
+      return lastRes || { ok: false, error: 'sla_webhook_test_failed' };
     })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }

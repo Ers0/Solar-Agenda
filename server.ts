@@ -1332,6 +1332,8 @@ app.post("/api/sla/webhook", async (req, res) => {
             uncertainties: [],
             humanCorrections: [],
             humanAnalysis: {},
+            finalDiagnosis: "",
+            finalResolution: "",
             attachments: [],
             learningMetadata: {
               isValidated: false,
