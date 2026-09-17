@@ -1287,6 +1287,95 @@
           identityConfidence: context.identityConfidence
         };
       }
+      if (msg.type === 'HYPERFLOW_GET_SLA_SNAPSHOT') {
+        const ctx = await getContext({ limit: 100 });
+        const snapshot = {
+          protocol: ctx.ticketId || null,
+          conversationId: ctx.id || null,
+          conversationUrl: ctx.url || window.location.href,
+          messageCount: ctx.messageCount || (ctx.messages || []).length || 0,
+          customer: {
+            name: ctx.customerName || null,
+            phone: ctx.customerId || null
+          },
+          messages: (ctx.messages || []).map(m => ({
+            id: m.id || m.messageId,
+            speaker: m.speaker === 'technician' ? 'technician' : 'customer',
+            direction: m.direction || (m.speaker === 'technician' ? 'outbound' : 'inbound'),
+            text: m.text,
+            timestamp: m.timestamp,
+            capturedAt: m.capturedAt || new Date().toISOString(),
+            attachmentCount: m.attachmentCount || 0
+          })),
+          capturedAt: ctx.capturedAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        return { ok: true, snapshot };
+      }
+      if (msg.type === 'HYPERFLOW_GET_SLA_SNAPSHOTS_FOR_SYNC') {
+        const activeCtx = await getContext({ limit: 100 });
+        const allConvs = await getAllConversations();
+        const snapshots = [];
+        if (activeCtx && activeCtx.id) {
+          snapshots.push({
+            protocol: activeCtx.ticketId || null,
+            conversationId: activeCtx.id,
+            conversationUrl: activeCtx.url || window.location.href,
+            messageCount: activeCtx.messageCount || (activeCtx.messages || []).length || 0,
+            customer: {
+              name: activeCtx.customerName || null,
+              phone: activeCtx.customerId || null
+            },
+            messages: (activeCtx.messages || []).map(m => ({
+              id: m.id || m.messageId,
+              speaker: m.speaker === 'technician' ? 'technician' : 'customer',
+              direction: m.direction || (m.speaker === 'technician' ? 'outbound' : 'inbound'),
+              text: m.text,
+              timestamp: m.timestamp,
+              capturedAt: m.capturedAt || new Date().toISOString(),
+              attachmentCount: m.attachmentCount || 0
+            })),
+            capturedAt: activeCtx.capturedAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+        }
+        for (const conv of allConvs) {
+          if (!conv || !conv.conversationId || conv.conversationId === activeCtx?.id) continue;
+          const msgs = await getAllMessages(conv.conversationId);
+          snapshots.push({
+            protocol: conv.ticketId || null,
+            conversationId: conv.conversationId,
+            conversationUrl: conv.url || null,
+            messageCount: msgs.length,
+            customer: {
+              name: conv.customerName || null,
+              phone: conv.customerId || null
+            },
+            messages: msgs.slice(-50).map(m => ({
+              id: m.id || m.messageId,
+              speaker: m.speaker === 'technician' ? 'technician' : 'customer',
+              direction: m.direction || (m.speaker === 'technician' ? 'outbound' : 'inbound'),
+              text: m.text,
+              timestamp: m.timestamp,
+              capturedAt: m.capturedAt || new Date().toISOString(),
+              attachmentCount: m.attachmentCount || 0
+            })),
+            capturedAt: conv.updatedAt || new Date().toISOString(),
+            updatedAt: conv.updatedAt || new Date().toISOString()
+          });
+        }
+        return { ok: true, snapshots };
+      }
+      if (msg.type === 'HYPERFLOW_PURGE_LOCAL_CAPTURE') {
+        try {
+          const db = await openDb();
+          const txMsg = db.transaction(STORE_MESSAGES, 'readwrite');
+          txMsg.objectStore(STORE_MESSAGES).clear();
+          return { ok: true, purged: true };
+        } catch (e) {
+          return { ok: false, error: String(e?.message || e) };
+        }
+      }
       return { ok: false, error: 'unknown_hyperflow_command' };
     })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
 

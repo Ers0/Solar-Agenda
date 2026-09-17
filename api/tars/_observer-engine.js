@@ -374,40 +374,69 @@ export function processObserverEventsBatch(payload, existingCases, processedEven
     processedCount++;
 
     const eventDate = ev.observedAt || new Date().toISOString();
-    const caseData = ev.case || {};
-    const convId = (caseData.conversationId || "").trim();
-    const protocol = (caseData.protocol || "").trim();
+    const caseData = ev.case || ev.data?.case || ev.event?.case || {};
+    const convId = (caseData.conversationId || ev.conversationId || ev.event?.conversationId || ev.data?.conversationId || "").trim();
+    const protocol = (caseData.protocol || ev.protocol || ev.event?.protocol || ev.data?.protocol || "").trim();
 
     let matchedCaseIndex = -1;
 
-    if (convId) {
-      matchedCaseIndex = updatedCases.findIndex(c => c.conversationId === convId);
-    } else if (protocol) {
-      matchedCaseIndex = updatedCases.findIndex(c => c.protocol === protocol && (!c.conversationId || c.conversationId === convId));
+    if (protocol) {
+      matchedCaseIndex = updatedCases.findIndex(c =>
+        (c.protocol && c.protocol.toLowerCase() === protocol.toLowerCase()) ||
+        (c.id && c.id.toLowerCase() === `tars-obs-${protocol.toLowerCase()}`) ||
+        (c.customer?.protocol && c.customer.protocol.toLowerCase() === protocol.toLowerCase())
+      );
+    }
+    if (matchedCaseIndex < 0 && convId) {
+      matchedCaseIndex = updatedCases.findIndex(c => c.conversationId === convId || (c.id && c.id.includes(convId)));
     }
 
     let targetCase;
 
     if (matchedCaseIndex >= 0) {
       targetCase = updatedCases[matchedCaseIndex];
+      if ((!targetCase.protocol || targetCase.protocol === "PENDING") && protocol) {
+        targetCase.protocol = protocol;
+      }
+      if ((!targetCase.conversationId || targetCase.conversationId.startsWith("conv_anon_")) && convId) {
+        targetCase.conversationId = convId;
+      }
+      if (caseData.customerName && (!targetCase.customer?.name || targetCase.customer.name === "Cliente em Atendimento")) {
+        targetCase.customer.name = caseData.customerName;
+      }
+      if (caseData.customerPhone && !targetCase.customer?.phone) {
+        targetCase.customer.phone = caseData.customerPhone;
+      }
+      if (caseData.manufacturer && (targetCase.equipment.manufacturer === "Desconhecido" || !targetCase.equipment.manufacturer)) {
+        targetCase.equipment.manufacturer = caseData.manufacturer;
+      }
+      if (caseData.equipmentModel && !targetCase.equipment.model) {
+        targetCase.equipment.model = caseData.equipmentModel;
+      }
+      if (caseData.serialNumber && !targetCase.equipment.sn) {
+        targetCase.equipment.sn = caseData.serialNumber;
+        if (Array.isArray(targetCase.equipment.serialNumbers) && !targetCase.equipment.serialNumbers.includes(caseData.serialNumber)) {
+          targetCase.equipment.serialNumbers.push(caseData.serialNumber);
+        }
+      }
     } else {
-      const newCaseId = `TARS-OBS-${protocol || convId || Date.now().toString(36).toUpperCase()}`;
+      const newCaseId = `TARS-OBS-${protocol || (convId ? convId.replace(/^conv_/, '') : '') || Date.now().toString(36).toUpperCase()}`;
       targetCase = {
         id: newCaseId,
         protocol: protocol || "PENDING",
         conversationId: convId || `conv_anon_${Date.now()}`,
         status: "NEW",
         customer: {
-          name: caseData.customerName || "Cliente em Atendimento",
-          phone: caseData.customerPhone || "",
-          email: "",
+          name: caseData.customerName || (caseData.customer && caseData.customer.name) || "Cliente em Atendimento",
+          phone: caseData.customerPhone || (caseData.customer && caseData.customer.phone) || "",
+          email: caseData.customerEmail || "",
           protocol: protocol || "PENDING"
         },
         equipment: {
-          manufacturer: "Desconhecido",
-          model: "",
-          serialNumbers: [],
-          sn: ""
+          manufacturer: caseData.manufacturer || "Desconhecido",
+          model: caseData.equipmentModel || "",
+          serialNumbers: caseData.serialNumber ? [caseData.serialNumber] : [],
+          sn: caseData.serialNumber || ""
         },
         timeline: [],
         messages: [],
@@ -455,7 +484,8 @@ export function processObserverEventsBatch(payload, existingCases, processedEven
 function applyObserverEvent(tarsCase, ev) {
   const evType = ev.eventType;
   const timestamp = ev.observedAt || new Date().toISOString();
-  const data = ev.data || ev.event || {};
+  const rawData = ev.data || ev.event?.data || ev.event || {};
+  const data = rawData.text !== undefined ? rawData : (rawData.data || rawData);
 
   // Status transitions
   if (tarsCase.status === "NEW") {

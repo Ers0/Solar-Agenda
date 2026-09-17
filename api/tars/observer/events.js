@@ -26,12 +26,62 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     try {
-      const payload = await parseJsonBody(req);
-      const version = payload?.version || "1.0";
-      const source = payload?.source || "tars-vision-bridge";
-      const bridgeVersion = payload?.bridgeVersion || "1.2.83";
+      const url = new URL(req.url, "http://localhost");
+      const payload = (await parseJsonBody(req)) || {};
+      const action = url.searchParams.get("action") || payload?.action;
 
-      if (!payload || !Array.isArray(payload.events)) {
+      let batchPayload = payload;
+
+      // Support simulation call
+      if (action === "simulate" || payload?.simulate) {
+        const {
+          eventType = "HYPERFLOW_MESSAGE",
+          text = "Cliente informa que inversor Deye SUN-8K está apresentando alarme F30 com 225 Vac.",
+          protocol = "HF-3001",
+          conversationId = "conv_sim_01",
+          customerName = "João Instalador",
+          manufacturer = "Deye",
+          model = "SUN-8K",
+          sn = "230499881122"
+        } = payload;
+
+        batchPayload = {
+          version: "1.0",
+          source: "tars-vision-bridge",
+          bridgeVersion: "1.2.83",
+          events: [
+            {
+              eventId: `sim-ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              eventType,
+              observedAt: new Date().toISOString(),
+              origin: "https://conversas.hyperflow.global",
+              page: `https://conversas.hyperflow.global/chat/${conversationId}`,
+              title: `Atendimento ${protocol}`,
+              tabId: 99,
+              case: {
+                protocol,
+                conversationId,
+                customerName,
+                manufacturer,
+                equipmentModel: model,
+                serialNumber: sn
+              },
+              data: {
+                text,
+                speaker: "customer",
+                direction: "inbound",
+                attachmentCount: 1
+              }
+            }
+          ]
+        };
+      }
+
+      const version = batchPayload?.version || "1.0";
+      const source = batchPayload?.source || "tars-vision-bridge";
+      const bridgeVersion = batchPayload?.bridgeVersion || "1.2.83";
+
+      if (!batchPayload || !Array.isArray(batchPayload.events)) {
         return sendResponse(res, 400, {
           ok: false,
           error: "Invalid payload: 'events' array is required."
@@ -41,7 +91,7 @@ export default async function handler(req, res) {
       const currentCases = getObserverCases();
       const processedSet = getProcessedEventIdsSet();
 
-      const result = processObserverEventsBatch(payload, currentCases, processedSet);
+      const result = processObserverEventsBatch(batchPayload, currentCases, processedSet);
 
       writeAppStorage({
         tarsObserverCases: result.updatedCases,

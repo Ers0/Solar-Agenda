@@ -520,18 +520,24 @@ export function processObserverEventsBatch(
     processedCount++;
 
     const eventDate = ev.observedAt || new Date().toISOString();
-    const caseData = ev.case || {};
-    const convId = (caseData.conversationId || "").trim();
-    const protocol = (caseData.protocol || "").trim();
+    const caseData = ev.case || ev.data?.case || (ev as any).event?.case || {};
+    const convId = (caseData.conversationId || (ev as any).conversationId || (ev as any).event?.conversationId || "").trim();
+    const protocol = (caseData.protocol || (ev as any).protocol || (ev as any).event?.protocol || "").trim();
 
-    // Primary Identity: conversationId + protocol. NEVER merge differing conversations!
+    // Match by protocol first (authoritative support protocol), then fallback to conversation ID
     let matchedCaseIndex = -1;
 
-    if (convId) {
-      matchedCaseIndex = updatedCases.findIndex(c => c.conversationId === convId);
-    } else if (protocol) {
-      // Fallback: match by protocol ONLY if that case has no other conversationId or matching conversationId
-      matchedCaseIndex = updatedCases.findIndex(c => c.protocol === protocol && (!c.conversationId || c.conversationId === convId));
+    if (protocol) {
+      matchedCaseIndex = updatedCases.findIndex(c =>
+        (c.protocol && c.protocol.toLowerCase() === protocol.toLowerCase()) ||
+        (c.id && c.id.toLowerCase() === `tars-obs-${protocol.toLowerCase()}`) ||
+        (c.customer?.protocol && c.customer.protocol.toLowerCase() === protocol.toLowerCase())
+      );
+    }
+    if (matchedCaseIndex < 0 && convId) {
+      matchedCaseIndex = updatedCases.findIndex(c =>
+        c.conversationId === convId || (c.id && c.id.includes(convId))
+      );
     }
 
     let targetCase: TARSCase;
@@ -633,7 +639,8 @@ export function processObserverEventsBatch(
       }
 
       case "HYPERFLOW_MESSAGE": {
-        const msgData = ev.data || {};
+        const rawData = ev.data || (ev as any).event?.data || (ev as any).event || {};
+        const msgData = rawData.text !== undefined ? rawData : (rawData.data || rawData);
         const msgText = String(msgData.text || ev.title || "").trim();
         const speaker = (msgData.speaker === "technician" || msgData.direction === "outbound") ? "technician" : "customer";
         const direction = msgData.direction || (speaker === "technician" ? "outbound" : "inbound");

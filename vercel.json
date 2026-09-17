@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/tars/observer/simulate-event",
+      "destination": "/api/tars/observer/events.js?action=simulate"
+    },
+    {
+      "source": "/api/tars/observer/cases/:caseId/validate-observation",
+      "destination": "/api/tars/observer/cases.js?caseId=:caseId&action=validate-observation"
+    },
+    {
+      "source": "/api/tars/observer/cases/:caseId/correct-observation",
+      "destination": "/api/tars/observer/cases.js?caseId=:caseId&action=correction"
+    },
+    {
+      "source": "/api/tars/observer/cases/:caseId/human-analysis",
+      "destination": "/api/tars/observer/cases.js?caseId=:caseId&action=human-analysis"
+    },
+    {
+      "source": "/api/tars/observer/cases/:caseId/close",
+      "destination": "/api/tars/observer/cases.js?caseId=:caseId&action=close"
+    },
+    {
+      "source": "/api/tars/observer/cases/:caseId",
+      "destination": "/api/tars/observer/cases.js?id=:caseId"
+    },
+    {
+      "source": "/api/tars/learning/export/:format",
+      "destination": "/api/tars/learning/export.js?format=:format"
+    }
+  ]
+}

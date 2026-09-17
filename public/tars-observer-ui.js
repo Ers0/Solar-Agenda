@@ -10,6 +10,7 @@
   let activeFilter = 'all';
   let searchQuery = '';
   let pollInterval = null;
+  let isInitialized = false;
 
   function escapeHtml(str) {
     if (!str) return '';
@@ -95,23 +96,58 @@
       if (searchQuery) {
         url += '&q=' + encodeURIComponent(searchQuery);
       }
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
+      const [casesRes, allCasesRes] = await Promise.all([
+        fetch(url),
+        activeFilter !== 'all' ? fetch('/api/tars/observer/cases?status=all').catch(() => null) : null
+      ]);
+      if (!casesRes.ok) throw new Error('HTTP ' + casesRes.status);
+      const data = await casesRes.json();
       currentCases = data.cases || [];
-      renderStats();
+
+      let allCases = currentCases;
+      if (allCasesRes && allCasesRes.ok) {
+        const allData = await allCasesRes.json();
+        allCases = allData.cases || [];
+      }
+
+      renderStats(allCases);
       renderGrid();
+      updateSyncIndicator();
     } catch (err) {
       console.warn('[TARS Observer UI] Error loading cases:', err);
+      const el = document.getElementById('obs-sync-status');
+      if (el) {
+        el.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444;"></span> Erro ao atualizar';
+        el.style.color = '#ef4444';
+      }
     }
   }
 
-  function renderStats() {
-    const total = currentCases.length;
-    const hr = currentCases.filter(c => c.status === 'HUMAN_REVIEW' || c.needsHumanReview).length;
-    const active = currentCases.filter(c => c.status !== 'CLOSED' && c.status !== 'RESOLVED').length;
-    const closed = currentCases.filter(c => c.status === 'CLOSED' || c.status === 'RESOLVED').length;
-    const candidates = currentCases.filter(c => c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated).length;
+  function updateSyncIndicator() {
+    let el = document.getElementById('obs-sync-status');
+    if (!el) {
+      const parent = document.querySelector('.obs-top-actions') || document.querySelector('.tars-obs-header-actions') || document.querySelector('.tars-obs-header');
+      if (parent) {
+        el = document.createElement('div');
+        el.id = 'obs-sync-status';
+        el.style.cssText = 'font-size:0.78rem;font-weight:600;color:#10b981;padding:6px 12px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:20px;display:inline-flex;align-items:center;gap:6px;';
+        parent.insertBefore(el, parent.firstChild);
+      }
+    }
+    if (el) {
+      const now = new Date();
+      el.innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#10b981;box-shadow:0 0 0 2px rgba(16,185,129,0.25);"></span> Sincronizado às ' + now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      el.style.color = '#10b981';
+    }
+  }
+
+  function renderStats(casesList) {
+    const list = Array.isArray(casesList) ? casesList : currentCases;
+    const total = list.length;
+    const hr = list.filter(c => c.status === 'HUMAN_REVIEW' || c.needsHumanReview).length;
+    const active = list.filter(c => c.status !== 'CLOSED' && c.status !== 'RESOLVED').length;
+    const closed = list.filter(c => c.status === 'CLOSED' || c.status === 'RESOLVED').length;
+    const candidates = list.filter(c => c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated).length;
 
     const elTotal = document.getElementById('obs-stat-total');
     const elHr = document.getElementById('obs-stat-hr');
@@ -213,7 +249,7 @@
   // Deep-dive Modal / Drawer
   async function openCaseDetails(caseId) {
     try {
-      const res = await fetch(`/api/tars/observer/cases/${encodeURIComponent(caseId)}`);
+      const res = await fetch(`/api/tars/observer/cases?id=${encodeURIComponent(caseId)}`);
       if (!res.ok) throw new Error('Case not found');
       const data = await res.json();
       currentCase = data.case;
@@ -444,7 +480,7 @@
   // Actions
   async function validateObs(caseId, observationId) {
     try {
-      const res = await fetch(`/api/tars/observer/cases/${encodeURIComponent(caseId)}/validate-observation`, {
+      const res = await fetch(`/api/tars/observer/cases?action=validate-observation&caseId=${encodeURIComponent(caseId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ observationId, validated: true, validatedBy: 'Técnico Especialista' })
@@ -467,7 +503,7 @@
     if (!newVal.trim()) return;
 
     try {
-      const res = await fetch(`/api/tars/observer/cases/${encodeURIComponent(caseId)}/correct-observation`, {
+      const res = await fetch(`/api/tars/observer/cases?action=correction&caseId=${encodeURIComponent(caseId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ observationId, correctedValue: newVal.trim(), reason: reason || 'Ajuste técnico', correctedBy: 'Técnico Especialista' })
@@ -488,7 +524,7 @@
     const technicianConclusion = document.getElementById('ha-tech-conclusion')?.value || '';
 
     try {
-      const res = await fetch(`/api/tars/observer/cases/${encodeURIComponent(caseId)}/human-analysis`, {
+      const res = await fetch(`/api/tars/observer/cases?action=human-analysis&caseId=${encodeURIComponent(caseId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ visualNotes, technicianConclusion, updatedBy: 'Técnico Especialista' })
@@ -513,7 +549,7 @@
     const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
 
     try {
-      const res = await fetch(`/api/tars/observer/cases/${encodeURIComponent(caseId)}/close`, {
+      const res = await fetch(`/api/tars/observer/cases?action=close&caseId=${encodeURIComponent(caseId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -566,7 +602,7 @@
     const sn = document.getElementById('sim-sn')?.value || '230419824102';
 
     try {
-      const res = await fetch('/api/tars/observer/simulate-event', {
+      const res = await fetch('/api/tars/observer/events?action=simulate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -606,6 +642,8 @@
 
   // Main UI Initialization
   function init() {
+    if (isInitialized) return;
+    isInitialized = true;
     // Search input
     const searchInput = document.getElementById('obs-search-input');
     if (searchInput) {
@@ -643,6 +681,22 @@
     document.getElementById('obs-modal-close-btn')?.addEventListener('click', closeModal);
 
     initModalTabs();
+
+    // Auto-refresh when returning to tab
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        const obsView = document.getElementById('view-observer');
+        if (obsView && !obsView.classList.contains('hidden')) {
+          fetchCases();
+        }
+      }
+    });
+    window.addEventListener('focus', () => {
+      const obsView = document.getElementById('view-observer');
+      if (obsView && !obsView.classList.contains('hidden')) {
+        fetchCases();
+      }
+    });
   }
 
   // Export public namespace
@@ -651,9 +705,10 @@
       init();
       fetchCases();
       if (!pollInterval) {
-        pollInterval = setInterval(fetchCases, 12000); // polite background refresh
+        pollInterval = setInterval(fetchCases, 5000); // 5s refresh for observer
       }
     },
+    refresh: fetchCases,
     openCase: openCaseDetails,
     validateObs,
     correctObsPrompt,

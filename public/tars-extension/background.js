@@ -476,9 +476,10 @@ async function reportHyperflowConversationToSlaWebhook(snapshot) {
     protocol: snapshot?.protocol || null,
     conversationUrl: snapshot?.conversationUrl || null,
     conversationId: snapshot?.conversationId || null,
-    messageCount: Number(snapshot?.messageCount || 0),
+    messageCount: Number(snapshot?.messageCount || (Array.isArray(snapshot?.messages) ? snapshot.messages.length : 0)),
     timeline: Array.isArray(snapshot?.timeline) ? snapshot.timeline : [],
     customer: snapshot?.customer || null,
+    messages: Array.isArray(snapshot?.messages) ? snapshot.messages : [],
     privacy: snapshot?.privacy || { sensitiveFieldsOmitted: true, messagePiiRedacted: true }
   };
   try {
@@ -830,6 +831,20 @@ async function observerEnabled() {
 
 function queueObserverEvent(event, senderTabId = null, conversation = null) {
   const active = conversation || (senderTabId != null ? observerActiveCases.get(senderTabId) : null) || null;
+  const resolvedCase = {
+    conversationId: active?.conversationId || event?.case?.conversationId || event?.conversationId || null,
+    protocol: active?.protocol || event?.case?.protocol || event?.protocol || null,
+    conversationUrl: active?.conversationUrl || event?.case?.conversationUrl || event?.conversationUrl || null,
+    customerName: active?.customerName || event?.case?.customerName || event?.customerName || null,
+    customerPhone: active?.customerPhone || event?.case?.customerPhone || event?.customerPhone || null,
+    manufacturer: active?.manufacturer || event?.case?.manufacturer || null,
+    equipmentModel: active?.equipmentModel || event?.case?.equipmentModel || null,
+    serialNumber: active?.serialNumber || event?.case?.serialNumber || null
+  };
+  const hasCase = !!(resolvedCase.conversationId || resolvedCase.protocol);
+  if (senderTabId != null && hasCase) {
+    observerActiveCases.set(senderTabId, resolvedCase);
+  }
   observerQueue.push({
     eventId: event.eventId || crypto.randomUUID(),
     eventType: event.eventType || 'OBSERVER_EVENT',
@@ -837,11 +852,8 @@ function queueObserverEvent(event, senderTabId = null, conversation = null) {
     source: 'tars-vision-bridge',
     bridgeVersion: '1.2.83',
     tabId: senderTabId,
-    case: active ? {
-      conversationId: active.conversationId || null,
-      protocol: active.protocol || null,
-      conversationUrl: active.conversationUrl || null
-    } : null,
+    case: hasCase ? resolvedCase : null,
+    data: event.data || event,
     event
   });
   if (observerQueue.length > 250) observerQueue.splice(0, observerQueue.length - 250);

@@ -1242,9 +1242,118 @@ app.post("/api/sla/webhook", async (req, res) => {
     };
     logs.unshift(logEntry);
 
+    let updatedObserverCases: any[] | null = null;
+    if (isHyperflowEvent) {
+      try {
+        const protoCode = hyperflowProtocol || (matchedCaseId ? matchedCaseId.replace('SLA-', 'TARS-OBS-') : `HF-${Date.now()}`);
+        const obsCases = getObserverCases();
+        const obsIdx = obsCases.findIndex(oc =>
+          (protoCode && oc.protocol === protoCode) ||
+          (conversationId && oc.conversationId === conversationId) ||
+          (matchedCaseId && oc.id === `TARS-OBS-${protoCode}`)
+        );
+
+        const obsTimeline = (payload.timeline && Array.isArray(payload.timeline) && payload.timeline.length > 0)
+          ? payload.timeline.map((t: any) => ({
+              id: t.id || `tl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              eventType: "HYPERFLOW_SYNC",
+              timestamp: t.timestamp || occurredAt,
+              title: t.title || "Sincronização Hyperflow",
+              detail: t.detail || "Conversa sincronizada via TARS Bridge",
+              author: t.author || `TARS Vision Bridge v${bridgeVersion}`
+            }))
+          : [{
+              id: `tl-${Date.now()}`,
+              eventType: "HYPERFLOW_SYNC",
+              timestamp: occurredAt,
+              title: `Conversa Hyperflow Sincronizada (${protoCode})`,
+              detail: `${(payload.messages?.length || payload.messageCount || 0)} mensagens sincronizadas do WhatsApp Hyperflow`,
+              author: `TARS Vision Bridge v${bridgeVersion}`
+            }];
+
+        const obsMessages = (Array.isArray(payload.messages) ? payload.messages : []).map((m: any) => ({
+          messageId: m.id || m.messageId || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          direction: m.direction || (m.speaker === "technician" ? "outbound" : "incoming"),
+          speaker: (m.speaker === "technician" || m.speaker === "agent") ? "technician" : "customer",
+          timestamp: m.timestamp || occurredAt,
+          capturedAt: m.capturedAt || occurredAt,
+          text: String(m.text || "").slice(0, 12000),
+          attachmentCount: Number(m.attachmentCount || 0)
+        }));
+
+        if (obsIdx >= 0) {
+          const oc = { ...obsCases[obsIdx] };
+          oc.updatedAt = occurredAt;
+          if (obsMessages.length > 0) oc.messages = obsMessages;
+          if (customerName && customerName !== "Cliente Solar") oc.customer.name = customerName;
+          if (customerPhone) oc.customer.phone = customerPhone;
+          if (customerEmail) oc.customer.email = customerEmail;
+          if (!Array.isArray(oc.timeline)) oc.timeline = [];
+          oc.timeline.push(...obsTimeline);
+          obsCases[obsIdx] = oc;
+        } else {
+          obsCases.unshift({
+            id: `TARS-OBS-${protoCode}`,
+            protocol: protoCode,
+            conversationId: conversationId || `conv_hf_${protoCode}`,
+            status: "ACTIVE",
+            customer: {
+              name: customerName,
+              phone: customerPhone,
+              email: customerEmail,
+              protocol: protoCode
+            },
+            equipment: {
+              manufacturer: payload.equipment?.manufacturer || payload.manufacturer || "Inversor Solar",
+              model: payload.equipment?.model || payload.model || "Equipamento em Diagnóstico",
+              serialNumbers: payload.equipment?.serial_numbers || (payload.serial_number ? [payload.serial_number] : []),
+              sn: payload.serial_number || (payload.equipment?.serial_numbers?.[0] || "")
+            },
+            timeline: obsTimeline,
+            messages: obsMessages,
+            technicianActions: [],
+            technicalEvidence: [],
+            aiObservations: [
+              {
+                id: `obs-hf-${Date.now()}`,
+                timestamp: occurredAt,
+                category: "hyperflow_conversation",
+                title: `Atendimento WhatsApp Integrado (${protoCode})`,
+                detail: `Conversa sincronizada via TARS Vision Bridge com ${obsMessages.length || payload.messageCount || 0} mensagens registradas.`,
+                confidence: 0.95,
+                confidenceLevel: "HIGH",
+                needsHumanReview: false,
+                uncertainties: []
+              }
+            ],
+            confidence: 0.95,
+            confidenceLevel: "HIGH",
+            needsHumanReview: false,
+            uncertainties: [],
+            humanCorrections: [],
+            humanAnalysis: {},
+            attachments: [],
+            learningMetadata: {
+              isValidated: false,
+              validatedAt: null,
+              validatedBy: null,
+              isTrainingCandidate: false,
+              tags: ["hyperflow", "whatsapp", "bridge-sync"]
+            },
+            createdAt: occurredAt,
+            updatedAt: occurredAt
+          });
+        }
+        updatedObserverCases = obsCases;
+      } catch (e) {
+        console.warn("[SLA Webhook] Could not mirror Hyperflow event to Observer Cases:", e);
+      }
+    }
+
     writeAppStorage({
       slaCases: list,
-      slaWebhookLogs: logs.slice(0, 50)
+      slaWebhookLogs: logs.slice(0, 50),
+      ...(updatedObserverCases ? { tarsObserverCases: updatedObserverCases } : {})
     });
 
     return res.json({
@@ -1422,7 +1531,53 @@ app.get("/api/tars/observer/events", (req, res) => {
 
 app.post("/api/tars/observer/events", async (req, res) => {
   try {
-    const payload: IngestEventsBatchPayload = req.body || { events: [] };
+    let payload: any = req.body || { events: [] };
+    const action = (req.query.action as string) || payload?.action;
+
+    if (action === "simulate" || payload?.simulate) {
+      const {
+        eventType = "HYPERFLOW_MESSAGE",
+        text = "Cliente informa que inversor Deye SUN-8K está apresentando alarme F30 com 225 Vac.",
+        protocol = "HF-3001",
+        conversationId = "conv_sim_01",
+        customerName = "João Instalador",
+        manufacturer = "Deye",
+        model = "SUN-8K",
+        sn = "230499881122"
+      } = payload;
+
+      payload = {
+        version: "1.0",
+        source: "tars-vision-bridge",
+        bridgeVersion: "1.2.81",
+        events: [
+          {
+            eventId: `sim-ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            eventType,
+            observedAt: new Date().toISOString(),
+            origin: "https://conversas.hyperflow.global",
+            page: `https://conversas.hyperflow.global/chat/${conversationId}`,
+            title: `Atendimento ${protocol}`,
+            tabId: 99,
+            case: {
+              protocol,
+              conversationId,
+              customerName,
+              manufacturer,
+              equipmentModel: model,
+              serialNumber: sn
+            },
+            data: {
+              text,
+              speaker: "customer",
+              direction: "inbound",
+              attachmentCount: 1
+            }
+          }
+        ]
+      };
+    }
+
     const version = payload.version || "1.0";
     const source = payload.source || "tars-vision-bridge";
     const bridgeVersion = payload.bridgeVersion || "1.2.81";
@@ -1465,7 +1620,13 @@ app.post("/api/tars/observer/events", async (req, res) => {
 app.get("/api/tars/observer/cases", (req, res) => {
   try {
     const cases = getObserverCases();
-    const { status, q } = req.query as { status?: string; q?: string };
+    const { status, q, id } = req.query as { status?: string; q?: string; id?: string };
+
+    if (id) {
+      const item = cases.find(c => c.id === id || c.protocol === id);
+      if (!item) return res.status(404).json({ ok: false, error: "Case not found" });
+      return res.json({ ok: true, case: item });
+    }
 
     let filtered = [...cases];
 
