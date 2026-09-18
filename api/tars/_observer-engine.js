@@ -378,6 +378,35 @@ export function processObserverEventsBatch(payload, existingCases, processedEven
     const convId = (caseData.conversationId || ev.conversationId || ev.event?.conversationId || ev.data?.conversationId || "").trim();
     const protocol = (caseData.protocol || ev.protocol || ev.event?.protocol || ev.data?.protocol || "").trim();
 
+    // ------------------------------------------------------------
+// CASE CREATION GUARD
+// ------------------------------------------------------------
+// Observer events are not automatically cases.
+// Navigation, SITE_ACCESSED, observer attachment, etc.
+// may legitimately exist without an active Hyperflow conversation.
+//
+// NEVER create an Observer Case unless we have a real
+// conversation identity.
+const requiresCase = [
+  "HYPERFLOW_MESSAGE",
+  "TECHNICIAN_UI_ACTION",
+  "CASE_STATUS_CHANGED",
+  "HUMAN_REVIEW_REQUIRED",
+  "LEARNING_SIGNAL"
+].includes(ev.eventType);
+
+if (!convId && !protocol) {
+  if (!requiresCase) {
+    // Event can still be accepted/processed as telemetry,
+    // but it must not materialize into a case.
+    continue;
+  }
+
+  // Even case-relevant events cannot create an anonymous case.
+  // They need a real Hyperflow conversation.
+  continue;
+}
+    
     let matchedCaseIndex = -1;
 
     if (protocol) {
