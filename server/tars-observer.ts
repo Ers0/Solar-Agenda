@@ -491,6 +491,26 @@ export function getDefaultObserverCases(): TARSCase[] {
   ];
 }
 
+export function isMeaningfulCase(c: TARSCase): boolean {
+  if (!c) return false;
+  if (Array.isArray(c.messages) && c.messages.some(m => m && m.text && m.text.trim().length > 0)) {
+    return true;
+  }
+  if (Array.isArray(c.technicalEvidence) && c.technicalEvidence.length > 0) {
+    return true;
+  }
+  if (Array.isArray(c.technicianActions) && c.technicianActions.length > 0) {
+    return true;
+  }
+  if (Array.isArray(c.aiObservations) && c.aiObservations.length > 0) {
+    return true;
+  }
+  if (c.protocol && c.protocol !== "PENDING" && !c.protocol.startsWith("TARS-OBS-")) {
+    return true;
+  }
+  return false;
+}
+
 // Ingestion Engine: applies batched events to matching TARS Case
 export function processObserverEventsBatch(
   payload: IngestEventsBatchPayload,
@@ -521,8 +541,29 @@ export function processObserverEventsBatch(
 
     const eventDate = ev.observedAt || new Date().toISOString();
     const caseData = ev.case || ev.data?.case || (ev as any).event?.case || {};
-    const convId = (caseData.conversationId || (ev as any).conversationId || (ev as any).event?.conversationId || "").trim();
-    const protocol = (caseData.protocol || (ev as any).protocol || (ev as any).event?.protocol || "").trim();
+    const convId = (caseData.conversationId || (ev as any).conversationId || (ev as any).event?.conversationId || (ev as any).data?.conversationId || "").trim();
+    const protocol = (caseData.protocol || (ev as any).protocol || (ev as any).event?.protocol || (ev as any).data?.protocol || "").trim();
+    const rawData = ev.data || (ev as any).event?.data || (ev as any).event || {};
+
+    // ------------------------------------------------------------
+    // CASE CREATION GUARD (Anti-empty cases)
+    // ------------------------------------------------------------
+    const requiresCase = [
+      "HYPERFLOW_MESSAGE",
+      "TECHNICIAN_UI_ACTION",
+      "CASE_STATUS_CHANGED",
+      "HUMAN_REVIEW_REQUIRED",
+      "LEARNING_SIGNAL",
+      "HOYMILES_ACCOUNT_CREATED",
+      "ACCOUNT_CREATION"
+    ].includes(ev.eventType);
+
+    if (!convId && !protocol) {
+      if (!requiresCase) {
+        continue;
+      }
+      continue;
+    }
 
     // Match by protocol first (authoritative support protocol), then fallback to conversation ID
     let matchedCaseIndex = -1;
@@ -546,7 +587,7 @@ export function processObserverEventsBatch(
       targetCase = updatedCases[matchedCaseIndex];
     } else {
       // Create brand new case for this conversation
-      const newCaseId = `TARS-OBS-${protocol || convId || Date.now().toString(36).toUpperCase()}`;
+      const newCaseId = `TARS-OBS-${protocol || (convId ? convId.replace(/^conv_/, '') : '') || Date.now().toString(36).toUpperCase()}`;
       targetCase = {
         id: newCaseId,
         protocol: protocol || "PENDING",
@@ -757,8 +798,10 @@ export function processObserverEventsBatch(
     affectedCaseIds.add(targetCase.id);
   }
 
+  const filteredCases = updatedCases.filter(isMeaningfulCase);
+
   return {
-    updatedCases,
+    updatedCases: filteredCases,
     processedCount,
     duplicateCount,
     affectedCaseIds: Array.from(affectedCaseIds)
@@ -919,3 +962,127 @@ export function exportLearningCandidatesJSONL(cases: TARSCase[]): string {
 
   return lines.join("\n");
 }
+
+export function exportLearningCandidates(cases: TARSCase[], format = "jsonl"): string {
+  const candidates = cases.filter(c =>
+    isMeaningfulCase(c) &&
+    (c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated || c.status === "CLOSED")
+  );
+
+  if (format === "alpaca") {
+    const dataset = candidates.map(c => {
+      const input = [
+        `Protocolo: ${c.protocol} | Cliente: ${c.customer?.name || "N/A"}`,
+        `Equipamento: ${c.equipment?.manufacturer} ${c.equipment?.model || ""} (S/N: ${c.equipment?.sn || "N/A"})`,
+        `Evidências: ${(c.technicalEvidence || []).map(e => `${e.type}: ${e.value}`).join("; ") || "Telemetria padrão"}`,
+        `Mensagens: ${(c.messages || []).map(m => `[${m.speaker}]: ${m.text}`).join(" | ")}`
+      ].join("\n");
+
+      const output = [
+        `DIAGNÓSTICO: ${c.finalDiagnosis || "Diagnóstico validado tecnicamente."}`,
+        `RESOLUÇÃO: ${c.finalResolution || "Procedimento aplicado com sucesso."}`,
+        c.humanAnalysis?.technicianConclusion ? `ANÁLISE DO ENGENHEIRO: ${c.humanAnalysis.technicianConclusion}` : ""
+      ].filter(Boolean).join("\n");
+
+      return {
+        instruction: `Analise a solicitação técnica do cliente e forneça o diagnóstico conclusivo, resolução e orientações de conformidade solar fotovoltaica.`,
+        input,
+        output
+      };
+    });
+    return JSON.stringify(dataset, null, 2);
+  }
+
+  if (format === "dpo") {
+    const pairs = candidates.map(c => {
+      const prompt = `[CASO SOLAR] Equipamento: ${c.equipment?.manufacturer} ${c.equipment?.model || ''}. Relato: ${(c.messages || []).map(m => m.text).join(' ')}`;
+      const chosen = `[RESOLUÇÃO CONFIRMADA] ${c.finalDiagnosis || 'Diagnóstico validado'}. Ação: ${c.finalResolution || 'Procedimento executado e homologado.'}`;
+      const rejected = `Caso genérico sem validação de telemetria ou medição de grandezas elétricas.`;
+      return JSON.stringify({ prompt, chosen, rejected });
+    });
+    return pairs.join("\n");
+  }
+
+  return exportLearningCandidatesJSONL(cases);
+}
+
+// ------------------------------------------------------------
+// SMART LEARNING WITH TARS AI (Gemini Synthesis)
+// ------------------------------------------------------------
+export async function runTarsSmartLearningAnalysis(caseItem: TARSCase): Promise<{
+  success: boolean;
+  data?: any;
+  error?: string;
+}> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: "GEMINI_API_KEY is not configured.",
+      data: {
+        conclusiveDiagnosis: caseItem.finalDiagnosis || "Diagnóstico validado com sucesso.",
+        conclusiveResolution: caseItem.finalResolution || "Atendimento executado.",
+        technicalConformity: "ABNT NBR 16149 / Critérios de Garantia",
+        isGoldenCandidate: true,
+        goldenReason: "Caso fechado com resolução técnica consistente.",
+        tags: ["solar", "tars-smart-learning"]
+      }
+    };
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+
+    const prompt = `Você é o TARS AI Deep Learning Engine, especialista sênior em suporte técnico, RMA e diagnóstico de inversores solares fotovoltaicos (Deye, Hoymiles, FoxESS, Huawei, Solis, Growatt).
+Analise os dados deste atendimento e gere metadados estruturados de aprendizado para treinar nosso modelo de Deep Learning local.
+
+DADOS DO CASO:
+Protocolo: ${caseItem.protocol}
+Cliente: ${caseItem.customer?.name || "N/A"}
+Fabricante: ${caseItem.equipment?.manufacturer || "N/A"}
+Modelo: ${caseItem.equipment?.model || "N/A"}
+S/N: ${caseItem.equipment?.sn || "N/A"}
+Status: ${caseItem.status}
+Diagnóstico Atual: ${caseItem.finalDiagnosis || "Pendente"}
+Resolução Atual: ${caseItem.finalResolution || "Pendente"}
+
+EVIDÊNCIAS TÉCNICAS:
+${(caseItem.technicalEvidence || []).map(e => `- ${e.type}: ${e.value} (${e.notes || ''})`).join("\n") || "Nenhuma evidência estruturada."}
+
+MENSAGENS DO ATENDIMENTO:
+${(caseItem.messages || []).map(m => `[${m.speaker?.toUpperCase()}]: ${m.text}`).join("\n") || "Sem histórico de mensagens."}
+
+RETORNE APENAS UM JSON VÁLIDO no seguinte formato exato (sem markdown ou texto extra):
+{
+  "conclusiveDiagnosis": "diagnóstico técnico detalhado",
+  "conclusiveResolution": "passo a passo de resolução definitivo",
+  "technicalConformity": "conforme normas ABNT NBR 16149 / critérios de garantia",
+  "isGoldenCandidate": true,
+  "goldenReason": "justificativa de por que este caso serve para treinar e ajustar modelos de Deep Learning",
+  "tags": ["fabricante", "codigo_falha", "tipo_procedimento", "golden-case"],
+  "fineTuningInstruction": "instrução ideal de fine-tuning derivada deste caso",
+  "fineTuningOutput": "resposta modelo ideal que a IA deve aprender a responder"
+}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt
+    });
+
+    const text = response.text || "";
+    const cleanJson = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const parsed = JSON.parse(cleanJson);
+
+    return {
+      success: true,
+      data: parsed
+    };
+  } catch (err: any) {
+    console.error("[runTarsSmartLearningAnalysis Error]", err);
+    return {
+      success: false,
+      error: err?.message || "Smart Learning analysis failed."
+    };
+  }
+}
+

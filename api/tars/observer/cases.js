@@ -1,5 +1,9 @@
 import { sendResponse, handleCors, parseJsonBody } from "../../_smtp.js";
-import { getDefaultObserverCases } from "../_observer-engine.js";
+import {
+  getDefaultObserverCases,
+  isMeaningfulCase,
+  runTarsSmartLearningAnalysis
+} from "../_observer-engine.js";
 import {
   initializeObserverState,
   writeObserverState
@@ -37,7 +41,7 @@ async function mutateCase(mutator) {
 
     const item = cases[index];
 
-    const changed = mutator.apply(item);
+    const changed = await mutator.apply(item);
 
     if (changed === false) {
       return {
@@ -107,15 +111,6 @@ export default async function handler(req, res) {
     url.searchParams.get("action") ||
     req.query?.action;
 
-  /*
-   * Supports:
-   *
-   * GET /api/tars/observer/cases
-   * GET /api/tars/observer/cases?id=TARS-OBS-HF-2041
-   * GET /api/tars/observer/cases/TARS-OBS-HF-2041
-   * POST /api/tars/observer/cases?id=TARS-OBS-HF-2041&action=close
-   * POST /api/tars/observer/cases/TARS-OBS-HF-2041/close
-   */
   const pathParts = url.pathname
     .split("/")
     .filter(Boolean);
@@ -155,7 +150,7 @@ export default async function handler(req, res) {
   }
 
   // ============================================================
-  // GET — READ OBSERVER CASES
+  // GET — READ OBSERVER CASES (Cleaned of empty/ghost records)
   // ============================================================
 
   if (req.method === "GET") {
@@ -165,9 +160,12 @@ export default async function handler(req, res) {
           getDefaultObserverCases()
         );
 
-      const cases = Array.isArray(state.cases)
+      const rawCases = Array.isArray(state.cases)
         ? state.cases
         : [];
+
+      // Filter out empty cases automatically so UI is always pristine
+      const cases = rawCases.filter(isMeaningfulCase);
 
       // Single case
       if (queryId) {
@@ -186,7 +184,6 @@ export default async function handler(req, res) {
         return sendResponse(res, 200, {
           ok: true,
           case: item,
-          storage: "SUPABASE",
           storageVersion: state.version
         });
       }
@@ -305,7 +302,6 @@ export default async function handler(req, res) {
         cases: filtered,
         safetyBoundary:
           "PASSIVE_OBSERVER_ACTIVE",
-        storage: "SUPABASE",
         storageVersion: state.version
       });
     } catch (err) {
@@ -345,6 +341,25 @@ export default async function handler(req, res) {
         body?.caseId ||
         body?.id;
 
+      // Special action: purge empty cases across whole storage
+      if (act === "purge-empty") {
+        const state = await initializeObserverState(getDefaultObserverCases());
+        const beforeCount = (state.cases || []).length;
+        const validCases = (state.cases || []).filter(isMeaningfulCase);
+        const nextCases = validCases.length > 0 ? validCases : getDefaultObserverCases();
+        const persisted = await writeObserverState({
+          cases: nextCases,
+          processedEventIds: state.processed_event_ids || [],
+          expectedVersion: Number(state.version || 1)
+        });
+        return sendResponse(res, 200, {
+          ok: true,
+          purgedCount: beforeCount - nextCases.length,
+          remainingCount: nextCases.length,
+          storageVersion: persisted.version
+        });
+      }
+
       if (!targetCaseId) {
         return sendResponse(res, 400, {
           ok: false,
@@ -356,35 +371,86 @@ export default async function handler(req, res) {
         await mutateCase({
           caseId: targetCaseId,
 
-          apply(item) {
+          async apply(item) {
             const now =
               new Date().toISOString();
 
             // ----------------------------------------------------
+            // SMART LEARNING ANALYSIS WITH TARS AI (Gemini)
+            // ----------------------------------------------------
+            if (act === "smart-learning") {
+              const aiResult = await runTarsSmartLearningAnalysis(item);
+              if (aiResult.success && aiResult.data) {
+                const d = aiResult.data;
+                if (d.conclusiveDiagnosis) item.finalDiagnosis = d.conclusiveDiagnosis;
+                if (d.conclusiveResolution) item.finalResolution = d.conclusiveResolution;
+                item.humanAnalysis = {
+                  ...item.humanAnalysis,
+                  technicianConclusion: d.technicalConformity || item.humanAnalysis?.technicianConclusion || "Conforme diretrizes TARS AI",
+                  analyzedBy: "TARS AI Smart Learning Engine",
+                  analyzedAt: now
+                };
+                if (!item.learningMetadata) {
+                  item.learningMetadata = {
+                    isValidated: true,
+                    validatedAt: now,
+                    validatedBy: "TARS AI",
+                    isTrainingCandidate: true,
+                    candidateReason: d.goldenReason || "Caso de ouro validado por IA",
+                    tags: d.tags || []
+                  };
+                } else {
+                  item.learningMetadata.isValidated = true;
+                  item.learningMetadata.validatedAt = now;
+                  item.learningMetadata.validatedBy = "TARS AI";
+                  item.learningMetadata.isTrainingCandidate = true;
+                  item.learningMetadata.candidateReason = d.goldenReason || item.learningMetadata.candidateReason;
+                  if (Array.isArray(d.tags)) {
+                    item.learningMetadata.tags = Array.from(new Set([...(item.learningMetadata.tags || []), ...d.tags]));
+                  }
+                }
+                item.timeline.push({
+                  id: `tl-ai-${Date.now()}`,
+                  eventType: "SMART_LEARNING_SYNTHESIS",
+                  timestamp: now,
+                  title: "TARS Smart Learning Concluído",
+                  detail: `Síntese de aprendizado gerada: ${d.goldenReason || "Caso otimizado para fine-tuning local."}`,
+                  author: "TARS AI Deep Learning Engine"
+                });
+              } else {
+                // Fallback smart tags
+                if (!item.learningMetadata) {
+                  item.learningMetadata = {
+                    isValidated: true,
+                    validatedAt: now,
+                    validatedBy: "TARS AI",
+                    isTrainingCandidate: true,
+                    candidateReason: "Caso validado para fine-tuning.",
+                    tags: ["solar", "tars-smart-learning"]
+                  };
+                } else {
+                  item.learningMetadata.isTrainingCandidate = true;
+                }
+              }
+              return true;
+            }
+
+            // ----------------------------------------------------
             // CLOSE CASE
             // ----------------------------------------------------
-
             if (act === "close") {
               item.status = "CLOSED";
               item.closedAt = now;
 
-              if (
-                body.finalDiagnosis
-              ) {
-                item.finalDiagnosis =
-                  body.finalDiagnosis;
+              if (body.finalDiagnosis) {
+                item.finalDiagnosis = body.finalDiagnosis;
               }
 
-              if (
-                body.finalResolution
-              ) {
-                item.finalResolution =
-                  body.finalResolution;
+              if (body.finalResolution) {
+                item.finalResolution = body.finalResolution;
               }
 
-              if (
-                !item.learningMetadata
-              ) {
+              if (!item.learningMetadata) {
                 item.learningMetadata = {
                   isValidated: false,
                   validatedAt: null,
@@ -395,67 +461,32 @@ export default async function handler(req, res) {
                 };
               }
 
-              if (
-                body.markAsCandidate
-              ) {
-                item.learningMetadata
-                  .isTrainingCandidate = true;
-
-                item.learningMetadata
-                  .candidateReason =
-                  body.candidateReason ||
-                  "Caso de ouro validado no encerramento.";
+              if (body.markAsCandidate) {
+                item.learningMetadata.isTrainingCandidate = true;
+                item.learningMetadata.candidateReason =
+                  body.candidateReason || "Caso de ouro validado no encerramento.";
               }
 
-              if (
-                Array.isArray(body.tags) &&
-                body.tags.length > 0
-              ) {
-                item.learningMetadata.tags =
-                  Array.from(
-                    new Set([
-                      ...(item
-                        .learningMetadata
-                        .tags || []),
-                      ...body.tags
-                    ])
-                  );
+              if (Array.isArray(body.tags) && body.tags.length > 0) {
+                item.learningMetadata.tags = Array.from(
+                  new Set([
+                    ...(item.learningMetadata.tags || []),
+                    ...body.tags
+                  ])
+                );
               }
 
-              if (
-                !Array.isArray(
-                  item.timeline
-                )
-              ) {
+              if (!Array.isArray(item.timeline)) {
                 item.timeline = [];
               }
 
               item.timeline.push({
-                id: `tl-${Date.now()}-${Math.random()
-                  .toString(36)
-                  .slice(2, 6)}`,
-
-                eventType:
-                  "CASE_CLOSED",
-
+                id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                eventType: "CASE_CLOSED",
                 timestamp: now,
-
-                title:
-                  "Caso Fechado & Arquivado",
-
-                detail:
-                  `Diagnóstico: ${
-                    item.finalDiagnosis ||
-                    "Atendimento concluído."
-                  }. Resolução: ${
-                    item.finalResolution ||
-                    "Procedimento aplicado."
-                  }`,
-
-                author:
-                  body.technician ||
-                  body.technicianName ||
-                  "Técnico Solar"
+                title: "Caso Fechado & Arquivado",
+                detail: `Diagnóstico: ${item.finalDiagnosis || "Atendimento concluído."}. Resolução: ${item.finalResolution || "Procedimento aplicado."}`,
+                author: body.technician || body.technicianName || "Técnico Solar"
               });
 
               return true;
@@ -464,37 +495,19 @@ export default async function handler(req, res) {
             // ----------------------------------------------------
             // VALIDATE AI OBSERVATION
             // ----------------------------------------------------
-
-            if (
-              act ===
-              "validate-observation"
-            ) {
-              const observation =
-                (
-                  item.aiObservations ||
-                  []
-                ).find(
-                  (o) =>
-                    o.id ===
-                    body.observationId
-                );
+            if (act === "validate-observation") {
+              const observation = (item.aiObservations || []).find(
+                (o) => o.id === body.observationId
+              );
 
               if (!observation) {
-                throw new Error(
-                  "Observation not found"
-                );
+                throw new Error("Observation not found");
               }
 
-              observation.isValidated =
-                true;
-
-              observation.validatedAt =
-                now;
-
+              observation.isValidated = true;
+              observation.validatedAt = now;
               observation.validatedBy =
-                body.validatedBy ||
-                body.technician ||
-                "Técnico Solar";
+                body.validatedBy || body.technician || "Técnico Solar";
 
               return true;
             }
@@ -502,48 +515,19 @@ export default async function handler(req, res) {
             // ----------------------------------------------------
             // HUMAN CORRECTION
             // ----------------------------------------------------
-
-            if (
-              act === "correction" ||
-              act ===
-                "correct-observation"
-            ) {
-              if (
-                !Array.isArray(
-                  item.humanCorrections
-                )
-              ) {
-                item.humanCorrections =
-                  [];
+            if (act === "correction" || act === "correct-observation") {
+              if (!Array.isArray(item.humanCorrections)) {
+                item.humanCorrections = [];
               }
 
               item.humanCorrections.push({
-                id: `cor-${Date.now()}-${Math.random()
-                  .toString(36)
-                  .slice(2, 6)}`,
-
+                id: `cor-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                 timestamp: now,
-
-                observationId:
-                  body.observationId ||
-                  null,
-
-                correctedBy:
-                  body.correctedBy ||
-                  body.technician ||
-                  "Técnico Solar",
-
-                originalValue:
-                  body.originalValue ||
-                  "",
-
-                correctedValue:
-                  body.correctedValue ||
-                  "",
-
-                reason:
-                  body.reason ||
-                  "Correção técnica de campo"
+                observationId: body.observationId || null,
+                correctedBy: body.correctedBy || body.technician || "Técnico Solar",
+                originalValue: body.originalValue || "",
+                correctedValue: body.correctedValue || "",
+                reason: body.reason || "Correção técnica de campo"
               });
 
               return true;
@@ -552,36 +536,16 @@ export default async function handler(req, res) {
             // ----------------------------------------------------
             // HUMAN ANALYSIS
             // ----------------------------------------------------
-
-            if (
-              act ===
-              "human-analysis"
-            ) {
+            if (act === "human-analysis") {
               item.humanAnalysis = {
                 visualNotes:
-                  body.visualNotes ||
-                  item.humanAnalysis
-                    ?.visualNotes ||
-                  "",
-
+                  body.visualNotes || item.humanAnalysis?.visualNotes || "",
                 technicianConclusion:
-                  body.technicianConclusion ||
-                  item.humanAnalysis
-                    ?.technicianConclusion ||
-                  "",
-
+                  body.technicianConclusion || item.humanAnalysis?.technicianConclusion || "",
                 electricalConformity:
-                  body.electricalConformity ||
-                  item.humanAnalysis
-                    ?.electricalConformity ||
-                  "",
-
+                  body.electricalConformity || item.humanAnalysis?.electricalConformity || "",
                 analyzedBy:
-                  body.updatedBy ||
-                  body.analyzedBy ||
-                  body.technician ||
-                  "Técnico Solar",
-
+                  body.updatedBy || body.analyzedBy || body.technician || "Técnico Solar",
                 analyzedAt: now
               };
 
@@ -591,14 +555,8 @@ export default async function handler(req, res) {
             // ----------------------------------------------------
             // LEARNING CANDIDATE
             // ----------------------------------------------------
-
-            if (
-              act ===
-              "learning-candidate"
-            ) {
-              if (
-                !item.learningMetadata
-              ) {
+            if (act === "learning-candidate") {
+              if (!item.learningMetadata) {
                 item.learningMetadata = {
                   isValidated: false,
                   validatedAt: null,
@@ -609,34 +567,16 @@ export default async function handler(req, res) {
                 };
               }
 
-              item.learningMetadata
-                .isTrainingCandidate =
-                Boolean(
-                  body.isTrainingCandidate
-                );
-
-              item.learningMetadata
-                .candidateReason =
-                body.candidateReason ||
-                "";
-
-              if (
-                Array.isArray(
-                  body.tags
-                )
-              ) {
-                item.learningMetadata.tags =
-                  body.tags;
+              item.learningMetadata.isTrainingCandidate = Boolean(body.isTrainingCandidate);
+              item.learningMetadata.candidateReason = body.candidateReason || "";
+              if (Array.isArray(body.tags)) {
+                item.learningMetadata.tags = body.tags;
               }
 
               return true;
             }
 
-            throw new Error(
-              `Unsupported observer case action: ${
-                act || "none"
-              }`
-            );
+            throw new Error(`Unsupported observer case action: ${act || "none"}`);
           }
         });
 
@@ -650,29 +590,20 @@ export default async function handler(req, res) {
       return sendResponse(res, 200, {
         ok: true,
         case: result.item,
-        storage: "SUPABASE",
-        storageVersion:
-          result.storageVersion,
-        storageAttempt:
-          result.storageAttempt
+        storageVersion: result.storageVersion,
+        storageAttempt: result.storageAttempt
       });
     } catch (err) {
-      console.error(
-        "[TARS Observer Cases POST Error]",
-        err
-      );
+      console.error("[TARS Observer Cases POST Error]", err);
 
       const status =
-        err?.message ===
-        "Observation not found"
+        err?.message === "Observation not found"
           ? 404
           : 500;
 
       return sendResponse(res, status, {
         ok: false,
-        error:
-          err?.message ||
-          "Internal error"
+        error: err?.message || "Internal error"
       });
     }
   }

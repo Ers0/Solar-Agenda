@@ -12,6 +12,9 @@ import {
   getDefaultObserverCases,
   processObserverEventsBatch,
   exportLearningCandidatesJSONL,
+  exportLearningCandidates,
+  runTarsSmartLearningAnalysis,
+  isMeaningfulCase,
   computeConfidenceLevel
 } from "./server/tars-observer";
 
@@ -208,15 +211,140 @@ function writeAppStorage(data: any) {
   }
 }
 
-// Helper to get active TARS Observer cases (with default seeds if empty)
+// Helper to get active TARS Observer cases (with default seeds if empty, auto-purging empty cases)
 function getObserverCases(): TARSCase[] {
   const storage = readAppStorage();
   if (Array.isArray(storage.tarsObserverCases) && storage.tarsObserverCases.length > 0) {
-    return storage.tarsObserverCases;
+    const valid = storage.tarsObserverCases.filter(isMeaningfulCase);
+    if (valid.length > 0) {
+      if (valid.length !== storage.tarsObserverCases.length) {
+        writeAppStorage({ tarsObserverCases: valid });
+      }
+      return valid;
+    }
   }
   const defaults = getDefaultObserverCases();
   writeAppStorage({ tarsObserverCases: defaults });
   return defaults;
+}
+
+// Automatically register completed SLA case when a Hoymiles account is created via the extension
+function registerHoymilesCompletedSlaCase(eventOrData: any) {
+  try {
+    const storage = readAppStorage();
+    const list = Array.isArray(storage.slaCases) ? [...storage.slaCases] : [];
+    const occurredAt = eventOrData.observedAt || eventOrData.occurredAt || new Date().toISOString();
+
+    const rawData = eventOrData.data || eventOrData;
+    const accountObj = rawData.account || eventOrData.account || {};
+    const orgObj = rawData.organization || eventOrData.organization || {};
+    const customerObj = rawData.customer || eventOrData.customer || {};
+
+    const loginEmail = (accountObj.loginEmail || rawData.loginEmail || eventOrData.loginEmail || rawData.email || customerObj.email || "").trim().toLowerCase();
+    const orgName = (orgObj.name || rawData.company || rawData.orgName || eventOrData.company || "Instalador Hoymiles").trim();
+    const parentOrg = (orgObj.parentOrganization || rawData.parentOrg || eventOrData.parentOrg || "APItest").trim();
+    const customerName = (customerObj.name || rawData.customerName || eventOrData.customerName || orgName).trim();
+    const customerPhone = (customerObj.phone || rawData.phone || eventOrData.phone || "").trim();
+    const conversationId = (eventOrData.conversationId || rawData.conversationId || "").trim();
+
+    const existingIndex = list.findIndex((c: any) => {
+      const hoymilesList = c.protocols?.hoymiles || [];
+      const matchesEmail = Boolean(loginEmail && hoymilesList.some((h: any) => (h.account_email || "").toLowerCase() === loginEmail));
+      const matchesConv = Boolean(conversationId && (
+        c.protocols?.hyperflow_id === conversationId ||
+        (Array.isArray(c.protocols?.hyperflow) && c.protocols.hyperflow.includes(conversationId))
+      ));
+      return matchesEmail || matchesConv;
+    });
+
+    if (existingIndex >= 0) {
+      const c = { ...list[existingIndex] };
+      c.status = "concluido";
+      c.resolved_at = occurredAt;
+      c.updated_at = occurredAt;
+      c.protocols = c.protocols || {};
+      c.protocols.hoymiles = Array.isArray(c.protocols.hoymiles) ? [...c.protocols.hoymiles] : [];
+      if (loginEmail && !c.protocols.hoymiles.some((h: any) => (h.account_email || "").toLowerCase() === loginEmail)) {
+        c.protocols.hoymiles.push({
+          account_email: loginEmail,
+          org_name: orgName,
+          parent_org: parentOrg,
+          role: "Installer",
+          created_at: occurredAt,
+          conversation_id: conversationId,
+          status: "COMPLETED"
+        });
+      }
+      c.timeline = Array.isArray(c.timeline) ? [...c.timeline] : [];
+      c.timeline.push({
+        id: `tl-hoy-${Date.now()}`,
+        type: "hoymiles_account_created",
+        title: `Conta Hoymiles Criada: ${loginEmail || orgName}`,
+        detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). SLA Concluído com sucesso via extensão TARS.`,
+        author: "TARS Vision Bridge v1.2.84",
+        timestamp: occurredAt
+      });
+      list[existingIndex] = c;
+      writeAppStorage({ slaCases: list });
+      return c;
+    }
+
+    const caseNum = Math.floor(1000 + Math.random() * 9000);
+    const newCaseId = `SLA-HOY-${caseNum}`;
+    const newCase = {
+      id: newCaseId,
+      title: `Criação de Conta Hoymiles — ${orgName || customerName}`,
+      priority: "media",
+      status: "concluido",
+      created_at: occurredAt,
+      resolved_at: occurredAt,
+      sla_limit_hours: 24,
+      responsible_tech: "TARS Vision Bridge",
+      customer: {
+        name: customerName,
+        email: loginEmail || customerObj.email || "",
+        phone: customerPhone,
+        state: customerObj.state || rawData.state || "",
+        company: orgName
+      },
+      equipment: {
+        manufacturer: "Hoymiles",
+        model: "S-Miles Cloud (Portal do Instalador)",
+        serial_numbers: ["N/A - Conta Web/App"]
+      },
+      problem_summary: `Criação automatizada de conta de Instalador Hoymiles para ${customerName} (${orgName}). Login: ${loginEmail || "N/A"}. Conta vinculada a ${parentOrg} e credenciais entregues via Hyperflow.`,
+      protocols: {
+        hoymiles: [{
+          account_email: loginEmail,
+          org_name: orgName,
+          parent_org: parentOrg,
+          role: "Installer",
+          created_at: occurredAt,
+          conversation_id: conversationId,
+          status: "COMPLETED"
+        }],
+        hyperflow: conversationId ? [conversationId] : []
+      },
+      timeline: [
+        {
+          id: `tl-sla-init-${Date.now()}`,
+          type: "hoymiles_account_created",
+          title: "Conta Hoymiles Criada & Entregue",
+          detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Atendimento concluído com sucesso via TARS Bridge.`,
+          author: "TARS Vision Bridge v1.2.84",
+          timestamp: occurredAt
+        }
+      ],
+      notes: "Registrado automaticamente como caso de SLA Concluído a partir da criação de conta Hoymiles pela extensão TARS Vision Bridge."
+    };
+
+    list.unshift(newCase);
+    writeAppStorage({ slaCases: list });
+    return newCase;
+  } catch (err) {
+    console.error("[registerHoymilesCompletedSlaCase error in server.ts]", err);
+    return null;
+  }
 }
 
 function getProcessedEventIdsSet(): Set<string> {
@@ -1588,6 +1716,31 @@ app.post("/api/tars/observer/events", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Invalid payload: 'events' array is required." });
     }
 
+    // Auto-detect and register Hoymiles account creation events as completed SLA cases
+    for (const ev of payload.events) {
+      const rawData = ev.data || (ev as any).event?.data || (ev as any).event || {};
+      const isHoymilesEvent =
+        ev.eventType === "HOYMILES_ACCOUNT_CREATED" ||
+        ev.eventType === "ACCOUNT_CREATION" ||
+        (ev as any).event === "hoymiles.account.created" ||
+        rawData.event === "hoymiles.account.created" ||
+        rawData.type === "hoymiles_account_created" ||
+        (ev.eventType === "TECHNICIAN_UI_ACTION" && (
+          rawData.actionType === "ACCOUNT_CREATION" ||
+          (String(rawData.target || "").includes("hoymiles") && String(rawData.notes || rawData.action || "").toLowerCase().includes("conta")) ||
+          (String(ev.page || "").includes("hoymiles") && String(rawData.actionType || "").toLowerCase().includes("account"))
+        )) ||
+        Boolean(rawData.account?.loginEmail && String(rawData.target || ev.page || "").includes("hoymiles"));
+
+      if (isHoymilesEvent) {
+        registerHoymilesCompletedSlaCase({
+          ...ev,
+          ...rawData,
+          observedAt: ev.observedAt || new Date().toISOString()
+        });
+      }
+    }
+
     const currentCases = getObserverCases();
     const processedSet = getProcessedEventIdsSet();
 
@@ -1946,7 +2099,7 @@ app.post("/api/tars/observer/cases/:caseId/candidate", (req, res) => {
 app.get("/api/tars/learning/candidates", (req, res) => {
   try {
     const cases = getObserverCases();
-    const candidates = cases.filter(c => c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated);
+    const candidates = cases.filter(c => isMeaningfulCase(c) && (c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated));
     return res.json({
       ok: true,
       count: candidates.length,
@@ -1958,15 +2111,100 @@ app.get("/api/tars/learning/candidates", (req, res) => {
   }
 });
 
-// 11. Export Learning Dataset (.JSONL)
+// 11. Run TARS AI Smart Learning on a Case (Synthesis + Golden Case Qualification)
+app.post("/api/tars/observer/cases/:id/smart-learning", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const cases = getObserverCases();
+    const idx = cases.findIndex(c => c.id === id || c.protocol === id);
+    if (idx < 0) return res.status(404).json({ ok: false, error: "Case not found" });
+
+    const item = cases[idx];
+    const aiResult = await runTarsSmartLearningAnalysis(item);
+
+    if (aiResult.success && aiResult.data) {
+      const d = aiResult.data;
+      if (d.conclusiveDiagnosis) item.finalDiagnosis = d.conclusiveDiagnosis;
+      if (d.conclusiveResolution) item.finalResolution = d.conclusiveResolution;
+      item.humanAnalysis = {
+        ...item.humanAnalysis,
+        technicianConclusion: d.technicalConformity || item.humanAnalysis?.technicianConclusion || "Conforme diretrizes TARS AI",
+        analyzedBy: "TARS AI Smart Learning Engine",
+        analyzedAt: new Date().toISOString()
+      };
+      if (!item.learningMetadata) {
+        item.learningMetadata = {
+          isValidated: true,
+          validatedAt: new Date().toISOString(),
+          validatedBy: "TARS AI",
+          isTrainingCandidate: true,
+          candidateReason: d.goldenReason || "Caso de ouro validado por IA",
+          tags: d.tags || []
+        };
+      } else {
+        item.learningMetadata.isValidated = true;
+        item.learningMetadata.validatedAt = new Date().toISOString();
+        item.learningMetadata.validatedBy = "TARS AI";
+        item.learningMetadata.isTrainingCandidate = true;
+        item.learningMetadata.candidateReason = d.goldenReason || item.learningMetadata.candidateReason;
+        if (Array.isArray(d.tags)) {
+          item.learningMetadata.tags = Array.from(new Set([...(item.learningMetadata.tags || []), ...d.tags]));
+        }
+      }
+      item.timeline.push({
+        id: `tl-ai-${Date.now()}`,
+        eventType: "SMART_LEARNING_SYNTHESIS",
+        timestamp: new Date().toISOString(),
+        title: "TARS Smart Learning Concluído",
+        detail: `Síntese de aprendizado gerada: ${d.goldenReason || "Caso otimizado para fine-tuning local."}`,
+        author: "TARS AI Deep Learning Engine"
+      });
+      cases[idx] = item;
+      writeAppStorage({ tarsObserverCases: cases });
+    }
+
+    return res.json({ ok: true, case: item, analysis: aiResult.data, aiResult });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Purge empty/ghost cases manually
+app.post("/api/tars/observer/purge-empty", (req, res) => {
+  try {
+    const storage = readAppStorage();
+    const rawCases = Array.isArray(storage.tarsObserverCases) ? storage.tarsObserverCases : [];
+    const validCases = rawCases.filter(isMeaningfulCase);
+    const nextCases = validCases.length > 0 ? validCases : getDefaultObserverCases();
+    writeAppStorage({ tarsObserverCases: nextCases });
+    return res.json({
+      ok: true,
+      purgedCount: rawCases.length - nextCases.length,
+      remainingCount: nextCases.length
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 12. Export Learning Dataset (.JSONL, .JSON Alpaca, or DPO format for Local Deep Learning)
 app.get("/api/tars/learning/export", (req, res) => {
   try {
     const cases = getObserverCases();
-    const jsonlContent = exportLearningCandidatesJSONL(cases);
+    const format = ((req.query.format as string) || "jsonl").toLowerCase();
+    const content = exportLearningCandidates(cases, format);
     
-    res.setHeader("Content-Disposition", "attachment; filename=\"tars-validated-cases.jsonl\"");
-    res.setHeader("Content-Type", "application/x-jsonlines; charset=utf-8");
-    return res.send(jsonlContent);
+    if (format === "alpaca") {
+      res.setHeader("Content-Disposition", 'attachment; filename="tars-alpaca-dataset.json"');
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+    } else if (format === "dpo") {
+      res.setHeader("Content-Disposition", 'attachment; filename="tars-dpo-dataset.jsonl"');
+      res.setHeader("Content-Type", "application/x-jsonlines; charset=utf-8");
+    } else {
+      res.setHeader("Content-Disposition", 'attachment; filename="tars-validated-cases.jsonl"');
+      res.setHeader("Content-Type", "application/x-jsonlines; charset=utf-8");
+    }
+    return res.send(content);
   } catch (err: any) {
     return res.status(500).json({ ok: false, error: err.message });
   }

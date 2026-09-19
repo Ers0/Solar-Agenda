@@ -7,7 +7,6 @@ const TMP_STORAGE = path.join(process.env.TMPDIR || "/tmp", "solar_agenda_storag
 function getStoragePath() {
   try {
     if (fs.existsSync(CWD_STORAGE)) {
-      // Test writability
       fs.accessSync(CWD_STORAGE, fs.constants.R_OK | fs.constants.W_OK);
       return CWD_STORAGE;
     }
@@ -22,7 +21,6 @@ export function readAppStorage() {
       return JSON.parse(fs.readFileSync(target, "utf-8"));
     }
   } catch (_) {}
-  // Fallback to reading CWD if TMP was empty
   if (target !== CWD_STORAGE && fs.existsSync(CWD_STORAGE)) {
     try {
       return JSON.parse(fs.readFileSync(CWD_STORAGE, "utf-8"));
@@ -55,6 +53,31 @@ export function computeConfidenceLevel(confidence) {
   return "LOW";
 }
 
+export function isMeaningfulCase(c) {
+  if (!c) return false;
+  // Has meaningful messages
+  if (Array.isArray(c.messages) && c.messages.some(m => m && m.text && String(m.text).trim().length > 0)) {
+    return true;
+  }
+  // Has technical evidence
+  if (Array.isArray(c.technicalEvidence) && c.technicalEvidence.length > 0) {
+    return true;
+  }
+  // Has technician actions
+  if (Array.isArray(c.technicianActions) && c.technicianActions.length > 0) {
+    return true;
+  }
+  // Has AI observations
+  if (Array.isArray(c.aiObservations) && c.aiObservations.length > 0) {
+    return true;
+  }
+  // Has a real protocol or recognized customer
+  if (c.protocol && c.protocol !== "PENDING" && !c.protocol.startsWith("TARS-OBS-")) {
+    return true;
+  }
+  return false;
+}
+
 export function getDefaultObserverCases() {
   const now = new Date();
   const tMinus1h = new Date(now.getTime() - 3600000).toISOString();
@@ -62,10 +85,8 @@ export function getDefaultObserverCases() {
   const tMinus20m = new Date(now.getTime() - 1200000).toISOString();
   const tMinus18m = new Date(now.getTime() - 1080000).toISOString();
   const tMinus15m = new Date(now.getTime() - 900000).toISOString();
-  const tMinus12m = new Date(now.getTime() - 720000).toISOString();
   const tMinus10m = new Date(now.getTime() - 600000).toISOString();
   const tMinus5m = new Date(now.getTime() - 300000).toISOString();
-  const tNow = now.toISOString();
 
   return [
     {
@@ -341,7 +362,14 @@ export function getDefaultObserverCases() {
 export function getObserverCases() {
   const data = readAppStorage();
   if (Array.isArray(data.tarsObserverCases) && data.tarsObserverCases.length > 0) {
-    return data.tarsObserverCases;
+    // Purge ghost/empty cases automatically
+    const validCases = data.tarsObserverCases.filter(isMeaningfulCase);
+    if (validCases.length > 0) {
+      if (validCases.length !== data.tarsObserverCases.length) {
+        writeAppStorage({ tarsObserverCases: validCases });
+      }
+      return validCases;
+    }
   }
   const defaults = getDefaultObserverCases();
   writeAppStorage({ tarsObserverCases: defaults });
@@ -352,6 +380,128 @@ export function getProcessedEventIdsSet() {
   const data = readAppStorage();
   const list = Array.isArray(data.tarsProcessedEvents) ? data.tarsProcessedEvents : [];
   return new Set(list);
+}
+
+// ------------------------------------------------------------
+// HOYMILES SLA CASE AUTOMATION
+// ------------------------------------------------------------
+export function registerHoymilesCompletedSlaCase(eventOrData) {
+  try {
+    const storage = readAppStorage();
+    const list = Array.isArray(storage.slaCases) ? [...storage.slaCases] : [];
+    const occurredAt = eventOrData.observedAt || eventOrData.occurredAt || new Date().toISOString();
+
+    const rawData = eventOrData.data || eventOrData;
+    const accountObj = rawData.account || eventOrData.account || {};
+    const orgObj = rawData.organization || eventOrData.organization || {};
+    const customerObj = rawData.customer || eventOrData.customer || {};
+
+    const loginEmail = (accountObj.loginEmail || rawData.loginEmail || eventOrData.loginEmail || rawData.email || customerObj.email || "").trim().toLowerCase();
+    const orgName = (orgObj.name || rawData.company || rawData.orgName || eventOrData.company || "Instalador Hoymiles").trim();
+    const parentOrg = (orgObj.parentOrganization || rawData.parentOrg || eventOrData.parentOrg || "APItest").trim();
+    const customerName = (customerObj.name || rawData.customerName || eventOrData.customerName || orgName).trim();
+    const customerPhone = (customerObj.phone || rawData.phone || eventOrData.phone || "").trim();
+    const conversationId = (eventOrData.conversationId || rawData.conversationId || "").trim();
+
+    // Check if case already registered for this login / conversation
+    const existingIndex = list.findIndex(c => {
+      const hoymilesList = c.protocols?.hoymiles || [];
+      const matchesEmail = Boolean(loginEmail && hoymilesList.some(h => (h.account_email || "").toLowerCase() === loginEmail));
+      const matchesConv = Boolean(conversationId && (
+        c.protocols?.hyperflow_id === conversationId ||
+        (Array.isArray(c.protocols?.hyperflow) && c.protocols.hyperflow.includes(conversationId))
+      ));
+      return matchesEmail || matchesConv;
+    });
+
+    if (existingIndex >= 0) {
+      const c = { ...list[existingIndex] };
+      c.status = "concluido";
+      c.resolved_at = occurredAt;
+      c.updated_at = occurredAt;
+      c.protocols = c.protocols || {};
+      c.protocols.hoymiles = Array.isArray(c.protocols.hoymiles) ? [...c.protocols.hoymiles] : [];
+      if (loginEmail && !c.protocols.hoymiles.some(h => (h.account_email || "").toLowerCase() === loginEmail)) {
+        c.protocols.hoymiles.push({
+          account_email: loginEmail,
+          org_name: orgName,
+          parent_org: parentOrg,
+          role: "Installer",
+          created_at: occurredAt,
+          conversation_id: conversationId,
+          status: "COMPLETED"
+        });
+      }
+      c.timeline = Array.isArray(c.timeline) ? [...c.timeline] : [];
+      c.timeline.push({
+        id: `tl-hoy-${Date.now()}`,
+        type: "hoymiles_account_created",
+        title: `Conta Hoymiles Criada: ${loginEmail || orgName}`,
+        detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). SLA Concluído com sucesso via extensão TARS.`,
+        author: "TARS Vision Bridge v1.2.84",
+        timestamp: occurredAt
+      });
+      list[existingIndex] = c;
+      writeAppStorage({ slaCases: list });
+      return c;
+    }
+
+    const caseNum = Math.floor(1000 + Math.random() * 9000);
+    const newCaseId = `SLA-HOY-${caseNum}`;
+    const newCase = {
+      id: newCaseId,
+      title: `Criação de Conta Hoymiles — ${orgName || customerName}`,
+      priority: "media",
+      status: "concluido",
+      created_at: occurredAt,
+      resolved_at: occurredAt,
+      sla_limit_hours: 24,
+      responsible_tech: "TARS Vision Bridge",
+      customer: {
+        name: customerName,
+        email: loginEmail || customerObj.email || "",
+        phone: customerPhone,
+        state: customerObj.state || rawData.state || "",
+        company: orgName
+      },
+      equipment: {
+        manufacturer: "Hoymiles",
+        model: "S-Miles Cloud (Portal do Instalador)",
+        serial_numbers: ["N/A - Conta Web/App"]
+      },
+      problem_summary: `Criação automatizada de conta de Instalador Hoymiles para ${customerName} (${orgName}). Login: ${loginEmail || "N/A"}. Conta vinculada a ${parentOrg} e credenciais entregues via Hyperflow.`,
+      protocols: {
+        hoymiles: [{
+          account_email: loginEmail,
+          org_name: orgName,
+          parent_org: parentOrg,
+          role: "Installer",
+          created_at: occurredAt,
+          conversation_id: conversationId,
+          status: "COMPLETED"
+        }],
+        hyperflow: conversationId ? [conversationId] : []
+      },
+      timeline: [
+        {
+          id: `tl-sla-init-${Date.now()}`,
+          type: "hoymiles_account_created",
+          title: "Conta Hoymiles Criada & Entregue",
+          detail: `Conta de Instalador criada no portal global.hoymiles.com vinculada a ${parentOrg} (${orgName}). Atendimento concluído com sucesso via TARS Bridge.`,
+          author: "TARS Vision Bridge v1.2.84",
+          timestamp: occurredAt
+        }
+      ],
+      notes: "Registrado automaticamente como caso de SLA Concluído a partir da criação de conta Hoymiles pela extensão TARS Vision Bridge."
+    };
+
+    list.unshift(newCase);
+    writeAppStorage({ slaCases: list });
+    return newCase;
+  } catch (err) {
+    console.error("[registerHoymilesCompletedSlaCase error]", err);
+    return null;
+  }
 }
 
 // Ingestion Engine: applies batched events to matching TARS Case
@@ -377,36 +527,52 @@ export function processObserverEventsBatch(payload, existingCases, processedEven
     const caseData = ev.case || ev.data?.case || ev.event?.case || {};
     const convId = (caseData.conversationId || ev.conversationId || ev.event?.conversationId || ev.data?.conversationId || "").trim();
     const protocol = (caseData.protocol || ev.protocol || ev.event?.protocol || ev.data?.protocol || "").trim();
+    const rawData = ev.data || ev.event?.data || ev.event || {};
 
     // ------------------------------------------------------------
-// CASE CREATION GUARD
-// ------------------------------------------------------------
-// Observer events are not automatically cases.
-// Navigation, SITE_ACCESSED, observer attachment, etc.
-// may legitimately exist without an active Hyperflow conversation.
-//
-// NEVER create an Observer Case unless we have a real
-// conversation identity.
-const requiresCase = [
-  "HYPERFLOW_MESSAGE",
-  "TECHNICIAN_UI_ACTION",
-  "CASE_STATUS_CHANGED",
-  "HUMAN_REVIEW_REQUIRED",
-  "LEARNING_SIGNAL"
-].includes(ev.eventType);
+    // HOYMILES SLA AUTO-REGISTRATION DETECTION
+    // ------------------------------------------------------------
+    const isHoymilesAccountEvent =
+      ev.eventType === "HOYMILES_ACCOUNT_CREATED" ||
+      ev.eventType === "ACCOUNT_CREATION" ||
+      ev.event === "hoymiles.account.created" ||
+      rawData.event === "hoymiles.account.created" ||
+      rawData.type === "hoymiles_account_created" ||
+      (ev.eventType === "TECHNICIAN_UI_ACTION" && (
+        rawData.actionType === "ACCOUNT_CREATION" ||
+        (String(rawData.target || "").includes("hoymiles") && String(rawData.notes || rawData.action || "").toLowerCase().includes("conta")) ||
+        (String(ev.page || "").includes("hoymiles") && String(rawData.actionType || "").toLowerCase().includes("account"))
+      )) ||
+      Boolean(rawData.account?.loginEmail && String(rawData.target || ev.page || "").includes("hoymiles"));
 
-if (!convId && !protocol) {
-  if (!requiresCase) {
-    // Event can still be accepted/processed as telemetry,
-    // but it must not materialize into a case.
-    continue;
-  }
+    if (isHoymilesAccountEvent) {
+      registerHoymilesCompletedSlaCase({
+        ...ev,
+        ...rawData,
+        observedAt: eventDate,
+        customer: caseData.customer || (caseData.customerName ? { name: caseData.customerName, phone: caseData.customerPhone } : null)
+      });
+    }
 
-  // Even case-relevant events cannot create an anonymous case.
-  // They need a real Hyperflow conversation.
-  continue;
-}
-    
+    // ------------------------------------------------------------
+    // CASE CREATION GUARD (Anti-empty cases)
+    // ------------------------------------------------------------
+    const requiresCase = [
+      "HYPERFLOW_MESSAGE",
+      "TECHNICIAN_UI_ACTION",
+      "CASE_STATUS_CHANGED",
+      "HUMAN_REVIEW_REQUIRED",
+      "LEARNING_SIGNAL",
+      "HOYMILES_ACCOUNT_CREATED"
+    ].includes(ev.eventType);
+
+    if (!convId && !protocol) {
+      if (!requiresCase) {
+        continue;
+      }
+      continue;
+    }
+
     let matchedCaseIndex = -1;
 
     if (protocol) {
@@ -462,8 +628,8 @@ if (!convId && !protocol) {
           protocol: protocol || "PENDING"
         },
         equipment: {
-          manufacturer: caseData.manufacturer || "Desconhecido",
-          model: caseData.equipmentModel || "",
+          manufacturer: caseData.manufacturer || (isHoymilesAccountEvent ? "Hoymiles" : "Desconhecido"),
+          model: caseData.equipmentModel || (isHoymilesAccountEvent ? "S-Miles Cloud" : ""),
           serialNumbers: caseData.serialNumber ? [caseData.serialNumber] : [],
           sn: caseData.serialNumber || ""
         },
@@ -472,20 +638,20 @@ if (!convId && !protocol) {
         technicianActions: [],
         technicalEvidence: [],
         aiObservations: [],
-        confidence: 0.5,
-        confidenceLevel: "MEDIUM",
+        confidence: isHoymilesAccountEvent ? 0.95 : 0.5,
+        confidenceLevel: isHoymilesAccountEvent ? "HIGH" : "MEDIUM",
         needsHumanReview: false,
         uncertainties: [],
         humanCorrections: [],
         humanAnalysis: {},
         attachments: [],
         learningMetadata: {
-          isValidated: false,
-          validatedAt: null,
-          validatedBy: null,
-          isTrainingCandidate: false,
-          candidateReason: null,
-          tags: []
+          isValidated: isHoymilesAccountEvent,
+          validatedAt: isHoymilesAccountEvent ? eventDate : null,
+          validatedBy: isHoymilesAccountEvent ? "TARS Vision Bridge" : null,
+          isTrainingCandidate: isHoymilesAccountEvent,
+          candidateReason: isHoymilesAccountEvent ? "Criação de conta Hoymiles finalizada via extensão TARS." : null,
+          tags: isHoymilesAccountEvent ? ["hoymiles", "account-creation", "golden-case"] : []
         },
         createdAt: eventDate,
         updatedAt: eventDate
@@ -502,8 +668,11 @@ if (!convId && !protocol) {
     updatedCases[matchedCaseIndex] = targetCase;
   }
 
+  // Filter out any ghost/empty cases before returning
+  const filteredCases = updatedCases.filter(isMeaningfulCase);
+
   return {
-    updatedCases,
+    updatedCases: filteredCases,
     processedCount,
     duplicateCount,
     affectedCaseIds: Array.from(affectedCaseIds)
@@ -516,7 +685,6 @@ function applyObserverEvent(tarsCase, ev) {
   const rawData = ev.data || ev.event?.data || ev.event || {};
   const data = rawData.text !== undefined ? rawData : (rawData.data || rawData);
 
-  // Status transitions
   if (tarsCase.status === "NEW") {
     tarsCase.status = "ACTIVE";
   }
@@ -574,6 +742,37 @@ function applyObserverEvent(tarsCase, ev) {
         tarsCase.status = "PROCESSING";
         analyzeCustomerMessageAI(tarsCase, text, timestamp);
       }
+      break;
+    }
+
+    case "HOYMILES_ACCOUNT_CREATED":
+    case "ACCOUNT_CREATION": {
+      tarsCase.equipment.manufacturer = "Hoymiles";
+      tarsCase.equipment.model = "S-Miles Cloud";
+      tarsCase.finalDiagnosis = "Criação de conta instalador Hoymiles no portal S-Miles Cloud";
+      tarsCase.finalResolution = "Conta de instalador criada e vinculada com sucesso. Credenciais fornecidas.";
+      tarsCase.status = "CLOSED";
+      tarsCase.confidence = 0.98;
+      tarsCase.confidenceLevel = "HIGH";
+      tarsCase.learningMetadata = {
+        isValidated: true,
+        validatedAt: timestamp,
+        validatedBy: "TARS Vision Bridge",
+        isTrainingCandidate: true,
+        candidateReason: "Exemplo validado de criação ágil de conta de instalador Hoymiles",
+        tags: ["hoymiles", "s-miles-cloud", "account-creation", "golden-case"]
+      };
+
+      tarsCase.timeline.push({
+        id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        eventId: ev.eventId,
+        eventType: "ACCOUNT_CREATION",
+        timestamp,
+        title: "Conta Hoymiles Criada",
+        detail: `Conta de Instalador Hoymiles criada com sucesso via extensão TARS. Caso arquivado e SLA concluído.`,
+        author: "TARS Vision Bridge",
+        data
+      });
       break;
     }
 
@@ -647,7 +846,6 @@ function applyObserverEvent(tarsCase, ev) {
 function analyzeCustomerMessageAI(tarsCase, text, timestamp) {
   const norm = text.toLowerCase();
 
-  // Inverter manufacturer matching
   const manufacturers = [
     { name: "Deye", patterns: [/\bdeye\b/i, /\bsun-\d+k/i, /\bsg01\b/i, /\bsg03\b/i, /\bsg04\b/i] },
     { name: "Hoymiles", patterns: [/\bhoymiles\b/i, /\bmicroinversor\b/i, /\bhms-\d+/i, /\bhmt-\d+/i, /\bmi-\d+/i, /\bs-miles\b/i] },
@@ -664,13 +862,11 @@ function analyzeCustomerMessageAI(tarsCase, text, timestamp) {
     }
   }
 
-  // Model Extraction
   const modelMatch = text.match(/\b(SUN-[0-9A-Z.-]+|HMS-[0-9A-Z.-]+|HMT-[0-9A-Z.-]+|SUN2000-[0-9A-Z.-]+|MIN\s*[0-9A-Z.-]+)\b/i);
   if (modelMatch) {
     tarsCase.equipment.model = modelMatch[1].toUpperCase();
   }
 
-  // Serial Number Extraction
   const snMatch = text.match(/\b([0-9]{10,16}|[A-Z0-9]{12,18})\b/);
   if (snMatch && !snMatch[1].startsWith("202") && !snMatch[1].startsWith("199")) {
     const snCandidate = snMatch[1];
@@ -680,7 +876,6 @@ function analyzeCustomerMessageAI(tarsCase, text, timestamp) {
     }
   }
 
-  // Electrical parameter extraction
   const voltMatch = text.match(/([0-9]{2,3}(?:[.,][0-9]+)?)\s*(?:V|volts|vac|vca)\b/i);
   if (voltMatch) {
     const vVal = voltMatch[1].replace(",", ".");
@@ -694,7 +889,6 @@ function analyzeCustomerMessageAI(tarsCase, text, timestamp) {
     });
   }
 
-  // Alarm Code Extraction
   const alarmPatterns = [
     { code: "F30", desc: "Falha de Relé Interno / Barramento CC-CA Deye", regex: /\b(f30|f-30|alarme\s*30)\b/i },
     { code: "F18", desc: "Corrente de Fuga Excessiva / Isolamento CA Deye", regex: /\b(f18|f-18)\b/i },
@@ -731,7 +925,6 @@ function analyzeCustomerMessageAI(tarsCase, text, timestamp) {
     }
   }
 
-  // Ambiguity / Low confidence check
   const isAmbiguousPhoto = /foto.*(ruim|escura|reflexo|embaçada|borrada|ilegivel)/i.test(norm);
   const conflictingData = (voltMatch && parseFloat(voltMatch[1]) > 260) || norm.includes("estalo") || norm.includes("cheiro de queimado");
 
@@ -777,21 +970,144 @@ function analyzeCustomerMessageAI(tarsCase, text, timestamp) {
   }
 }
 
-// Generate training candidate export format (JSONL pairs for Gemini SFT or local fine-tuning)
+// ------------------------------------------------------------
+// SMART LEARNING WITH TARS AI (Gemini Synthesis)
+// ------------------------------------------------------------
+export async function runTarsSmartLearningAnalysis(caseItem) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: "GEMINI_API_KEY is not configured.",
+      suggestedTags: ["solar", "analise-manual"],
+      isGoldenCandidate: true,
+      goldenReason: "Caso fechado com resolução técnica consistente."
+    };
+  }
+
+  try {
+    const { GoogleGenAI } = await import("@google/genai");
+    const ai = new GoogleGenAI({ apiKey });
+
+    const prompt = `Você é o TARS AI Deep Learning Engine, especialista sênior em suporte técnico, RMA e diagnóstico de inversores solares fotovoltaicos (Deye, Hoymiles, FoxESS, Huawei, Solis, Growatt).
+Analise os dados deste atendimento e gere metadados estruturados de aprendizado para treinar nosso modelo de Deep Learning local.
+
+DADOS DO CASO:
+Protocolo: ${caseItem.protocol}
+Cliente: ${caseItem.customer?.name || "N/A"}
+Fabricante: ${caseItem.equipment?.manufacturer || "N/A"}
+Modelo: ${caseItem.equipment?.model || "N/A"}
+S/N: ${caseItem.equipment?.sn || "N/A"}
+Status: ${caseItem.status}
+Diagnóstico Atual: ${caseItem.finalDiagnosis || "Pendente"}
+Resolução Atual: ${caseItem.finalResolution || "Pendente"}
+
+EVIDÊNCIAS TÉCNICAS:
+${(caseItem.technicalEvidence || []).map(e => `- ${e.type}: ${e.value} (${e.notes || ''})`).join("\n") || "Nenhuma evidência estruturada."}
+
+MENSAGENS DO ATENDIMENTO:
+${(caseItem.messages || []).map(m => `[${m.speaker?.toUpperCase()}]: ${m.text}`).join("\n") || "Sem histórico de mensagens."}
+
+RETORNE APENAS UM JSON VÁLIDO no seguinte formato exato (sem markdown ou texto extra):
+{
+  "conclusiveDiagnosis": "diagnóstico técnico detalhado",
+  "conclusiveResolution": "passo a passo de resolução definitivo",
+  "technicalConformity": "conforme normas ABNT NBR 16149 / critérios de garantia",
+  "isGoldenCandidate": true,
+  "goldenReason": "justificativa de por que este caso serve para treinar e ajustar modelos de Deep Learning",
+  "tags": ["fabricante", "codigo_falha", "tipo_procedimento", "golden-case"],
+  "fineTuningInstruction": "instrução ideal de fine-tuning derivada deste caso",
+  "fineTuningOutput": "resposta modelo ideal que a IA deve aprender a responder"
+}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt
+    });
+
+    const text = response.text || "";
+    const cleanJson = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const parsed = JSON.parse(cleanJson);
+
+    return {
+      success: true,
+      data: parsed
+    };
+  } catch (err) {
+    console.error("[runTarsSmartLearningAnalysis Error]", err);
+    return {
+      success: false,
+      error: err.message || "Smart Learning analysis failed."
+    };
+  }
+}
+
+// ------------------------------------------------------------
+// DATASET EXPORTS FOR LOCAL DEEP LEARNING (SFT, Alpaca, DPO)
+// ------------------------------------------------------------
+export function exportLearningCandidates(cases, format = "jsonl") {
+  const candidates = cases.filter(c =>
+    isMeaningfulCase(c) &&
+    (c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated || c.status === "CLOSED")
+  );
+
+  const systemPrompt = "Você é o TARS, especialista sênior em diagnóstico, pós-venda e laudos de inversores solares fotovoltaicos (Deye, FoxESS, Hoymiles, Huawei, Solis, Growatt). Responda com rigor técnico baseado nas normas ABNT NBR 16149 e critérios contratuais de garantia.";
+
+  if (format === "alpaca") {
+    const dataset = candidates.map(c => {
+      const input = [
+        `Protocolo: ${c.protocol} | Cliente: ${c.customer?.name || "N/A"}`,
+        `Equipamento: ${c.equipment?.manufacturer} ${c.equipment?.model || ""} (S/N: ${c.equipment?.sn || "N/A"})`,
+        `Evidências: ${(c.technicalEvidence || []).map(e => `${e.type}: ${e.value}`).join("; ") || "Telemetria padrão"}`,
+        `Mensagens: ${(c.messages || []).map(m => `[${m.speaker}]: ${m.text}`).join(" | ")}`
+      ].join("\n");
+
+      const output = [
+        `DIAGNÓSTICO: ${c.finalDiagnosis || "Diagnóstico validado tecnicamente."}`,
+        `RESOLUÇÃO: ${c.finalResolution || "Procedimento aplicado com sucesso."}`,
+        c.humanAnalysis?.technicianConclusion ? `ANÁLISE DO ENGENHEIRO: ${c.humanAnalysis.technicianConclusion}` : ""
+      ].filter(Boolean).join("\n");
+
+      return {
+        instruction: `Analise a solicitação técnica do cliente e forneça o diagnóstico conclusivo, resolução e orientações de conformidade solar fotovoltaica.`,
+        input,
+        output
+      };
+    });
+    return JSON.stringify(dataset, null, 2);
+  }
+
+  if (format === "dpo") {
+    const pairs = candidates.map(c => {
+      const prompt = `[CASO SOLAR] Equipamento: ${c.equipment?.manufacturer} ${c.equipment?.model || ''}. Relato: ${(c.messages || []).map(m => m.text).join(' ')}`;
+      const chosen = `[RESOLUÇÃO CONFIRMADA] ${c.finalDiagnosis || 'Diagnóstico validado'}. Ação: ${c.finalResolution || 'Procedimento executado e homologado.'}`;
+      const rejected = `Caso genérico sem validação de telemetria ou medição de grandezas elétricas.`;
+      return JSON.stringify({ prompt, chosen, rejected });
+    });
+    return pairs.join("\n");
+  }
+
+  // Default: JSONL (Chat SFT format for Gemini Tuning / Axolotl / Unsloth / LLaMA-Factory)
+  return exportLearningCandidatesJSONL(cases);
+}
+
 export function exportLearningCandidatesJSONL(cases) {
-  const candidates = cases.filter(c => c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated);
+  const candidates = cases.filter(c =>
+    isMeaningfulCase(c) &&
+    (c.learningMetadata?.isTrainingCandidate || c.learningMetadata?.isValidated || c.status === "CLOSED")
+  );
   const lines = [];
 
   for (const c of candidates) {
     const systemPrompt = "Você é o TARS, especialista sênior em diagnóstico, pós-venda e laudos de inversores solares fotovoltaicos (Deye, FoxESS, Hoymiles, Huawei, Solis, Growatt). Responda com rigor técnico baseado nas normas ABNT NBR 16149 e critérios contratuais de garantia.";
-    
+
     const userPrompt = [
-      `CASO VALIDADO: Protocolo ${c.protocol} (${c.customer.name})`,
-      `EQUIPAMENTO: Fabricante ${c.equipment.manufacturer} - Modelo ${c.equipment.model || "N/A"} - S/N ${c.equipment.sn || "N/A"}`,
+      `CASO VALIDADO: Protocolo ${c.protocol} (${c.customer?.name || "Cliente"})`,
+      `EQUIPAMENTO: Fabricante ${c.equipment?.manufacturer || "N/A"} - Modelo ${c.equipment?.model || "N/A"} - S/N ${c.equipment?.sn || "N/A"}`,
       `EVIDÊNCIAS TÉCNICAS:`,
-      ...c.technicalEvidence.map(e => `- ${e.type.toUpperCase()}: ${e.value} (${e.notes || "Aferido"})`),
+      ...(c.technicalEvidence || []).map(e => `- ${e.type.toUpperCase()}: ${e.value} (${e.notes || "Aferido"})`),
       `TRANSCRIÇÃO / HISTÓRICO:`,
-      ...c.messages.map(m => `[${m.speaker.toUpperCase()}]: ${m.text}`)
+      ...(c.messages || []).map(m => `[${m.speaker?.toUpperCase()}]: ${m.text}`)
     ].join("\n");
 
     const assistantResponse = [

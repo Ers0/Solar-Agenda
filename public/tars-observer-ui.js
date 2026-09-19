@@ -456,12 +456,15 @@
             <input id="close-tags" class="obs-input" value="${escapeHtml((c.learningMetadata?.tags || []).join(', '))}" placeholder="deye, f30, hardware-fault, relay, rma">
           </div>
 
-          <div style="display:flex; gap:10px; margin-top:16px;">
+          <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;">
             <button class="btn-primary" onclick="window.TARSObserverUI.submitCloseCase('${escapeHtml(c.id)}')">
               🔒 Salvar & Fechar Caso
             </button>
+            <button class="btn-primary" style="background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); border:none;" onclick="window.TARSObserverUI.triggerSmartLearning('${escapeHtml(c.id)}')">
+              🧠 Smart Learning TARS AI
+            </button>
             <button class="btn-ghost" onclick="window.TARSObserverUI.downloadCaseJSONL('${escapeHtml(c.id)}')">
-              ⬇ Exportar Dataset JSONL
+              ⬇ Exportar Dataset (.JSONL)
             </button>
           </div>
         </div>
@@ -475,6 +478,47 @@
     const modal = document.getElementById('tars-obs-modal');
     if (modal) modal.classList.remove('open');
     currentCase = null;
+  }
+
+  async function triggerSmartLearning(caseId) {
+    showToast('Iniciando síntese Smart Learning com TARS AI...', 'info');
+    try {
+      const res = await fetch(`/api/tars/observer/cases/${encodeURIComponent(caseId)}/smart-learning`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) throw new Error('Falha na síntese de Smart Learning');
+      const data = await res.json();
+      currentCase = data.case;
+      renderCaseModal();
+      await fetchCases();
+      showToast('Smart Learning concluído! Metadados para Deep Learning gerados com sucesso.', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function purgeEmptyCases() {
+    if (!confirm('Deseja realmente purgar os casos vazios/sem mensagens ou evidências do Observer?')) return;
+    try {
+      const res = await fetch('/api/tars/observer/purge-empty', { method: 'POST' });
+      const data = await res.json();
+      await fetchCases();
+      showToast(`Limpeza concluída: ${data.purgedCount || 0} casos vazios purgados.`, 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  function exportDataset(format) {
+    const fmt = format || document.getElementById('obs-export-format')?.value || 'jsonl';
+    const a = document.createElement('a');
+    a.href = `/api/tars/learning/export?format=${encodeURIComponent(fmt)}`;
+    a.download = fmt === 'alpaca' ? 'tars-alpaca-dataset.json' : (fmt === 'dpo' ? 'tars-dpo-dataset.jsonl' : 'tars-validated-cases.jsonl');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast(`Download do dataset (${fmt.toUpperCase()}) para aprendizado iniciado.`, 'info');
   }
 
   // Actions
@@ -671,7 +715,11 @@
     // Top action buttons
     document.getElementById('obs-refresh-btn')?.addEventListener('click', () => fetchCases());
     document.getElementById('obs-sim-btn')?.addEventListener('click', openSimulateModal);
-    document.getElementById('obs-export-btn')?.addEventListener('click', () => window.open('/api/tars/learning/export', '_blank'));
+    document.getElementById('obs-purge-btn')?.addEventListener('click', purgeEmptyCases);
+    document.getElementById('obs-export-btn')?.addEventListener('click', () => {
+      const fmt = document.getElementById('obs-export-format')?.value || 'jsonl';
+      exportDataset(fmt);
+    });
 
     // Simulation modal actions
     document.getElementById('obs-sim-cancel-btn')?.addEventListener('click', closeSimulateModal);
@@ -714,7 +762,10 @@
     correctObsPrompt,
     saveHumanAnalysis,
     submitCloseCase,
-    downloadCaseJSONL
+    downloadCaseJSONL,
+    triggerSmartLearning,
+    purgeEmptyCases,
+    exportDataset
   };
 
 })(window);

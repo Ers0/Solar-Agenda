@@ -1125,9 +1125,19 @@
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
             ⚡ Simular Evento
           </button>
-          <button class="btn-ghost" id="obs-export-btn" title="Exportar casos validados em formato JSONL para fine-tuning">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Exportar Dataset (.JSONL)
+          <div style="display:inline-flex; align-items:center; gap:6px;">
+            <select id="obs-export-format" class="obs-input" style="padding:6px 10px; font-size:0.8rem; width:auto; border-radius:6px; background:#161b22; color:#c9d1d9; border:1px solid #30363d;">
+              <option value="jsonl">Dataset JSONL (Gemini / SFT)</option>
+              <option value="alpaca">Dataset Alpaca (Local Deep Learning)</option>
+              <option value="dpo">Dataset DPO (Preference Pairs)</option>
+            </select>
+            <button class="btn-ghost" id="obs-export-btn" title="Exportar casos validados para treinamento">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Exportar
+            </button>
+          </div>
+          <button class="btn-ghost" id="obs-purge-btn" title="Purgar casos vazios sem evidências ou mensagens" style="color:#f87171;">
+            🧹 Limpar Vazios
           </button>
           <button class="btn-ghost" id="obs-refresh-btn" title="Atualizar Casos">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
