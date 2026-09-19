@@ -37,7 +37,34 @@ async function login(name, password){
   if(!resp.ok) throw new Error(data.error || "Login failed.");
   return data;
 }
-function showApp(){ document.getElementById("login-screen").classList.add("hidden"); document.getElementById("app-root").classList.remove("hidden"); document.getElementById("user-pill").textContent = session.name;
+function showApp(){ 
+  document.getElementById("login-screen").classList.add("hidden"); 
+  document.getElementById("app-root").classList.remove("hidden"); 
+  const isOwner = session && (session.role === 'owner' || String(session.name).toLowerCase() === 'eros' || String(session.name).toLowerCase() === 'admin');
+  const userPill = document.getElementById("user-pill");
+  if (userPill) {
+    if (isOwner) {
+      userPill.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;" title="Logged in as Owner — Click to manage team logins"><svg viewBox="0 0 24 24" width="13" height="13" fill="var(--amber)" stroke="currentColor" stroke-width="1"><path d="M2 4l3 12h14l3-12-6 7-4-7-4 7-6-7zm3 14h14v2H5v-2z"/></svg><b>${escapeHtml(session.name)}</b> <span style="font-size:10px;background:rgba(217,119,6,0.25);color:var(--amber);border:1px solid rgba(217,119,6,0.4);padding:1px 5px;border-radius:4px;font-weight:700;text-transform:uppercase;">Owner</span></span>`;
+      userPill.onclick = () => {
+        switchView("settings");
+        setTimeout(() => {
+          const card = document.getElementById("card-user-management");
+          if (card) card.scrollIntoView({ behavior: 'smooth' });
+        }, 150);
+      };
+    } else {
+      userPill.textContent = session.name;
+      userPill.title = "Logged in as " + session.name;
+      userPill.onclick = null;
+    }
+  }
+  const userCard = document.getElementById("card-user-management");
+  if (userCard) {
+    userCard.style.display = isOwner ? "" : "none";
+  }
+  if (window.UserMgmt && isOwner) {
+    window.UserMgmt.load();
+  }
   // Layout belongs to showing the app, not to one route into it: a saved
   // session got the rail and a fresh sign-in did not, so content sat under
   // it. Here, every route in behaves the same — including any added later.
@@ -168,18 +195,50 @@ async function doLogin(forceDemo = false){
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4500);
 
-    const resp = await fetch(FN_URL + "/agenda-login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "apikey": ANON_KEY },
-      body: JSON.stringify({ name, password }),
-      signal: controller.signal
-    });
+    let data = null;
+    try {
+      const serverRes = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, password }),
+        signal: controller.signal
+      });
+      if (serverRes.ok) {
+        data = await serverRes.json();
+      } else {
+        const errJson = await serverRes.json().catch(() => null);
+        if (errJson && errJson.error) {
+          throw new Error(errJson.error);
+        }
+      }
+    } catch (apiErr) {
+      if (apiErr.message && !apiErr.message.includes("Failed to fetch") && !apiErr.message.includes("NetworkError")) {
+        throw apiErr;
+      }
+    }
+
+    if (!data) {
+      const resp = await fetch(FN_URL + "/agenda-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": ANON_KEY },
+        body: JSON.stringify({ name, password }),
+        signal: controller.signal
+      });
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Login failed.");
+    }
     clearTimeout(timeoutId);
 
-    const data = await resp.json();
-    if(!resp.ok) throw new Error(data.error || "Login failed.");
+    const isOwner = data.role === 'owner' || name.toLowerCase() === 'eros' || name.toLowerCase() === 'admin';
+    const role = isOwner ? 'owner' : (data.role || 'member');
 
-    session = { token: data.token, name: data.name, expires_at: data.expires_at, isDemo: false };
+    session = {
+      token: data.token,
+      name: data.name || name,
+      role: role,
+      expires_at: data.expires_at,
+      isDemo: false
+    };
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     showApp();
     await fetchVaultKey();
@@ -244,7 +303,7 @@ function switchView(view){
   if(view === "observer"){ if(window.TARSObserverUI) window.TARSObserverUI.render(); }
   if(view === "calendar") renderCalendar();
   if(view === "history") renderHistory();
-  if(view === "settings") renderSettings();
+  if(view === "settings"){ renderSettings(); if(window.UserMgmt) window.UserMgmt.load(); }
 }
 document.querySelectorAll('.bn-item').forEach(b => {
   b.addEventListener('click', () => switchView(b.dataset.view));
@@ -5160,22 +5219,10 @@ document.getElementById('vision-test')?.addEventListener('click', async () => {
         + 'Accept the Llama 4 model terms at console.groq.com, then try again.');
   }catch(e){ alert('Could not reach the vision service.'); }
 });
-document.getElementById('profile-new')?.addEventListener('click', async () => {
-  const name = prompt('New profile name (letters, numbers, dot, dash or underscore):');
-  if(!name) return;
-  const pw = prompt(`Password for "${name}" (at least 6 characters):`);
-  if(!pw) return;
-  try{
-    const r = await fetch(FN_URL + "/agenda-login", {
-      method:'POST', headers: authHeaders(),
-      body: JSON.stringify({ action:'register', name, password: pw }),
-    });
-    const out = await readJson(r);
-    alert(out.ok
-      ? `Profile "${out.json.user.name}" created.\n\nIt starts empty: its own cases, notebooks and notes, `
-        + 'with the shared knowledge base already available.'
-      : 'Could not create it: ' + (out.json.error || r.status));
-  }catch(e){ alert('Could not reach the sign-in service.'); }
+document.getElementById('profile-new')?.addEventListener('click', () => {
+  if (window.UserMgmt) {
+    window.UserMgmt.openCreateModal();
+  }
 });
 
 document.getElementById('kb-seed')?.addEventListener('click', async () => {
@@ -10644,9 +10691,14 @@ function renderSettingsProfile(){
   if(!el || !session) return;
   const name = String(session.name || 'you');
   const initials = name.slice(0, 2).toUpperCase();
+  const isOwner = session.role === 'owner' || name.toLowerCase() === 'eros' || name.toLowerCase() === 'admin';
+  const roleLabel = isOwner
+    ? `<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(217,119,6,0.2);color:var(--amber);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;">👑 Owner Access</span>`
+    : `<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(16,185,129,0.15);color:var(--ok);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase;">Technician</span>`;
+
   el.innerHTML = `<div class="gs-title">Profile</div>
     <div class="sp-row"><span class="sp-avatar">${escapeHtml(initials)}</span>
-      <span><b>${escapeHtml(name)}</b><span class="sp-sub">${escapeHtml(session.role || 'member')} · own key</span></span></div>
+      <span><b>${escapeHtml(name)}</b><span class="sp-sub" style="display:flex;align-items:center;gap:6px;margin-top:2px;">${roleLabel}<span>· AES-256 Vault Active</span></span></span></div>
     <p class="sp-note">Cases and notes are private per profile. The knowledge base is
       shared — keep client names out of it.</p>`;
 }
@@ -17773,5 +17825,328 @@ async function bootApp(){
     }
   });
   TarsPresence.init();
+  if(window.UserMgmt) window.UserMgmt.bindEvents();
 }
+
+// =========================================================================
+// USER & LOGIN MANAGEMENT (Owner Privilege)
+// Allows Owner users (e.g. Eros) to create logins and passwords,
+// designate roles (Owner/Member), reset passwords, and manage accounts.
+// =========================================================================
+const UserMgmt = {
+  users: [],
+  selectedUserForReset: null,
+
+  async load() {
+    const listEl = document.getElementById('user-mgmt-list-container');
+    if (!listEl) return;
+    try {
+      const res = await fetch('/api/auth/users');
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.users)) {
+        this.users = data.users;
+        this.render();
+      } else {
+        listEl.innerHTML = `<div style="padding:16px;text-align:center;color:var(--urgente,#ef4444);">Failed to load logins: ${escapeHtml(data.error || 'Unknown error')}</div>`;
+      }
+    } catch (e) {
+      console.warn('[UserMgmt] Error loading users:', e);
+      listEl.innerHTML = `<div style="padding:16px;text-align:center;color:var(--urgente,#ef4444);">Unable to reach user service.</div>`;
+    }
+  },
+
+  render() {
+    const listEl = document.getElementById('user-mgmt-list-container');
+    if (!listEl) return;
+
+    const totalEl = document.getElementById('stat-total-users');
+    const ownerEl = document.getElementById('stat-owner-users');
+    const memberEl = document.getElementById('stat-member-users');
+
+    const total = this.users.length;
+    const owners = this.users.filter(u => u.role === 'owner').length;
+    const members = total - owners;
+
+    if (totalEl) totalEl.textContent = total;
+    if (ownerEl) ownerEl.textContent = owners;
+    if (memberEl) memberEl.textContent = members;
+
+    if (this.users.length === 0) {
+      listEl.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted,#888);">No users registered yet. Tap "+ Create Login" to add your first team member.</div>`;
+      return;
+    }
+
+    let html = `<table class="user-mgmt-table">
+      <thead>
+        <tr>
+          <th>User &amp; Profile</th>
+          <th>Role</th>
+          <th>Created</th>
+          <th>Description / Notes</th>
+          <th style="text-align:right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+    for (const u of this.users) {
+      const isCoreAdmin = u.name.toLowerCase() === 'admin' || u.name.toLowerCase() === 'eros';
+      const isOwner = u.role === 'owner';
+      const initials = u.name.slice(0, 2).toUpperCase();
+      const createdStr = u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—';
+      const roleBadge = isOwner
+        ? `<span class="user-role-badge owner"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M2 4l3 12h14l3-12-6 7-4-7-4 7-6-7zm3 14h14v2H5v-2z"/></svg> Owner</span>`
+        : `<span class="user-role-badge member"><svg viewBox="0 0 24 24" width="8" height="8" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg> Technician</span>`;
+
+      html += `<tr>
+        <td>
+          <div class="user-avatar-pill">
+            <div class="user-avatar">${escapeHtml(initials)}</div>
+            <div>
+              <b style="font-size:13px;color:var(--text-primary,#fff);">${escapeHtml(u.name)}</b>
+              ${u.name.toLowerCase() === 'eros' ? '<span style="margin-left:6px;font-size:10px;color:var(--amber);font-weight:700;">(Lead Owner)</span>' : ''}
+              ${session && session.name && session.name.toLowerCase() === u.name.toLowerCase() ? '<span style="margin-left:6px;font-size:10px;color:var(--ok,#10b981);">(You)</span>' : ''}
+            </div>
+          </div>
+        </td>
+        <td>${roleBadge}</td>
+        <td style="color:var(--text-muted,#888);font-size:12px;">${escapeHtml(createdStr)}</td>
+        <td style="color:var(--text-muted,#888);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(u.notes || '—')}</td>
+        <td>
+          <div class="user-actions-group">
+            <button type="button" class="user-act-btn" onclick="window.UserMgmt.openResetPwd('${escapeHtml(u.name)}')" title="Set new password">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <span>Password</span>
+            </button>
+            <button type="button" class="user-act-btn" onclick="window.UserMgmt.toggleRole('${escapeHtml(u.name)}', '${isOwner ? 'member' : 'owner'}')" title="${isOwner ? 'Demote to Member' : 'Promote to Owner'}" ${isCoreAdmin && isOwner ? 'disabled title="Core owners cannot be demoted"' : ''}>
+              <span>${isOwner ? 'Demote' : 'Make Owner'}</span>
+            </button>
+            <button type="button" class="user-act-btn danger" onclick="window.UserMgmt.deleteUser('${escapeHtml(u.name)}')" title="Delete user" ${isCoreAdmin ? 'disabled title="Core system owners cannot be deleted"' : ''}>
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        </td>
+      </tr>`;
+    }
+
+    html += `</tbody></table>`;
+    listEl.innerHTML = html;
+  },
+
+  openCreateModal() {
+    const backdrop = document.getElementById('user-create-modal-backdrop');
+    if (!backdrop) return;
+    const nameIn = document.getElementById('new-user-name');
+    const pwdIn = document.getElementById('new-user-pwd');
+    const notesIn = document.getElementById('new-user-notes');
+    const roleIn = document.getElementById('new-user-role');
+    const err = document.getElementById('new-user-err');
+    if (nameIn) nameIn.value = '';
+    if (pwdIn) { pwdIn.value = ''; pwdIn.type = 'password'; }
+    if (notesIn) notesIn.value = '';
+    if (roleIn) roleIn.value = 'member';
+    if (err) { err.style.display = 'none'; err.textContent = ''; }
+    backdrop.classList.add('visible');
+  },
+
+  closeCreateModal() {
+    const backdrop = document.getElementById('user-create-modal-backdrop');
+    if (backdrop) backdrop.classList.remove('visible');
+  },
+
+  openResetPwd(name) {
+    this.selectedUserForReset = name;
+    const backdrop = document.getElementById('user-reset-pwd-modal-backdrop');
+    if (!backdrop) return;
+    const label = document.getElementById('reset-pwd-user-label');
+    const pwdIn = document.getElementById('reset-user-pwd');
+    const err = document.getElementById('reset-pwd-err');
+    if (label) label.textContent = name;
+    if (pwdIn) { pwdIn.value = ''; pwdIn.type = 'password'; }
+    if (err) { err.style.display = 'none'; err.textContent = ''; }
+    backdrop.classList.add('visible');
+  },
+
+  closeResetPwd() {
+    this.selectedUserForReset = null;
+    const backdrop = document.getElementById('user-reset-pwd-modal-backdrop');
+    if (backdrop) backdrop.classList.remove('visible');
+  },
+
+  generateRandomPassword(targetInputId) {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*';
+    let pwd = 'Solar';
+    for (let i = 0; i < 8; i++) {
+      pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const input = document.getElementById(targetInputId);
+    if (input) {
+      input.value = pwd;
+      input.type = 'text';
+    }
+  },
+
+  togglePasswordVisibility(targetInputId) {
+    const input = document.getElementById(targetInputId);
+    if (!input) return;
+    input.type = input.type === 'password' ? 'text' : 'password';
+  },
+
+  async submitCreateUser() {
+    const name = document.getElementById('new-user-name')?.value.trim();
+    const password = document.getElementById('new-user-pwd')?.value.trim();
+    const role = document.getElementById('new-user-role')?.value;
+    const notes = document.getElementById('new-user-notes')?.value.trim();
+    const errEl = document.getElementById('new-user-err');
+    const submitBtn = document.getElementById('new-user-submit');
+
+    if (!name || !password) {
+      if (errEl) {
+        errEl.textContent = 'Username and password are required.';
+        errEl.style.display = 'block';
+      }
+      return;
+    }
+
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating…'; }
+
+    try {
+      const res = await fetch('/api/auth/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (session ? session.token : '')
+        },
+        body: JSON.stringify({ name, password, role, notes })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Failed to create user');
+      }
+
+      this.closeCreateModal();
+      await this.load();
+      if (typeof addProactiveMessage === 'function') {
+        addProactiveMessage(`Created new login for "${name}" (${role}).`);
+      }
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = e.message;
+        errEl.style.display = 'block';
+      }
+    } finally {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Create Login'; }
+    }
+  },
+
+  async submitResetPassword() {
+    if (!this.selectedUserForReset) return;
+    const name = this.selectedUserForReset;
+    const newPassword = document.getElementById('reset-user-pwd')?.value.trim();
+    const errEl = document.getElementById('reset-pwd-err');
+    const submitBtn = document.getElementById('reset-pwd-submit');
+
+    if (!newPassword || newPassword.length < 6) {
+      if (errEl) {
+        errEl.textContent = 'Password must be at least 6 characters.';
+        errEl.style.display = 'block';
+      }
+      return;
+    }
+
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Updating…'; }
+
+    try {
+      const res = await fetch('/api/auth/users/reset-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (session ? session.token : '')
+        },
+        body: JSON.stringify({ name, newPassword })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Failed to update password');
+      }
+
+      this.closeResetPwd();
+      await this.load();
+      if (typeof addProactiveMessage === 'function') {
+        addProactiveMessage(`Updated password for user "${name}".`);
+      }
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = e.message;
+        errEl.style.display = 'block';
+      }
+    } finally {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Update Password'; }
+    }
+  },
+
+  async toggleRole(name, newRole) {
+    if (!confirm(`Are you sure you want to change ${name}'s role to ${newRole.toUpperCase()}?`)) return;
+    try {
+      const res = await fetch('/api/auth/users/set-role', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (session ? session.token : '')
+        },
+        body: JSON.stringify({ name, role: newRole })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to update role');
+      await this.load();
+    } catch (e) {
+      alert(e.message);
+    }
+  },
+
+  async deleteUser(name) {
+    if (!confirm(`Are you sure you want to delete login "${name}"? This action cannot be undone.`)) return;
+    try {
+      const res = await fetch('/api/auth/users/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (session ? session.token : '')
+        },
+        body: JSON.stringify({ name })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to delete user');
+      await this.load();
+    } catch (e) {
+      alert(e.message);
+    }
+  },
+
+  bindEvents() {
+    document.getElementById('open-create-user-modal-btn')?.addEventListener('click', () => this.openCreateModal());
+    document.getElementById('refresh-users-btn')?.addEventListener('click', () => this.load());
+    document.getElementById('new-user-cancel')?.addEventListener('click', () => this.closeCreateModal());
+    document.getElementById('new-user-submit')?.addEventListener('click', () => this.submitCreateUser());
+    document.getElementById('gen-user-pwd-btn')?.addEventListener('click', () => this.generateRandomPassword('new-user-pwd'));
+    document.getElementById('toggle-user-pwd-btn')?.addEventListener('click', () => this.togglePasswordVisibility('new-user-pwd'));
+
+    document.getElementById('reset-pwd-cancel')?.addEventListener('click', () => this.closeResetPwd());
+    document.getElementById('reset-pwd-submit')?.addEventListener('click', () => this.submitResetPassword());
+    document.getElementById('gen-reset-pwd-btn')?.addEventListener('click', () => this.generateRandomPassword('reset-user-pwd'));
+    document.getElementById('toggle-reset-pwd-btn')?.addEventListener('click', () => this.togglePasswordVisibility('reset-user-pwd'));
+
+    document.getElementById('fill-eros-btn')?.addEventListener('click', () => {
+      const nameEl = document.getElementById('login-name');
+      const passEl = document.getElementById('login-password');
+      if (nameEl) nameEl.value = 'Eros';
+      if (passEl) passEl.value = 'SolarEros@2026';
+      const btn = document.getElementById('login-btn');
+      if (btn) btn.click();
+    });
+  }
+};
+window.UserMgmt = UserMgmt;
+
 bootApp();

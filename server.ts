@@ -17,8 +17,20 @@ import {
   isMeaningfulCase,
   computeConfidenceLevel
 } from "./server/tars-observer";
+import {
+  initUserRegistry,
+  getAllUsers,
+  authenticateUser,
+  createNewUser,
+  updateUserPassword,
+  updateUserRole,
+  deleteUser
+} from "./server/auth";
 
 dotenv.config();
+
+// Ensure initial user registry is loaded with Eros (Owner) and admin
+initUserRegistry();
 
 const app = express();
 const PORT = 3000;
@@ -101,6 +113,121 @@ app.get(["/api/send-email", "/api/smtp-status"], (req, res) => {
     hasServerCredentials: configured,
     savedUser: user || undefined
   });
+});
+
+// ==========================================
+// User Authentication & Management API Routes
+// ==========================================
+
+// Authenticate user (Supports Eros Owner, admin, and created users with live Supabase token)
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { name, password } = req.body || {};
+    const result = await authenticateUser(name, password);
+    if (!result.ok) {
+      return res.status(401).json({ ok: false, error: result.error });
+    }
+    return res.json({
+      ok: true,
+      token: result.token,
+      name: result.user?.name,
+      role: result.user?.role,
+      expires_at: result.expires_at
+    });
+  } catch (err: any) {
+    console.error("[Auth Login Error]", err);
+    return res.status(500).json({ ok: false, error: "Authentication service error: " + err.message });
+  }
+});
+
+// List all registered users (for Owner UI)
+app.get("/api/auth/users", (req, res) => {
+  try {
+    const users = getAllUsers().map(u => ({
+      id: u.id,
+      name: u.name,
+      role: u.role,
+      createdAt: u.createdAt,
+      updatedAt: u.updatedAt,
+      notes: u.notes,
+      source: u.source
+    }));
+    return res.json({ ok: true, users });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Create new login & password (Owner access)
+app.post("/api/auth/users", async (req, res) => {
+  try {
+    const { name, password, role, notes } = req.body || {};
+    const authHeader = req.headers.authorization || "";
+    const creatorToken = authHeader.replace(/^Bearer\s+/i, "");
+    const result = await createNewUser({ name, password, role, notes, creatorToken });
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, error: result.error });
+    }
+    return res.json({
+      ok: true,
+      user: {
+        id: result.user?.id,
+        name: result.user?.name,
+        role: result.user?.role,
+        createdAt: result.user?.createdAt,
+        notes: result.user?.notes
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Reset password for a user
+app.post("/api/auth/users/reset-password", async (req, res) => {
+  try {
+    const { name, newPassword } = req.body || {};
+    const authHeader = req.headers.authorization || "";
+    const userToken = authHeader.replace(/^Bearer\s+/i, "");
+    const result = await updateUserPassword(name, newPassword, userToken);
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, error: result.error });
+    }
+    return res.json({ ok: true, message: `Password updated for user ${name}` });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Update role (Owner / Member)
+app.post("/api/auth/users/set-role", (req, res) => {
+  try {
+    const { name, role } = req.body || {};
+    if (role !== "owner" && role !== "member") {
+      return res.status(400).json({ ok: false, error: "Invalid role specified." });
+    }
+    const result = updateUserRole(name, role);
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, error: result.error });
+    }
+    return res.json({ ok: true, role });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Delete a user login
+app.post("/api/auth/users/delete", (req, res) => {
+  try {
+    const { name } = req.body || {};
+    const result = deleteUser(name);
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, error: result.error });
+    }
+    return res.json({ ok: true });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.post(["/api/send-email", "/api/test-smtp"], async (req, res) => {

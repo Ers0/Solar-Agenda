@@ -104,6 +104,8 @@ export interface TARSHumanAnalysis {
   technicianConclusion?: string;
   updatedAt?: string;
   updatedBy?: string;
+  analyzedBy?: string;
+  analyzedAt?: string;
 }
 
 export interface TARSLearningMetadata {
