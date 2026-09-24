@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;width:368px;background:#f5f7fa}
+body{font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:#16365f}
+button,input{font:inherit}
+.shell{width:368px;overflow:hidden;background:#fff;border:1px solid #e3e8ef;box-shadow:0 10px 30px rgba(15,54,100,.14)}
+.header{display:flex;align-items:center;gap:11px;padding:15px 16px 13px;border-bottom:1px solid #e8edf3;background:#fff}
+.logo{width:43px;height:43px;flex:0 0 43px;border-radius:12px;display:block}
+.brand{min-width:0;line-height:1.1}
+.brand h1{margin:0;font-size:15px;font-weight:800;letter-spacing:-.02em;color:#12365f}
+.brand p{margin:4px 0 0;font-size:10px;color:#72839a;letter-spacing:.06em;text-transform:uppercase}
+.status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:10px;color:#66809b;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:#25a965;box-shadow:0 0 0 3px #e7f7ee}
+.content{padding:12px 14px 13px}
+.section{margin-bottom:11px}
+.section-title{margin:0 2px 7px;font-size:9px;font-weight:800;color:#8191a5;letter-spacing:.12em;text-transform:uppercase}
+.setting{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border:1px solid #e1e7ee;background:#fbfcfd;margin-bottom:7px}
+.setting-copy{min-width:0}.setting-title{font-weight:750;font-size:12px;color:#173a63}.setting-sub{margin-top:2px;font-size:9.5px;color:#7b8da2}
+.switch{position:relative;width:42px;height:23px;flex:0 0 42px}.switch input{position:absolute;opacity:0;width:0;height:0}.slider{position:absolute;inset:0;border-radius:999px;background:#c9d3df;border:1px solid #b8c5d3;cursor:pointer;transition:.16s}.slider:before{content:"";position:absolute;width:17px;height:17px;left:2px;top:2px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:.16s}.switch input:checked+.slider{background:#25aa65;border-color:#25aa65}.switch input:checked+.slider:before{transform:translateX(19px)}.switch input:focus-visible+.slider{outline:3px solid rgba(35,101,160,.15)}
+.emergency{width:100%;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #f1c9c6;background:#fff5f4;color:#d9372f;font-weight:800;font-size:11px;letter-spacing:.02em;cursor:pointer;transition:.15s}.emergency:hover{background:#ffefed;border-color:#eaa7a2}.emergency.active{background:#eefaf3;border-color:#9bd7b7;color:#218a52}.emergency.active:hover{background:#e5f7ed;border-color:#7cc99f}.resume-icon{background:#25aa65}.resume-icon:before{width:9px;height:9px;border-radius:50%;box-shadow:0 -5px 0 -3px #fff}.emergency:active{transform:translateY(1px)}.emergency:disabled{opacity:.65;cursor:default}.stop-icon{width:23px;height:23px;display:grid;place-items:center;border-radius:50%;background:#ed4037;color:#fff;flex:0 0 23px}.stop-icon:before{content:"";width:8px;height:8px;background:#fff;border-radius:1px}.emergency-copy{display:flex;flex-direction:column;text-align:left}.emergency-copy small{margin-top:1px;font-size:9px;font-weight:500;color:#a85b56}
+.divider{height:1px;background:#e8edf3;margin:12px 0}
+.composer{display:flex;gap:7px}.input-wrap{display:flex;align-items:center;flex:1;border:1px solid #d7e0e9;background:#fff;transition:.15s}.input-wrap:focus-within{border-color:#7fa5ca;box-shadow:0 0 0 3px rgba(45,103,157,.08)}#q{width:100%;min-width:0;padding:10px 11px;border:0;outline:0;color:#173a63;background:transparent;font-size:11.5px}#q::placeholder{color:#94a2b1}#mic{width:35px;height:31px;margin:2px;border:0;background:#f3f6f9;color:#71879d;cursor:pointer}#mic:hover{background:#eef3f7;color:#173a63}#mic.on{color:#d9372f;background:#fff0ef}
+#go{width:100%;margin-top:8px;padding:10px 12px;border:0;background:#f5b51f;color:#102e50;font-weight:800;font-size:11.5px;cursor:pointer;box-shadow:0 4px 10px rgba(245,181,31,.18)}#go:hover:not(:disabled){filter:brightness(1.03)}#go:disabled{opacity:.55;cursor:default}
+.hint{display:flex;align-items:center;gap:6px;margin:7px 1px 0;color:#8b99a8;font-size:9.5px}.hint-key{padding:2px 5px;border:1px solid #dce3ea;background:#f8fafc;font-size:8px;font-weight:700;color:#718398}
+.tools{display:grid;grid-template-columns:1fr 1fr;gap:7px}.tools button{padding:8px 7px;border:1px solid #dce3ea;background:#fff;color:#60768d;font-size:9.5px;cursor:pointer}.tools button:hover{border-color:#b7c8d8;color:#173a63;background:#f9fbfd}.tools button:disabled{opacity:.55;cursor:default}
+#status{min-height:16px;margin:8px 1px 0;font-size:10px;color:#71869a}#status.err{color:#d14c45}
+.footer{display:flex;align-items:center;justify-content:space-between;padding:9px 15px;border-top:1px solid #e8edf3;color:#8a99a8;font-size:9px;background:#fbfcfd}.version{color:#5b82aa;font-weight:650}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="header">
+    <img class="logo" src="icons/icon-48.png" alt="Solar Agenda">
+    <div class="brand">
+      <h1>Solar Agenda</h1>
+      <p>TARS Vision Bridge</p>
+    </div>
+    <div class="status"><span class="dot"></span>Online</div>
+  </header>
+
+  <main class="content">
+    <section class="section">
+      <div class="section-title">Safety</div>
+      <button id="emergencyStop" class="emergency" type="button">
+        <span class="stop-icon" aria-hidden="true"></span>
+        <span class="emergency-copy">EMERGENCY STOP<small>Stops all automation immediately</small></span>
+      </button>
+    </section>
+
+    <section class="section">
+      <div class="setting">
+        <div class="setting-copy"><div class="setting-title">Automation Safety</div><div class="setting-sub" id="safetyText">Automatic replies and workflows are ON</div></div>
+        <label class="switch" title="Enable or disable automatic TARS actions"><input id="safetyToggle" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="setting">
+        <div class="setting-copy"><div class="setting-title">Observer Mode</div><div class="setting-sub" id="observerText">Passively records support work; customer automation is OFF</div></div>
+        <label class="switch" title="Observe and record without customer interaction"><input id="observerToggle" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="setting">
+        <div class="setting-copy"><div class="setting-title">Workflow Learning</div><div class="setting-sub" id="learningText">Cross-site workflow learning is OFF</div></div>
+        <label class="switch" title="Observe linked sites and analyze workflow structure without automating actions"><input id="learningToggle" type="checkbox"><span class="slider"></span></label>
+      </div>
+      <div class="setting">
+        <div class="setting-copy"><div class="setting-title">AI Assistant</div><div class="setting-sub" id="aiText">AI features are OFF</div></div>
+        <label class="switch" title="Enable or disable the future AI chat layer"><input id="aiToggle" type="checkbox"><span class="slider"></span></label>
+      </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <section class="section">
+      <div class="section-title">Page Vision</div>
+      <div class="composer">
+        <div class="input-wrap">
+          <input id="q" placeholder="Ask TARS anything about this page…" autocomplete="off">
+          <button id="mic" title="Speak your question — Solar Agenda listens" aria-label="Speak">🎤</button>
+        </div>
+      </div>
+      <button id="go">Ask TARS about this page</button>
+      <div class="hint"><span class="hint-key">ENTER</span><span>Send your question</span></div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">Tools</div>
+      <div class="tools">
+        <button id="sync">Sync with Solar Agenda</button>
+        <button id="webhook">Test SLA webhook</button>
+      </div>
+      <div id="status"></div>
+    </section>
+  </main>
+
+  <footer class="footer"><span>SMARTER SUPPORT. BRIGHTER ENERGY.</span><span class="version">v1.2.84</span></footer>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>
