@@ -9431,61 +9431,108 @@ function createGalaxy(canvas, opts) {
   const ctx = canvas.getContext('2d');
   const rnd = mulberry(variant === 'nebula' ? 4211 : variant === 'orrery' ? 7717 : 1301);
 
-  /* ---------- layout ---------- */
+  /* ---------- 3D Layout ---------- */
   const clusters = data.clusters.map((c) => ({ ...c }));
   const n = clusters.length;
+  
+  // Arrange cluster hubs in 3D celestial space with realistic depth
   clusters.forEach((c, i) => {
-    if (i === 0) { c.x = 0; c.y = 0; c.big = true; return; }
+    if (i === 0) { 
+      c.x = 0; c.y = 0; c.z = 0; c.big = true; 
+      return; 
+    }
     const a = -Math.PI / 2 + ((i - 1) / (n - 1)) * TAU + 0.18;
-    const rx = variant === 'orrery' ? 430 : 400;
-    const ry = variant === 'orrery' ? 250 : 232;
-    c.x = Math.cos(a) * rx;
-    c.y = Math.sin(a) * ry;
+    const rOrbit = variant === 'orrery' ? 440 : 410;
+    const zSpread = (i % 2 === 0 ? 1 : -1) * (60 + ((i * 37) % 110));
+    c.x = Math.cos(a) * rOrbit;
+    c.y = Math.sin(a) * (rOrbit * 0.64);
+    c.z = zSpread;
   });
 
   const perCluster = clusters.map(() => 0);
   const nodes = data.nodes.map((nd) => {
-    const c = clusters[nd.cluster];
+    const c = clusters[nd.cluster] || clusters[0];
     const k = perCluster[nd.cluster]++;
     const ring = nd.hub ? -1 : k % 3;
-    const base = variant === 'orrery' ? 58 + ring * 30 : 48 + ring * 25;
-    const r = nd.hub ? 0 : base + rnd() * (variant === 'nebula' ? 20 : 10);
+    const base = variant === 'orrery' ? 62 + ring * 32 : 52 + ring * 28;
+    const r = nd.hub ? 0 : base + rnd() * (variant === 'nebula' ? 22 : 12);
+    
+    // 3D Orbital plane tilt per node
+    const tiltX = (rnd() - 0.5) * 0.45;
+    const tiltZ = (rnd() - 0.5) * 0.65;
+    const zBob = (rnd() - 0.5) * 45;
+
     return {
       ...nd, c, r, ring,
+      tiltX, tiltZ, zBob,
       a0: rnd() * TAU,
-      spd: ((0.05 + rnd() * 0.05) / (1 + Math.max(ring, 0) * 0.55)) * (rnd() > 0.5 ? 1 : -1),
+      spd: ((0.045 + rnd() * 0.045) / (1 + Math.max(ring, 0) * 0.45)) * (rnd() > 0.5 ? 1 : -1),
       tw: rnd() * TAU,
-      size: (nd.hub ? 7.5 : 2.4 + nd.links * 0.42) * (variant === 'nebula' ? 1.1 : 1),
-      x: c.x, y: c.y, alpha: 1, flash: 0,
+      size: (nd.hub ? 8.5 : 2.8 + nd.links * 0.45) * (variant === 'nebula' ? 1.15 : 1),
+      x: c.x, y: c.y, z: c.z,
+      _sx: 0, _sy: 0, _sr: 0, _z: 0,
+      alpha: 1, flash: 0, beacon: null
     };
   });
   const hubs = nodes.filter((nd) => nd.hub);
 
-  // a few long relationships between clusters
+  // 3D Cross-cluster bridges / synaptic hyper-lanes
   const bridges = [];
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 16; i++) {
     const a = nodes[Math.floor(rnd() * nodes.length)];
     const b = nodes[Math.floor(rnd() * nodes.length)];
-    if (a.cluster !== b.cluster) bridges.push({ a, b, off: rnd() });
+    if (a && b && a.cluster !== b.cluster) {
+      bridges.push({ a, b, off: rnd(), pulseSpd: 0.12 + rnd() * 0.1 });
+    }
   }
 
+  // 3D Volumetric starfield
   const stars = [];
-  for (let i = 0; i < 260; i++) {
-    stars.push({ x: (rnd() - 0.5) * 1900, y: (rnd() - 0.5) * 1200, s: rnd() * 1.1 + 0.25, t: rnd() * TAU });
-  }
-  const dust = [];
-  for (let i = 0; i < 70; i++) {
-    dust.push({ x: (rnd() - 0.5) * 1500, y: (rnd() - 0.5) * 900, r: 90 + rnd() * 210, t: rnd() * TAU, c: clusters[Math.floor(rnd() * n)].color });
+  for (let i = 0; i < 340; i++) {
+    stars.push({
+      x: (rnd() - 0.5) * 2600,
+      y: (rnd() - 0.5) * 1600,
+      z: (rnd() - 0.5) * 1400,
+      s: rnd() * 1.3 + 0.35,
+      t: rnd() * TAU,
+      hue: rnd() > 0.8 ? (rnd() > 0.5 ? '#7be0c4' : '#f2a71b') : '#d6e7f7'
+    });
   }
 
-  /* ---------- state ---------- */
+  // 3D Volumetric nebula gas clouds
+  const dust = [];
+  for (let i = 0; i < 80; i++) {
+    const parentCluster = clusters[Math.floor(rnd() * n)] || clusters[0];
+    dust.push({
+      x: parentCluster.x + (rnd() - 0.5) * 450,
+      y: parentCluster.y + (rnd() - 0.5) * 320,
+      z: parentCluster.z + (rnd() - 0.5) * 350,
+      r: 100 + rnd() * 240,
+      t: rnd() * TAU,
+      c: parentCluster.color
+    });
+  }
+
+  /* ---------- 3D Camera & State ---------- */
   let W = 1, H = 1, dpr = 1;
-  const z0 = opts.zoom != null ? opts.zoom : (variant === 'orrery' ? 0.72 : 0.8);
-  const cam = { x: 0, y: 0, z: z0, tz: z0 };
+  const z0 = opts.zoom != null ? opts.zoom : 0.85;
+  const cam = {
+    rotX: -0.32,  // pitch
+    rotY: 0.28,   // yaw
+    panX: 0,
+    panY: 0,
+    zoom: z0,
+    tZoom: z0,
+    distance: 920,
+    vx: 0,
+    vy: 0
+  };
+
   let focus = null;           // cluster index
   let hover = null;
   let maxAge = 999;
   let pings = [];
+  let beacons = [];
   let raf = 0, t0 = performance.now(), running = true;
 
   function resize() {
@@ -9500,191 +9547,285 @@ function createGalaxy(canvas, opts) {
   ro.observe(canvas);
   resize();
 
-  const toScreen = (wx, wy) => [wx * cam.z + W / 2 + cam.x, wy * cam.z + H / 2 + cam.y];
-  const toWorld = (sx, sy) => [(sx - W / 2 - cam.x) / cam.z, (sy - H / 2 - cam.y) / cam.z];
+  /* ---------- 3D Projection Matrix ---------- */
+  function project3D(wx, wy, wz) {
+    const px = wx + cam.panX;
+    const py = wy + cam.panY;
+    const pz = wz;
 
-  /* ---------- draw ---------- */
+    // Yaw around Y
+    const cosY = Math.cos(cam.rotY), sinY = Math.sin(cam.rotY);
+    const x1 = px * cosY - pz * sinY;
+    const z1 = px * sinY + pz * cosY;
+
+    // Pitch around X
+    const cosX = Math.cos(cam.rotX), sinX = Math.sin(cam.rotX);
+    const y2 = py * cosX - z1 * sinX;
+    const z2 = py * sinX + z1 * cosX;
+
+    const cameraZ = z2 + cam.distance;
+    const fov = 820;
+    const scale = (fov / Math.max(80, cameraZ)) * cam.zoom;
+    const sx = W / 2 + x1 * scale;
+    const sy = H / 2 + y2 * scale;
+    return { sx, sy, scale, z: z2, depth: cameraZ };
+  }
+
+  /* ---------- Render Frame ---------- */
   function frame(now) {
     if (!running) return;
     const t = (now - t0) / 1000;
     const motion = settings.motion === 'calm' ? 0.35 : settings.motion === 'hyper' ? 2.1 : 1;
     const glow = settings.glow == null ? 1 : settings.glow;
-    cam.z += (cam.tz - cam.z) * 0.12;
+
+    // Smooth camera inertia & zoom
+    cam.zoom += (cam.tZoom - cam.zoom) * 0.12;
+    if (!dragging) {
+      cam.rotY += cam.vx;
+      cam.rotX = Math.max(-1.4, Math.min(1.4, cam.rotX + cam.vy));
+      cam.vx *= 0.92;
+      cam.vy *= 0.92;
+    }
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
-    // deep space background
-    const bg = ctx.createRadialGradient(W * 0.5, H * 0.35, 0, W * 0.5, H * 0.35, Math.max(W, H) * 0.85);
-    if (variant === 'nebula') { bg.addColorStop(0, '#131f2c'); bg.addColorStop(0.55, '#0c1420'); bg.addColorStop(1, '#070b11'); }
-    else if (variant === 'orrery') { bg.addColorStop(0, '#101a24'); bg.addColorStop(0.6, '#0a121b'); bg.addColorStop(1, '#06090e'); }
-    else { bg.addColorStop(0, '#14202c'); bg.addColorStop(0.6, '#0b131c'); bg.addColorStop(1, '#070b10'); }
+    // Deep cosmic space gradient
+    const bg = ctx.createRadialGradient(W * 0.5, H * 0.42, 0, W * 0.5, H * 0.42, Math.max(W, H) * 0.9);
+    bg.addColorStop(0, '#101824');
+    bg.addColorStop(0.5, '#090e17');
+    bg.addColorStop(1, '#04060a');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
     ctx.globalCompositeOperation = 'lighter';
 
-    // nebula dust
-    const dustA = variant === 'nebula' ? 0.16 : variant === 'orrery' ? 0.05 : 0.075;
+    // 1. Render 3D Nebula Gas Clouds
+    const dustA = variant === 'nebula' ? 0.16 : 0.08;
     dust.forEach((d) => {
-      const [sx, sy] = toScreen(d.x, d.y);
-      const r = d.r * cam.z;
-      if (sx < -r || sx > W + r || sy < -r || sy > H + r) return;
-      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+      const p = project3D(d.x, d.y, d.z);
+      if (p.depth <= 80 || p.sx < -150 || p.sx > W + 150 || p.sy < -150 || p.sy > H + 150) return;
+      const rad = d.r * p.scale;
+      const g = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, rad);
       const a = dustA * glow * (0.6 + 0.4 * Math.sin(t * 0.25 * motion + d.t));
       g.addColorStop(0, rgba(d.c, a));
+      g.addColorStop(0.6, rgba(d.c, a * 0.3));
       g.addColorStop(1, rgba(d.c, 0));
       ctx.fillStyle = g;
-      ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+      ctx.fillRect(p.sx - rad, p.sy - rad, rad * 2, rad * 2);
     });
 
-    // starfield
+    // 2. Render 3D Starfield with Depth Parallax
     stars.forEach((s) => {
-      const [sx, sy] = toScreen(s.x, s.y);
-      if (sx < -4 || sx > W + 4 || sy < -4 || sy > H + 4) return;
-      const a = 0.22 + 0.5 * Math.abs(Math.sin(t * 0.7 * motion + s.t));
-      ctx.fillStyle = 'rgba(214,231,247,' + a * 0.55 + ')';
-      ctx.fillRect(sx, sy, s.s, s.s);
+      const p = project3D(s.x, s.y, s.z);
+      if (p.depth <= 80 || p.sx < -10 || p.sx > W + 10 || p.sy < -10 || p.sy > H + 10) return;
+      const a = 0.25 + 0.55 * Math.abs(Math.sin(t * 0.8 * motion + s.t));
+      const starSize = Math.max(0.6, s.s * p.scale * 1.3);
+      ctx.fillStyle = s.hue === '#d6e7f7' ? `rgba(214,231,247,${a * 0.65})` : rgba(s.hue, a * 0.8);
+      ctx.fillRect(p.sx, p.sy, starSize, starSize);
     });
 
-    // node positions
+    // 3. Update Dynamic 3D Positions for Nodes
     nodes.forEach((nd) => {
       const ang = nd.a0 + t * nd.spd * motion;
-      const wob = variant === 'nebula' ? 1 + Math.sin(t * 0.6 * motion + nd.tw) * 0.06 : 1;
-      const sq = variant === 'orrery' ? 0.58 : variant === 'nebula' ? 0.9 : 0.72;
-      nd.x = nd.c.x + Math.cos(ang) * nd.r * wob;
-      nd.y = nd.c.y + Math.sin(ang) * nd.r * wob * sq;
-      const dim = focus != null && nd.cluster !== focus ? 0.1 : 1;
-      const aged = nd.age > maxAge ? 0.05 : 1;
-      nd.alpha += (dim * aged - nd.alpha) * 0.12;
+      const wob = Math.sin(t * 0.7 * motion + nd.tw) * 8;
+      
+      // Compute 3D coordinates relative to cluster
+      if (nd.hub) {
+        nd.x = nd.c.x;
+        nd.y = nd.c.y;
+        nd.z = nd.c.z;
+      } else {
+        const cosA = Math.cos(ang), sinA = Math.sin(ang);
+        nd.x = nd.c.x + cosA * nd.r;
+        nd.y = nd.c.y + sinA * (nd.r * 0.65) + Math.sin(ang * 2 + t * 0.5) * nd.zBob;
+        nd.z = nd.c.z + sinA * (nd.r * nd.tiltZ) + cosA * (nd.r * nd.tiltX) + wob;
+      }
+
+      const p = project3D(nd.x, nd.y, nd.z);
+      nd._sx = p.sx;
+      nd._sy = p.sy;
+      nd._sr = Math.max(1.8, nd.size * p.scale);
+      nd._z = p.z;
+      nd._proj = p;
+
+      const dim = focus != null && nd.cluster !== focus ? 0.12 : 1;
+      const aged = nd.age > maxAge ? 0.06 : 1;
+      nd.alpha += (dim * aged - nd.alpha) * 0.14;
       nd.flash *= 0.94;
     });
 
-    // orbit rings
-    if (variant !== 'nebula') {
-      clusters.forEach((c, ci) => {
-        const a = (focus != null && ci !== focus ? 0.05 : variant === 'orrery' ? 0.2 : 0.11) * glow;
-        for (let ring = 0; ring < 3; ring++) {
-          const rr = (variant === 'orrery' ? 58 + ring * 30 : 48 + ring * 25) * cam.z;
-          const [sx, sy] = toScreen(c.x, c.y);
-          ctx.beginPath();
-          ctx.ellipse(sx, sy, rr, rr * (variant === 'orrery' ? 0.58 : 0.72), 0, 0, TAU);
-          ctx.strokeStyle = rgba(c.color, a);
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        }
-      });
-    } else {
-      // time rings: concentric "how old" bands
-      const [cx, cy] = toScreen(0, 0);
-      for (let i = 1; i <= 4; i++) {
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, i * 150 * cam.z, i * 92 * cam.z, 0, 0, TAU);
-        ctx.strokeStyle = 'rgba(123,224,196,' + 0.045 * glow + ')';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-    }
-
-    // hub -> node links
+    // 4. Render 3D Synaptic Web Filaments (Intra-cluster links)
     nodes.forEach((nd) => {
-      if (nd.hub || nd.alpha < 0.07) return;
-      const [x1, y1] = toScreen(nd.c.x, nd.c.y);
-      const [x2, y2] = toScreen(nd.x, nd.y);
+      if (nd.hub || nd.alpha < 0.08 || !nd._proj || nd._proj.depth <= 80) return;
+      const hubProj = project3D(nd.c.x, nd.c.y, nd.c.z);
+      if (hubProj.depth <= 80) return;
+
       const col = variant === 'nebula' ? nd.statusColor : nd.c.color;
       ctx.beginPath();
-      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-      ctx.strokeStyle = rgba(col, 0.14 * nd.alpha * glow);
-      ctx.lineWidth = Math.max(0.6, nd.links * 0.12 * cam.z);
+      ctx.moveTo(hubProj.sx, hubProj.sy);
+      ctx.lineTo(nd._sx, nd._sy);
+      ctx.strokeStyle = rgba(col, 0.18 * nd.alpha * glow);
+      ctx.lineWidth = Math.max(0.6, nd.links * 0.16 * nd._proj.scale);
       ctx.stroke();
-      // travelling pulse
-      const p = (t * 0.22 * motion + nd.a0) % 1;
-      const px = x1 + (x2 - x1) * p, py = y1 + (y2 - y1) * p;
-      ctx.fillStyle = rgba(col, 0.5 * nd.alpha * glow);
-      ctx.beginPath(); ctx.arc(px, py, 1.3 * cam.z + 0.5, 0, TAU); ctx.fill();
-    });
 
-    // cross-cluster bridges (curved)
-    bridges.forEach((b) => {
-      const a = Math.min(b.a.alpha, b.b.alpha);
-      if (a < 0.07) return;
-      const [x1, y1] = toScreen(b.a.x, b.a.y);
-      const [x2, y2] = toScreen(b.b.x, b.b.y);
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 60 * cam.z;
+      // Traveling photon pulse in 3D web
+      const p = (t * 0.25 * motion + nd.a0) % 1;
+      const px = hubProj.sx + (nd._sx - hubProj.sx) * p;
+      const py = hubProj.sy + (nd._sy - hubProj.sy) * p;
+      ctx.fillStyle = rgba(col, 0.65 * nd.alpha * glow);
       ctx.beginPath();
-      ctx.moveTo(x1, y1); ctx.quadraticCurveTo(mx, my, x2, y2);
-      ctx.strokeStyle = 'rgba(160,190,215,' + 0.1 * a * glow + ')';
-      ctx.lineWidth = 0.9;
-      ctx.stroke();
-      const p = (t * 0.1 * motion + b.off) % 1;
-      const q = 1 - p;
-      const px = q * q * x1 + 2 * q * p * mx + p * p * x2;
-      const py = q * q * y1 + 2 * q * p * my + p * p * y2;
-      ctx.fillStyle = rgba(b.a.c.color, 0.55 * a * glow);
-      ctx.beginPath(); ctx.arc(px, py, 1.6, 0, TAU); ctx.fill();
+      ctx.arc(px, py, Math.max(1, 1.6 * nd._proj.scale + 0.6), 0, TAU);
+      ctx.fill();
     });
 
-    // nodes
-    nodes.forEach((nd) => {
-      const [sx, sy] = toScreen(nd.x, nd.y);
-      if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) return;
+    // 5. Render 3D Inter-Cluster Bridges
+    bridges.forEach((b) => {
+      if (!b.a._proj || !b.b._proj || b.a._proj.depth <= 80 || b.b._proj.depth <= 80) return;
+      const a = Math.min(b.a.alpha, b.b.alpha);
+      if (a < 0.08) return;
+
+      const midX = (b.a.x + b.b.x) / 2;
+      const midY = (b.a.y + b.b.y) / 2 - 80;
+      const midZ = (b.a.z + b.b.z) / 2;
+      const midProj = project3D(midX, midY, midZ);
+
+      ctx.beginPath();
+      ctx.moveTo(b.a._sx, b.a._sy);
+      ctx.quadraticCurveTo(midProj.sx, midProj.sy, b.b._sx, b.b._sy);
+      ctx.strokeStyle = 'rgba(123, 224, 196, ' + (0.13 * a * glow) + ')';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Pulse on bridge
+      const p = (t * b.pulseSpd * motion + b.off) % 1;
+      const q = 1 - p;
+      const px = q * q * b.a._sx + 2 * q * p * midProj.sx + p * p * b.b._sx;
+      const py = q * q * b.a._sy + 2 * q * p * midProj.sy + p * p * b.b._sy;
+      ctx.fillStyle = rgba(b.a.c.color, 0.75 * a * glow);
+      ctx.beginPath();
+      ctx.arc(px, py, 2.2, 0, TAU);
+      ctx.fill();
+    });
+
+    // 6. Sort Nodes by 3D Depth & Render
+    const sortedNodes = [...nodes].sort((a, b) => (b._proj?.depth || 0) - (a._proj?.depth || 0));
+
+    sortedNodes.forEach((nd) => {
+      if (!nd._proj || nd._proj.depth <= 80) return;
+      const sx = nd._sx, sy = nd._sy;
+      if (sx < -80 || sx > W + 80 || sy < -80 || sy > H + 80) return;
+
       const col = variant === 'nebula' && !nd.hub ? nd.statusColor : nd.c.color;
-      const pulse = 1 + 0.12 * Math.sin(t * 1.5 * motion + nd.tw) + nd.flash * 1.4;
-      const r = nd.size * cam.z * pulse * (nd.hub ? 1.25 : 1);
+      const pulse = 1 + 0.15 * Math.sin(t * 1.6 * motion + nd.tw) + nd.flash * 1.8;
+      const r = nd._sr * pulse * (nd.hub ? 1.35 : 1);
       const a = nd.alpha;
-      // halo
-      const hr = r * (nd.hub ? 9 : 5.2);
+
+      // Outer Photon Corona
+      const hr = r * (nd.hub ? 10 : 5.8);
       const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, hr);
-      g.addColorStop(0, rgba(col, 0.5 * a * glow));
-      g.addColorStop(0.35, rgba(col, 0.14 * a * glow));
+      g.addColorStop(0, rgba(col, 0.6 * a * glow));
+      g.addColorStop(0.35, rgba(col, 0.18 * a * glow));
       g.addColorStop(1, rgba(col, 0));
       ctx.fillStyle = g;
       ctx.fillRect(sx - hr, sy - hr, hr * 2, hr * 2);
-      // core
-      ctx.beginPath(); ctx.arc(sx, sy, Math.max(0.9, r), 0, TAU);
-      ctx.fillStyle = 'rgba(255,255,255,' + Math.min(1, 0.55 + nd.flash) * a + ')';
+
+      // Node Core
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(1.2, r * 1.6), 0, TAU);
+      ctx.fillStyle = rgba(col, 0.65 * a);
       ctx.fill();
-      ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.4, r * 1.7), 0, TAU);
-      ctx.fillStyle = rgba(col, 0.55 * a);
+
+      // Stellar Center
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(0.8, r * 0.75), 0, TAU);
+      ctx.fillStyle = 'rgba(255,255,255,' + Math.min(1, 0.7 + nd.flash) * a + ')';
       ctx.fill();
-      // unlinked marker
-      if (nd.links <= 1 && !nd.hub) {
-        ctx.beginPath(); ctx.arc(sx, sy, r * 3.4, 0, TAU);
-        ctx.strokeStyle = rgba('#e15b4c', 0.4 * a);
-        ctx.lineWidth = 1; ctx.stroke();
-      }
+
+      // Hover Reticle
       if (nd === hover) {
-        ctx.beginPath(); ctx.arc(sx, sy, r * 4.2 + 3, 0, TAU);
-        ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.2; ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(sx, sy, r * 3.6 + 4, 0, TAU);
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+
+        // 4 Reticle markers
+        const sz = r * 3.6 + 8;
+        ctx.beginPath();
+        ctx.moveTo(sx - sz, sy); ctx.lineTo(sx - sz + 4, sy);
+        ctx.moveTo(sx + sz, sy); ctx.lineTo(sx + sz - 4, sy);
+        ctx.moveTo(sx, sy - sz); ctx.lineTo(sx, sy - sz + 4);
+        ctx.moveTo(sx, sy + sz); ctx.lineTo(sx, sy + sz - 4);
+        ctx.strokeStyle = 'rgba(242,167,27,0.9)';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
       }
     });
 
-    // pings (live activity)
-    pings = pings.filter((p) => t - p.t < 1.6);
+    // 7. Render Expanding 3D Pings & TARS Consultation Shockwaves
+    pings = pings.filter((p) => t - p.t < 2.2);
     pings.forEach((p) => {
-      const k = (t - p.t) / 1.6;
-      const [sx, sy] = toScreen(p.node.x, p.node.y);
-      ctx.beginPath();
-      ctx.arc(sx, sy, (8 + k * 74) * cam.z, 0, TAU);
-      ctx.strokeStyle = rgba(p.color, (1 - k) * 0.65 * glow);
-      ctx.lineWidth = 2 * (1 - k) + 0.4;
-      ctx.stroke();
+      const k = (t - p.t) / 2.2;
+      const nd = p.node;
+      if (!nd._proj || nd._proj.depth <= 80) return;
+      const sx = nd._sx, sy = nd._sy;
+
+      // 3 concentric shockwave rings
+      for (let ring = 0; ring < 3; ring++) {
+        const ringK = Math.max(0, k - ring * 0.12);
+        if (ringK <= 0) continue;
+        const radius = (12 + ringK * 95) * nd._proj.scale;
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, 0, TAU);
+        ctx.strokeStyle = rgba(p.color || '#f2a71b', (1 - ringK) * 0.75 * glow);
+        ctx.lineWidth = Math.max(1, (3 - ring) * (1 - ringK) * 1.5);
+        ctx.stroke();
+      }
+
+      // Floating 3D Holographic TARS Consultation Beacon
+      if (p.text && k < 0.95) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        const cardY = sy - 42 * nd._proj.scale - 14;
+        const labelText = String(p.text).slice(0, 48);
+        ctx.font = '600 11.5px "Space Grotesk", sans-serif';
+        const tw = ctx.measureText(labelText).width;
+        const pw = tw + 28, ph = 24;
+
+        // Card background with neon border
+        ctx.fillStyle = 'rgba(10, 16, 26, 0.92)';
+        ctx.strokeStyle = rgba(p.color || '#f2a71b', (1 - k * 0.6));
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.roundRect(sx - pw / 2, cardY - ph / 2, pw, ph, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        // Beacon tag text
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = p.color || '#f2a71b';
+        ctx.fillText('⚡ ' + labelText, sx, cardY);
+        ctx.restore();
+      }
     });
 
     ctx.globalCompositeOperation = 'source-over';
 
-    // cluster labels
-    if (cam.z > 0.42) {
+    // 8. Render Cluster Titles & Hub Labels
+    if (cam.zoom > 0.38) {
       hubs.forEach((h) => {
-        const [sx, sy] = toScreen(h.c.x, h.c.y);
-        const a = focus != null && h.cluster !== focus ? 0.22 : 1;
+        if (!h._proj || h._proj.depth <= 80) return;
+        const sx = h._sx, sy = h._sy;
+        const a = focus != null && h.cluster !== focus ? 0.25 : 1;
         ctx.textAlign = 'center';
-        ctx.font = '600 14px "Space Grotesk", sans-serif';
+        ctx.font = '700 13px "Space Grotesk", sans-serif';
         ctx.fillStyle = rgba(h.c.color, a);
-        ctx.fillText(h.c.name, sx, sy - 34 * cam.z - 14);
-        ctx.font = '11px "JetBrains Mono", monospace';
-        ctx.fillStyle = 'rgba(202,217,231,' + 0.5 * a + ')';
-        ctx.fillText(h.c.count + ' entries', sx, sy - 34 * cam.z);
+        ctx.fillText(h.c.name, sx, sy - 30 * h._proj.scale - 14);
+        ctx.font = '10.5px "JetBrains Mono", monospace';
+        ctx.fillStyle = 'rgba(202,217,231,' + (0.6 * a) + ')';
+        ctx.fillText(h.c.count + ' entries', sx, sy - 30 * h._proj.scale);
       });
     }
 
@@ -9692,7 +9833,7 @@ function createGalaxy(canvas, opts) {
     raf = requestAnimationFrame(frame);
   }
 
-  /* ---------- minimap ---------- */
+  /* ---------- Minimap ---------- */
   const mini = opts.minimap || null;
   const mctx = mini ? mini.getContext('2d') : null;
   let mw = 0, mh = 0;
@@ -9706,110 +9847,170 @@ function createGalaxy(canvas, opts) {
     }
     mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     mctx.clearRect(0, 0, mw, mh);
-    const s = Math.min(mw / 1250, mh / 800);
+    const s = Math.min(mw / 1400, mh / 900);
     const px = (wx) => mw / 2 + wx * s;
     const py = (wy) => mh / 2 + wy * s;
     mctx.globalCompositeOperation = 'lighter';
     nodes.forEach((nd) => {
       const col = variant === 'nebula' && !nd.hub ? nd.statusColor : nd.c.color;
-      mctx.fillStyle = rgba(col, 0.25 + 0.6 * nd.alpha);
-      const rr = nd.hub ? 2.2 : 1.1;
+      mctx.fillStyle = rgba(col, 0.3 + 0.65 * nd.alpha);
+      const rr = nd.hub ? 2.5 : 1.2;
       mctx.beginPath(); mctx.arc(px(nd.x), py(nd.y), rr, 0, TAU); mctx.fill();
     });
-    mctx.globalCompositeOperation = 'source-over';
-    // viewport rect
-    const [wx1, wy1] = toWorld(0, 0);
-    const [wx2, wy2] = toWorld(W, H);
-    mctx.strokeStyle = 'rgba(242,167,27,0.65)';
-    mctx.lineWidth = 1;
-    mctx.strokeRect(px(wx1), py(wy1), (wx2 - wx1) * s, (wy2 - wy1) * s);
   }
 
-  /* ---------- interaction ---------- */
+  /* ---------- Pixel-Perfect Hit-Testing (Fixing Mouse Distortion) ---------- */
   function pick(sx, sy) {
-    const [wx, wy] = toWorld(sx, sy);
-    let best = null, bd = 1e9;
-    nodes.forEach((nd) => {
-      if (nd.alpha < 0.2) return;
-      const d = (nd.x - wx) ** 2 + (nd.y - wy) ** 2;
-      const rad = (nd.size * 3.2 + 10 / cam.z) ** 2;
-      if (d < rad && d < bd) { bd = d; best = nd; }
-    });
+    let best = null;
+    let minDistance = 999999;
+    
+    // Test exact screen projection distance
+    for (const nd of nodes) {
+      if (nd.alpha < 0.12 || !nd._proj || nd._proj.depth <= 80) continue;
+      const d = Math.hypot(nd._sx - sx, nd._sy - sy);
+      const hitRadius = Math.max(16, (nd._sr || 4) * 2.2 + 8);
+      if (d <= hitRadius && d < minDistance) {
+        minDistance = d;
+        best = nd;
+      }
+    }
     return best;
   }
 
-  let dragging = false, moved = 0, lx = 0, ly = 0;
-  const onDown = (e) => { dragging = true; moved = 0; lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId); };
+  /* ---------- 3D Mouse & Touch Interaction ---------- */
+  let dragging = false, isPanning = false, moved = 0, lx = 0, ly = 0;
+
+  const onDown = (e) => {
+    dragging = true;
+    isPanning = e.button === 2 || e.shiftKey;
+    moved = 0;
+    lx = e.clientX;
+    ly = e.clientY;
+    canvas.setPointerCapture?.(e.pointerId);
+    canvas.classList.add(isPanning ? 'panning' : 'rotating');
+  };
+
   const onMove = (e) => {
     const r = canvas.getBoundingClientRect();
     const sx = e.clientX - r.left, sy = e.clientY - r.top;
+
     if (dragging) {
-      cam.x += e.clientX - lx; cam.y += e.clientY - ly;
-      moved += Math.abs(e.clientX - lx) + Math.abs(e.clientY - ly);
-      lx = e.clientX; ly = e.clientY;
+      const dx = e.clientX - lx;
+      const dy = e.clientY - ly;
+      moved += Math.abs(dx) + Math.abs(dy);
+      lx = e.clientX;
+      ly = e.clientY;
+
+      if (isPanning) {
+        cam.panX += dx / (cam.zoom * 0.85);
+        cam.panY += dy / (cam.zoom * 0.85);
+      } else {
+        cam.vx = dx * 0.005;
+        cam.vy = dy * 0.005;
+        cam.rotY += dx * 0.005;
+        cam.rotX = Math.max(-1.4, Math.min(1.4, cam.rotX + dy * 0.005));
+      }
       return;
     }
+
     const nd = pick(sx, sy);
     if (nd !== hover) {
       hover = nd;
-      if (opts.onHover) opts.onHover(nd, sx, sy);
-    } else if (nd && opts.onHover) opts.onHover(nd, sx, sy);
+      canvas.style.cursor = nd ? 'pointer' : 'grab';
+      if (opts.onHover) opts.onHover(nd, nd ? nd._sx : sx, nd ? nd._sy : sy);
+    } else if (nd && opts.onHover) {
+      opts.onHover(nd, nd._sx, nd._sy);
+    }
   };
+
   const onUp = (e) => {
-    if (dragging && moved < 5) {
+    canvas.classList.remove('panning', 'rotating');
+    if (dragging && moved < 6) {
       const r = canvas.getBoundingClientRect();
       const nd = pick(e.clientX - r.left, e.clientY - r.top);
-      focus = nd ? (focus === nd.cluster ? null : nd.cluster) : null;
-      if (opts.onPick) opts.onPick(nd, focus == null ? null : clusters[focus]);
+      if (nd) {
+        focus = focus === nd.cluster ? null : nd.cluster;
+        if (opts.onPick) opts.onPick(nd, focus == null ? null : clusters[focus]);
+      } else {
+        focus = null;
+        if (opts.onPick) opts.onPick(null, null);
+      }
     }
     dragging = false;
+    isPanning = false;
   };
+
   const onWheel = (e) => {
     e.preventDefault();
-    const r = canvas.getBoundingClientRect();
-    const sx = e.clientX - r.left, sy = e.clientY - r.top;
-    const [wx, wy] = toWorld(sx, sy);
-    const f = Math.exp(-e.deltaY * 0.0016);
-    cam.tz = Math.min(2.6, Math.max(0.3, cam.tz * f));
-    cam.z = cam.tz;
-    cam.x = sx - W / 2 - wx * cam.z;
-    cam.y = sy - H / 2 - wy * cam.z;
+    const f = Math.exp(-e.deltaY * 0.0018);
+    cam.tZoom = Math.min(3.5, Math.max(0.25, cam.tZoom * f));
   };
-  const onLeave = () => { hover = null; if (opts.onHover) opts.onHover(null); };
+
+  const onLeave = () => { 
+    hover = null; 
+    canvas.style.cursor = 'grab';
+    if (opts.onHover) opts.onHover(null); 
+  };
+
+  const onContextMenu = (e) => e.preventDefault();
 
   canvas.addEventListener('pointerdown', onDown);
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerup', onUp);
   canvas.addEventListener('pointerleave', onLeave);
   canvas.addEventListener('wheel', onWheel, { passive: false });
+  canvas.addEventListener('contextmenu', onContextMenu);
 
-  /* ---------- live activity ---------- */
+  /* ---------- TARS Live Activity Ticker ---------- */
   let timer = 0;
   function scheduleEvent() {
     timer = setTimeout(() => {
       if (settings.live !== false) {
         const kinds = opts.eventKinds || [];
-        const k = kinds[Math.floor(Math.random() * kinds.length)] || { text: 'ping', color: '#f2a71b' };
+        const k = kinds[Math.floor(Math.random() * kinds.length)] || { text: 'Telemetry pulse', color: '#f2a71b' };
         const pool = focus != null ? nodes.filter((x) => x.cluster === focus) : nodes;
         const nd = pool[Math.floor(Math.random() * pool.length)];
-        api.ping(nd, k.color);
+        if (nd) api.ping(nd, k.color, k.text);
         if (opts.onEvent) opts.onEvent({ node: nd, kind: k });
       }
       scheduleEvent();
-    }, 1400 + Math.random() * 2200);
+    }, 2800 + Math.random() * 4000);
   }
   scheduleEvent();
 
   const api = {
-    ping(node, color) {
+    ping(node, color, text) {
       const nd = node || nodes[Math.floor(Math.random() * nodes.length)];
-      nd.flash = 1;
-      pings.push({ node: nd, t: (performance.now() - t0) / 1000, color: color || nd.c.color });
+      if (!nd) return;
+      nd.flash = 2.0;
+      pings.push({ 
+        node: nd, 
+        t: (performance.now() - t0) / 1000, 
+        color: color || nd.c.color || '#f2a71b',
+        text: text || null
+      });
+    },
+    highlight(queryOrNode, reasonText, color) {
+      let target = null;
+      if (typeof queryOrNode === 'object' && queryOrNode) {
+        target = queryOrNode;
+      } else if (typeof queryOrNode === 'string') {
+        const q = queryOrNode.toLowerCase().trim();
+        target = nodes.find(n => String(n.title || '').toLowerCase().includes(q) ||
+                                String(n.id || '').toLowerCase().includes(q));
+      }
+      if (target) {
+        target.flash = 2.5;
+        this.ping(target, color || '#f2a71b', reasonText || 'Consulted by TARS');
+        // Smoothly pan camera slightly towards consulted node
+        cam.panX += (-target.x * 0.3 - cam.panX) * 0.2;
+        cam.panY += (-target.y * 0.3 - cam.panY) * 0.2;
+      }
     },
     setTime(frac) { maxAge = frac >= 0.99 ? 999 : Math.round(frac * 120); },
     clearFocus() { focus = null; if (opts.onPick) opts.onPick(null, null); },
     focusCluster(i) { focus = focus === i ? null : i; if (opts.onPick) opts.onPick(null, focus == null ? null : clusters[focus]); },
-    reset() { cam.x = 0; cam.y = 0; cam.tz = z0; },
+    reset() { cam.panX = 0; cam.panY = 0; cam.rotX = -0.32; cam.rotY = 0.28; cam.tZoom = z0; },
     destroy() {
       running = false; cancelAnimationFrame(raf); clearTimeout(timer); ro.disconnect();
       canvas.removeEventListener('pointerdown', onDown);
@@ -9817,6 +10018,7 @@ function createGalaxy(canvas, opts) {
       canvas.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('pointerleave', onLeave);
       canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', onContextMenu);
     },
   };
 
@@ -14663,24 +14865,29 @@ const Galaxy = {
       tags: ['template', ...(t.tags || [])], links: [],
       words: String(t.body || '').split(/\s+/).length, excerpt: String(t.body || '').slice(0, 220),
       folder: 'Templates/', source: 'tpl', tpl: t }));
-    cases.slice(-40).forEach(cs => out.push({
-      id: 'case:' + cs.id, key: String(cs.titulo || '').toLowerCase(), title: cs.titulo || 'Case',
-      tags: (cs.tags || []).map(t => String(t).toLowerCase()), links: [],
-      words: (cs.notes_log || []).reduce((n, x) => n + String(x.text).split(/\s+/).length, 0),
-      excerpt: (cs.notes_log || []).map(x => x.text).join(' ').slice(0, 220),
-      folder: 'Cases/', source: 'case', caseId: cs.id,
-      when: Date.parse(cs.case_date || cs.created_at || 0) || 0 }));
+    cases.slice(-50).forEach(cs => {
+      const assignedCluster = Clusters.map['case:' + cs.id] || Clusters.map[cs.id] || Clusters.forEntry(cs);
+      out.push({
+        id: 'case:' + cs.id, key: String(cs.titulo || '').toLowerCase(), title: cs.titulo || 'Case',
+        tags: (cs.tags || []).map(t => String(t).toLowerCase()), links: [],
+        words: (cs.notes_log || []).reduce((n, x) => n + String(x.text).split(/\s+/).length, 0),
+        excerpt: (cs.notes_log || []).map(x => x.text).join(' ').slice(0, 220),
+        folder: (assignedCluster || 'Cases') + '/', source: 'case', caseId: cs.id,
+        when: Date.parse(cs.case_date || cs.created_at || 0) || 0
+      });
+    });
     return out;
   },
   fromAppNotes(){
     return notes.map(n => {
       const plain = plainTextPreview(n.content).text;
       const nb = (notebooks.find(x => x.id === n.notebook_id) || {}).title || 'Notes';
+      const assignedCluster = Clusters.map['note:' + n.id] || Clusters.map[n.id] || nb;
       return {
         id: 'note:' + n.id, key: String(n.title || '').toLowerCase(),
         title: n.title || 'Untitled', tags: (n.tags || []).map(t => String(t).toLowerCase()),
         links: [], words: plain.split(/\s+/).length, excerpt: plain.slice(0, 220),
-        folder: nb + '/', source: 'app', noteId: n.id,
+        folder: assignedCluster + '/', source: 'app', noteId: n.id,
         when: Date.parse(n.updated_at || n.created_at || 0) || 0,
       };
     });
@@ -15091,108 +15298,236 @@ const Galaxy = {
 };
 
 (function wireGalaxy(){
-  // The panels are part of the map. They are refreshed on a slow timer while
-  // it is visible: rendering them once at wire-up left them empty, because no
-  // data had loaded yet.
   try{ renderGalaxyPulse(); GalaxyFeed.render(); }catch(e){}
   clearInterval(window._galaxyPanelTimer);
   window._galaxyPanelTimer = setInterval(() => {
     const wrap = document.getElementById('galaxy-wrap');
-    if(!wrap || !wrap.offsetParent) return;         // not on screen
+    if(!wrap || !wrap.offsetParent) return;
     try{ GalaxyFeed.render(); renderGalaxySide(); renderGalaxyOverview(); }catch(e){}
   }, 4000);
 
-  const cv = document.getElementById('kb-map');
-  if(!cv) return;
-  cv.addEventListener('pointerdown', e => {
-    Galaxy.drag = { x: e.clientX, y: e.clientY, rx: Galaxy.rot.x, ry: Galaxy.rot.y, moved: 0 };
-    Galaxy.camTarget = null;
-    cv.setPointerCapture?.(e.pointerId);
-  });
-  cv.addEventListener('pointermove', e => {
-    const r = cv.getBoundingClientRect();
-    if(Galaxy.drag){
-      const dx = e.clientX - Galaxy.drag.x, dy = e.clientY - Galaxy.drag.y;
-      Galaxy.drag.moved = Math.abs(dx) + Math.abs(dy);
-      Galaxy.rot.y = Galaxy.drag.ry + dx * 0.006;
-      Galaxy.rot.x = Math.max(-1.3, Math.min(1.3, Galaxy.drag.rx + dy * 0.006));
-      return;
-    }
-    const mx = e.clientX - r.left, my = e.clientY - r.top;
-    const hit = Galaxy.nodes.find(n => n._p && Math.hypot(n._p.sx - mx, n._p.sy - my) < 11);
-    Galaxy.hover = hit || null;
-    const tip = document.getElementById('kb-map-tip');
-    if(tip){
-      if(hit){
-        tip.innerHTML = `<b>${escapeHtml(hit.title)}</b><br>`
-          + `<span class="tip-meta">${escapeHtml(hit.folder)} · ${hit.words} words · `
-          + `${hit.deg ? hit.deg + ' links' : 'unlinked'}</span>`
-          + (hit.tags.length ? `<br><span class="tip-tags">${hit.tags.slice(0,5).map(t => '#' + escapeHtml(t)).join(' ')}</span>` : '');
-        tip.style.display = 'block';
-      } else tip.style.display = 'none';
-    }
-    cv.style.cursor = hit ? 'pointer' : 'grab';
-  });
-  cv.addEventListener('pointerup', e => {
-    const click = Galaxy.drag && Galaxy.drag.moved < 5;
-    Galaxy.drag = null;
-    if(!click || !Galaxy.hover) return;
-    if(e.shiftKey || e.detail === 2) openGalaxyNode(Galaxy.hover);
-    else Galaxy.setFocus(Galaxy.hover);       // single click explores, shift opens
-  });
-  cv.addEventListener('dblclick', () => { if(Galaxy.hover) openGalaxyNode(Galaxy.hover); });
-  cv.addEventListener('pointercancel', () => { Galaxy.drag = null; });
-  cv.addEventListener('wheel', e => {
-    e.preventDefault();
-    Galaxy.zoom = Math.max(0.5, Math.min(5, Galaxy.zoom * (e.deltaY > 0 ? 0.92 : 1.08)));
-  }, { passive: false });
   document.getElementById('galaxy-time')?.addEventListener('input', e => {
     Galaxy.timeCut = +e.target.value / 100;
     const lab = document.getElementById('galaxy-time-lab');
     if(lab) lab.textContent = Galaxy.timeCut >= 1 ? 'all time' : Math.round(Galaxy.timeCut * 100) + '% of history';
+    GalaxyView.setTime(Galaxy.timeCut);
   });
-  document.getElementById('galaxy-clear')?.addEventListener('click', () => { Galaxy.clearSearch(); });
+  document.getElementById('galaxy-clear')?.addEventListener('click', () => { Galaxy.clearSearch(); GalaxyView.reset(); });
 })();
 
-// A themed viewer rather than a browser dialog: this is part of the app, and
-// a native alert cannot show links, tags or connections.
+// A themed viewer and comprehensive inspector for Galaxy nodes
 let starNode = null;
+let starEditing = false;
+
 function showStar(n){
   starNode = n;
+  starEditing = false;
   const kindLabel = { kb:'KNOWLEDGE', mem:'MEMORY', tpl:'TEMPLATE', case:'CASE', app:'NOTE', folder:'FILE', drive:'DRIVE' };
-  document.getElementById('star-kind').textContent = kindLabel[n.source] || 'NODE';
-  document.getElementById('star-title').textContent = n.title || 'Untitled';
-  document.getElementById('star-meta').innerHTML =
-    `<span>${escapeHtml(n.folder || '')}</span><span>${n.words || 0} words</span>`
-    + `<span>${n.deg ? n.deg + ' connections' : 'unlinked'}</span>`
-    + (n.tags || []).slice(0, 6).map(t => `<span class="star-tag">#${escapeHtml(t)}</span>`).join('');
-  document.getElementById('star-body').textContent = n.excerpt || '(no preview available)';
+  
+  const kindEl = document.getElementById('star-kind');
+  const titleEl = document.getElementById('star-title');
+  const metaEl = document.getElementById('star-meta');
+  const bodyEl = document.getElementById('star-body');
+  const linksEl = document.getElementById('star-links');
+  const editBox = document.getElementById('star-edit-box');
+  const viewBox = document.getElementById('star-view-box');
+  const editBtn = document.getElementById('star-edit-btn');
+  const clusterSelect = document.getElementById('star-cluster-select');
 
-  // Its neighbours, so the connections are explorable from here.
+  if(kindEl) kindEl.textContent = kindLabel[n.source] || 'NODE';
+  if(titleEl) titleEl.textContent = n.title || 'Untitled';
+  
+  const curCluster = (n.folder ? n.folder.replace(/\/$/, '') : 'Others');
+  if(metaEl) {
+    metaEl.innerHTML = `<span>🌌 ${escapeHtml(curCluster)}</span><span>${n.words || 0} words</span>`
+      + `<span>${n.deg ? n.deg + ' connections' : 'standalone'}</span>`
+      + (n.tags || []).slice(0, 6).map(t => `<span class="star-tag">#${escapeHtml(t)}</span>`).join('');
+  }
+  
+  if(bodyEl) bodyEl.textContent = n.excerpt || '(no preview available)';
+
+  // Populate cluster selector for easy reallocation
+  if(clusterSelect){
+    const allClusters = Clusters.names();
+    if(!allClusters.includes(curCluster)) allClusters.unshift(curCluster);
+    if(!allClusters.includes('Others')) allClusters.push('Others');
+    clusterSelect.innerHTML = [...new Set(allClusters)].map(c => 
+      `<option value="${escapeHtml(c)}"${c.toLowerCase() === curCluster.toLowerCase() ? ' selected' : ''}>${escapeHtml(c)}</option>`
+    ).join('') + `<option value="__new__">+ Create new cluster...</option>`;
+  }
+
+  // Reset view/edit states
+  if(editBox) editBox.style.display = 'none';
+  if(viewBox) viewBox.style.display = 'block';
+  if(editBtn) editBtn.textContent = '✏️ Edit';
+
+  // Connected neighbours
   const near = [...(Galaxy.adj[n.id] || [])].map(id => Galaxy.byId[id]).filter(Boolean).slice(0, 8);
-  document.getElementById('star-links').innerHTML = near.length
-    ? '<div class="star-links-head">Connected to</div>' + near.map(x =>
-        `<button class="star-link" data-id="${x.id}">${escapeHtml(x.title.slice(0, 42))}</button>`).join('')
-    : '<div class="star-links-head">Nothing links to this yet</div>';
-  document.getElementById('star-links').querySelectorAll('.star-link').forEach(b =>
-    b.addEventListener('click', () => { const t = Galaxy.byId[b.dataset.id]; if(t) showStar(t); }));
+  if(linksEl){
+    linksEl.innerHTML = near.length
+      ? '<div class="star-links-head">Connected to in Galaxy</div>' + near.map(x =>
+          `<button class="star-link" data-id="${x.id}">${escapeHtml(x.title.slice(0, 42))}</button>`).join('')
+      : '<div class="star-links-head">Direct connections: cluster-linked</div>';
+    linksEl.querySelectorAll('.star-link').forEach(b =>
+      b.addEventListener('click', () => { const t = Galaxy.byId[b.dataset.id]; if(t) showStar(t); }));
+  }
 
-  document.getElementById('star-open').style.display =
-    (n.source === 'app' || n.source === 'case' || n.source === 'tpl') ? 'inline-block' : 'none';
-  document.getElementById('star-backdrop').classList.add('open');
+  const openBtn = document.getElementById('star-open');
+  if(openBtn) {
+    openBtn.style.display = (n.source === 'app' || n.source === 'case' || n.source === 'tpl') ? 'inline-block' : 'none';
+  }
+
+  document.getElementById('star-backdrop')?.classList.add('open');
   SFX.open();
 }
-function hideStar(){ document.getElementById('star-backdrop')?.classList.remove('open'); starNode = null; }
+
+function hideStar(){ 
+  document.getElementById('star-backdrop')?.classList.remove('open'); 
+  starNode = null; 
+  starEditing = false;
+}
+
 document.getElementById('star-close')?.addEventListener('click', hideStar);
 document.getElementById('star-backdrop')?.addEventListener('click', e => {
   if(e.target.id === 'star-backdrop') hideStar();
 });
+
+// Reallocate cluster handler
+document.getElementById('star-cluster-apply')?.addEventListener('click', async () => {
+  if(!starNode) return;
+  const select = document.getElementById('star-cluster-select');
+  if(!select) return;
+  let targetCluster = select.value;
+
+  if(targetCluster === '__new__'){
+    const custom = prompt('Enter the name of the new cluster (e.g. Sungrow, Inversor RMA, Microinversores):');
+    if(!custom || !custom.trim()) return;
+    targetCluster = custom.trim();
+    Clusters.create(targetCluster, '');
+  }
+
+  const prevCluster = starNode.folder ? starNode.folder.replace(/\/$/, '') : 'Others';
+  const nodeKey = starNode.id;
+  
+  // Assign cluster in Clusters map
+  Clusters.assign(nodeKey, targetCluster);
+  if(starNode.caseId) Clusters.assign('case:' + starNode.caseId, targetCluster);
+  if(starNode.noteId) Clusters.assign('note:' + starNode.noteId, targetCluster);
+  if(starNode.ref?.id) Clusters.assign(starNode.ref.id, targetCluster);
+
+  // If this is a case, update the case in cases array
+  if(starNode.source === 'case' && starNode.caseId){
+    const cse = cases.find(c => c.id === starNode.caseId);
+    if(cse){
+      cse.tags = [...new Set([...(cse.tags || []), targetCluster.toLowerCase()])];
+      try {
+        if(typeof saveCasesToDb === 'function') await saveCasesToDb();
+        else if(session && session.isDemo) localStorage.setItem('solar-agenda-demo-cases', JSON.stringify(cases));
+      } catch(e){}
+    }
+  }
+
+  GalaxyFeed.push('case', `Reallocated “${starNode.title}” from ${prevCluster} ➔ ${targetCluster}`);
+  if(GalaxyView.api) GalaxyView.api.highlight(starNode.title, `Moved to ${targetCluster}`);
+
+  SFX.tick();
+  hideStar();
+  await showGalaxy(true);
+});
+
+// Delete Case / Node handler
+document.getElementById('star-delete')?.addEventListener('click', async () => {
+  if(!starNode) return;
+  const title = starNode.title || 'this item';
+  if(!confirm(`Are you sure you want to delete “${title}”?\nThis action cannot be undone.`)) return;
+
+  const n = starNode;
+  hideStar();
+
+  try {
+    if(n.source === 'case' && n.caseId){
+      await deleteCaseApi(n.caseId);
+      GalaxyFeed.push('close', `Deleted case “${title}”`);
+    } else if(n.source === 'app' && n.noteId){
+      notes = notes.filter(x => x.id !== n.noteId);
+      renderNotes();
+      GalaxyFeed.push('close', `Deleted note “${title}”`);
+    } else if(n.source === 'kb'){
+      const idx = parseInt(String(n.id).replace('kb:', ''), 10);
+      if(!isNaN(idx) && KB[idx]) KB.splice(idx, 1);
+      GalaxyFeed.push('close', `Deleted knowledge node “${title}”`);
+    }
+    SFX.tick();
+    await showGalaxy(true);
+  } catch(err){
+    alert('Failed to delete item: ' + err.message);
+  }
+});
+
+// Quick Edit handler
+document.getElementById('star-edit-btn')?.addEventListener('click', async () => {
+  if(!starNode) return;
+  const editBox = document.getElementById('star-edit-box');
+  const viewBox = document.getElementById('star-view-box');
+  const editBtn = document.getElementById('star-edit-btn');
+  const titleInp = document.getElementById('star-edit-title');
+  const tagsInp = document.getElementById('star-edit-tags');
+  const excerptInp = document.getElementById('star-edit-excerpt');
+
+  if(!starEditing){
+    // Switch to edit mode
+    starEditing = true;
+    if(editBtn) editBtn.textContent = '💾 Save';
+    if(editBox) editBox.style.display = 'flex';
+    if(viewBox) viewBox.style.display = 'none';
+
+    if(titleInp) titleInp.value = starNode.title || '';
+    if(tagsInp) tagsInp.value = (starNode.tags || []).join(', ');
+    if(excerptInp) excerptInp.value = starNode.excerpt || '';
+  } else {
+    // Save edits
+    const newTitle = titleInp ? titleInp.value.trim() : '';
+    const newTags = tagsInp ? tagsInp.value.split(',').map(t => t.trim()).filter(Boolean) : [];
+    const newExcerpt = excerptInp ? excerptInp.value.trim() : '';
+
+    if(newTitle) starNode.title = newTitle;
+    starNode.tags = newTags;
+    starNode.excerpt = newExcerpt;
+
+    if(starNode.source === 'case' && starNode.caseId){
+      const cse = cases.find(c => c.id === starNode.caseId);
+      if(cse){
+        if(newTitle) cse.titulo = newTitle;
+        cse.tags = newTags;
+        if(newExcerpt) cse.notes_log = [{ text: newExcerpt, time: new Date().toISOString() }];
+        try {
+          if(typeof saveCasesToDb === 'function') await saveCasesToDb();
+          else if(session && session.isDemo) localStorage.setItem('solar-agenda-demo-cases', JSON.stringify(cases));
+        } catch(e){}
+      }
+      GalaxyFeed.push('case', `Updated case “${newTitle || starNode.title}”`);
+    }
+
+    starEditing = false;
+    if(editBtn) editBtn.textContent = '✏️ Edit';
+    if(editBox) editBox.style.display = 'none';
+    if(viewBox) viewBox.style.display = 'block';
+
+    showStar(starNode);
+    await showGalaxy(true);
+  }
+});
+
 document.getElementById('star-focus')?.addEventListener('click', () => {
-  if(starNode) Galaxy.setFocus(starNode);
+  if(starNode) {
+    if(GalaxyView.api) GalaxyView.api.highlight(starNode.title, 'Focused in Galaxy');
+  }
   hideStar();
 });
+
 document.getElementById('star-open')?.addEventListener('click', () => {
-  const n = starNode; hideStar();
+  const n = starNode; 
+  hideStar();
   if(!n) return;
   if(n.source === 'tpl' && n.tpl) return openCompose(n.tpl, {});
   if(n.source === 'case' && n.caseId) return openModal(n.caseId);
@@ -15201,6 +15536,7 @@ document.getElementById('star-open')?.addEventListener('click', () => {
     if(note){ switchView('notebooks'); activeFolderId = note.notebook_id; renderNotebooksGrid(); openNote(note.id); }
   }
 });
+
 function openGalaxyNode(n){ showStar(n); }
 
 document.getElementById('galaxy-scan')?.addEventListener('click', async () => {
@@ -15216,6 +15552,13 @@ document.getElementById('galaxy-refresh')?.addEventListener('click', () => showG
 document.getElementById('galaxy-expand')?.addEventListener('click', () => {
   document.getElementById('galaxy-wrap')?.classList.toggle('big');
 });
+
+// Expose globals for integration across the entire application
+window.Galaxy = Galaxy;
+window.GalaxyView = GalaxyView;
+window.GalaxyFeed = GalaxyFeed;
+window.showGalaxy = showGalaxy;
+window.showStar = showStar;
 
 // keep the old entry points working
 function startKbMap(){ if(!Galaxy.ready) Galaxy.build({ folder: false }); else Galaxy.start(); }
@@ -15626,9 +15969,36 @@ async function runToolCall(call){
   try{
     const out = await tool.execute(args);
     ToolAudit.record(name, Math.round(performance.now() - t0), true);
+
+    // Explicit and informative logging for TARS Live feed
+    if(name === 'web_search'){
+      GalaxyFeed.push('web', `consulted web for — ${args.query || 'weather/information'}`);
+    } else if(name === 'create_case'){
+      const cTitle = args.titulo || args.title || 'Novo Caso';
+      GalaxyFeed.push('case', `created a new case — ${cTitle}`);
+      if(window.GalaxyView) window.GalaxyView.highlight(cTitle, 'New Case');
+    } else if(name === 'update_case'){
+      const cTitle = args.query || args.titulo || 'Case';
+      GalaxyFeed.push('case', `updated case — ${cTitle}`);
+      if(window.GalaxyView) window.GalaxyView.highlight(cTitle, 'Case Updated');
+    } else if(name === 'delete_case'){
+      GalaxyFeed.push('close', `deleted case — ${args.query || 'Case'}`);
+    } else if(name === 'add_knowledge'){
+      GalaxyFeed.push('kb', `added knowledge: “${args.title || args.query || 'Entry'}”`);
+      if(window.GalaxyView) window.GalaxyView.highlight(args.title || args.query, 'Knowledge Added');
+    } else if(name === 'search_notes' || name === 'find_in_galaxy'){
+      GalaxyFeed.push('kb', `Consulted cluster knowledge for: “${args.query || 'point'}”`);
+      if(window.GalaxyView) window.GalaxyView.highlight(args.query, 'Consulted by TARS');
+    } else if(name === 'dispatch_pending_email' || name === 'send_email'){
+      GalaxyFeed.push('tars', `dispatched email to ${args.to || 'recipient'}`);
+    } else {
+      GalaxyFeed.tool(name, args, out);
+    }
+
     return out;
   }catch(err){
     ToolAudit.record(name, Math.round(performance.now() - t0), false, err.message);
+    GalaxyFeed.push('close', `action failed: ${name} (${err.message})`);
     throw err;
   }
 }
@@ -15709,6 +16079,13 @@ async function runAssistantTurn(text, spoken){
   // The galaxy highlight is a display concern and may lag a turn; the sources
   // shown beside the answer never do.
   lastKbHits = R.kb; lastMemHits = R.mem; lastRuleHits = R.rules;
+  if(R.kb && R.kb.length){
+    R.kb.slice(0, 2).forEach(hit => {
+      const cluster = Clusters.forEntry(hit) || 'Knowledge';
+      GalaxyFeed.push('kb', `Consulted cluster ${cluster} for “${hit.title.slice(0, 36)}”`);
+      if(window.GalaxyView) window.GalaxyView.highlight(hit.title, `Consulted: ${cluster}`);
+    });
+  }
   aiHistory.push({ role: 'user', content: text });
 
   // Only a bounded slice of history goes over the wire.

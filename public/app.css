@@ -1027,14 +1027,26 @@
 
 
   .galaxy-tip{ position:absolute; left:0; top:0; opacity:0; pointer-events:none;
-    max-width:230px; z-index:4;
-    background: color-mix(in srgb, var(--bg) 94%, transparent);
-    border:1px solid var(--line); border-radius:9px; padding:8px 10px;
-    font-size:12px; line-height:1.45; transition:opacity .12s; }
-  .gt-title{ font-weight:600; color:var(--text); }
-  .gt-cluster{ font-size:11px; margin-top:2px; }
-  .gt-age{ color:var(--muted); font-size:11px; margin-top:3px;
-    font-family:"JetBrains Mono",monospace; }
+    max-width:260px; z-index:10;
+    background: color-mix(in srgb, var(--panel) 92%, #080c14);
+    border:1px solid color-mix(in srgb, var(--accent3) 40%, var(--line));
+    border-radius:10px; padding:9px 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 16px rgba(79, 159, 216, 0.15);
+    font-size:12px; line-height:1.45; transition:opacity .15s ease, transform .15s ease;
+    backdrop-filter: blur(12px); }
+  .gt-title{ font-weight:700; color:var(--text); font-size:12.5px; letter-spacing:-0.01em; }
+  .gt-cluster{ font-size:11px; margin-top:3px; font-weight:600; display:flex; align-items:center; gap:5px; }
+  .gt-age{ color:var(--muted); font-size:10.5px; margin-top:4px;
+    font-family:"JetBrains Mono",monospace; display:flex; justify-content:space-between; }
+  .gt-action-hint{ font-size:9.5px; color:var(--amber); margin-top:5px; border-top:1px dashed var(--line); padding-top:4px; }
+  
+  .galaxy-wrap canvas{ cursor:grab; }
+  .galaxy-wrap canvas.rotating{ cursor:grabbing; }
+  .galaxy-wrap canvas.panning{ cursor:move; }
+
+  .gf-row{ cursor:pointer; border-radius:6px; padding:4px 6px; transition:background 0.15s ease; }
+  .gf-row:hover{ background:rgba(255,255,255,0.06); }
+  .gf-row.highlighted{ background:rgba(242, 167, 27, 0.18); border-left:2px solid var(--amber); }
 
 
   .study-bar{ position:fixed; left:50%; transform:translateX(-50%); bottom:18px;

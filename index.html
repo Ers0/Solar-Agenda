@@ -2375,11 +2375,40 @@
       <button class="star-close" id="star-close" aria-label="Close">×</button>
     </div>
     <div class="star-meta" id="star-meta"></div>
-    <div class="star-body" id="star-body"></div>
-    <div class="star-links" id="star-links"></div>
-    <div class="modal-actions">
-      <button class="btn-ghost" id="star-focus">Focus in galaxy</button>
-      <button class="btn-primary" id="star-open">Open</button>
+
+    <div class="star-cluster-row" id="star-cluster-row" style="display:flex; align-items:center; gap:8px; margin: 8px 0 12px; background:rgba(255,255,255,0.03); padding:8px 10px; border-radius:8px; border:1px solid var(--line);">
+      <span style="font-size:0.75rem; color:var(--muted); font-weight:600; white-space:nowrap;">🌌 Cluster:</span>
+      <select id="star-cluster-select" class="rain-input" style="flex:1; padding:4px 8px; font-size:0.78rem; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--text);"></select>
+      <button type="button" class="btn-ghost" id="star-cluster-apply" style="padding:4px 10px; font-size:0.75rem; white-space:nowrap;">Reallocate</button>
+    </div>
+
+    <div id="star-view-box">
+      <div class="star-body" id="star-body"></div>
+      <div class="star-links" id="star-links"></div>
+    </div>
+
+    <div id="star-edit-box" style="display:none; flex-direction:column; gap:8px; margin-bottom:12px;">
+      <div>
+        <label style="font-size:0.7rem; color:var(--muted); font-weight:600;">Title</label>
+        <input type="text" id="star-edit-title" class="rain-input" style="width:100%; font-size:0.85rem; padding:6px 8px; border-radius:6px;">
+      </div>
+      <div>
+        <label style="font-size:0.7rem; color:var(--muted); font-weight:600;">Tags / Keywords (comma separated)</label>
+        <input type="text" id="star-edit-tags" class="rain-input" style="width:100%; font-size:0.8rem; padding:6px 8px; border-radius:6px;">
+      </div>
+      <div>
+        <label style="font-size:0.7rem; color:var(--muted); font-weight:600;">Details / Summary</label>
+        <textarea id="star-edit-excerpt" class="rain-input" style="width:100%; height:90px; font-size:0.8rem; padding:6px 8px; border-radius:6px; resize:vertical;"></textarea>
+      </div>
+    </div>
+
+    <div class="modal-actions" style="display:flex; justify-content:space-between; width:100%; gap:8px; margin-top:14px;">
+      <button type="button" class="btn-danger" id="star-delete" style="font-size:0.78rem;">🗑️ Delete</button>
+      <div style="display:flex; gap:8px;">
+        <button type="button" class="btn-ghost" id="star-focus">Focus in galaxy</button>
+        <button type="button" class="btn-ghost" id="star-edit-btn">✏️ Edit</button>
+        <button type="button" class="btn-primary" id="star-open">Open</button>
+      </div>
     </div>
   </div>
 </div>

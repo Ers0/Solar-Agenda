@@ -1376,6 +1376,10 @@
           });
           if (this.thinkingStream.length > 50) this.thinkingStream.shift();
           this.renderThinkingStream();
+
+          if (isClient && window.GalaxyFeed) {
+            window.GalaxyFeed.push('web', `DOM Scraped: "${text.slice(0, 42)}..."`);
+          }
         }
 
         // Sync with backend monitor
@@ -1452,6 +1456,13 @@
           latency: '95ms'
         });
         this.renderThinkingStream();
+
+        if (window.GalaxyFeed) {
+          window.GalaxyFeed.push('case', `Jira Kanban: ${key} [${board}] (${clientName})`);
+        }
+        if (window.GalaxyView) {
+          window.GalaxyView.highlight(key, `Jira ${board}`);
+        }
       }
 
       // 5. Google Drive Media Ingestion Event
@@ -1482,6 +1493,13 @@
           latency: '310ms'
         });
         this.renderThinkingStream();
+
+        if (window.GalaxyFeed) {
+          window.GalaxyFeed.push('kb', `Synced ${filename} to Drive: /${folder}`);
+        }
+        if (window.GalaxyView) {
+          window.GalaxyView.highlight(audit.manufacturer || folder, 'Drive Media Sync');
+        }
       }
 
       // 6. Hoymiles account created
