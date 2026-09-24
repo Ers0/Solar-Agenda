@@ -156,6 +156,12 @@
           this.fetchMonitorStream(true);
         }
       }, 8000);
+
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && this.activeSubTab === 'chat') {
+          this.fetchMonitorStream(true);
+        }
+      });
     },
 
     bindEvents() {

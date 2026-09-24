@@ -14876,6 +14876,28 @@ const Galaxy = {
         when: Date.parse(cs.case_date || cs.created_at || 0) || 0
       });
     });
+
+    // Ingest SLA Hub RMA & Warranty cases into Galaxy constellations
+    const slaList = (window.slaCases || []);
+    slaList.forEach(sc => {
+      const mfr = sc.equipment?.manufacturer || 'Warranty & RMA';
+      const assignedCluster = Clusters.map['sla:' + sc.id] || Clusters.map[sc.id] || mfr;
+      const snStr = (sc.equipment?.serial_numbers || []).join(', ');
+      const title = `${sc.customer?.name || 'Cliente'} (${sc.equipment?.model || mfr})`;
+      const excerpt = `[SLA: ${sc.id} · ${sc.status}]\nEquipamento: ${mfr} ${sc.equipment?.model || ''} (SN: ${snStr})\nProblema: ${sc.problem_summary || ''}\nPróxima Ação: ${sc.next_action || ''}`;
+      out.push({
+        id: 'sla:' + sc.id, key: String(title).toLowerCase(), title,
+        tags: ['sla', 'garantia', String(sc.status).toLowerCase(), String(mfr).toLowerCase()],
+        links: [],
+        words: excerpt.split(/\s+/).length,
+        excerpt,
+        folder: assignedCluster + '/',
+        source: 'case',
+        slaId: sc.id,
+        when: Date.parse(sc.created_at || sc.updated_at || 0) || 0
+      });
+    });
+
     return out;
   },
   fromAppNotes(){
@@ -15412,10 +15434,25 @@ document.getElementById('star-cluster-apply')?.addEventListener('click', async (
   // Assign cluster in Clusters map
   Clusters.assign(nodeKey, targetCluster);
   if(starNode.caseId) Clusters.assign('case:' + starNode.caseId, targetCluster);
+  if(starNode.slaId) Clusters.assign('sla:' + starNode.slaId, targetCluster);
   if(starNode.noteId) Clusters.assign('note:' + starNode.noteId, targetCluster);
   if(starNode.ref?.id) Clusters.assign(starNode.ref.id, targetCluster);
 
-  // If this is a case, update the case in cases array
+  // If this is an SLA case, update the equipment manufacturer / cluster in window.slaCases
+  if(starNode.slaId && window.slaCases){
+    const sc = window.slaCases.find(x => x.id === starNode.slaId);
+    if(sc && sc.equipment){
+      sc.equipment.manufacturer = targetCluster;
+      try {
+        fetch('/api/sla-cases', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ case: sc, cases: window.slaCases })
+        }).catch(() => {});
+      } catch(e){}
+    }
+  }
+
+  // If this is an agenda case, update the case in cases array
   if(starNode.source === 'case' && starNode.caseId){
     const cse = cases.find(c => c.id === starNode.caseId);
     if(cse){
@@ -15445,7 +15482,16 @@ document.getElementById('star-delete')?.addEventListener('click', async () => {
   hideStar();
 
   try {
-    if(n.source === 'case' && n.caseId){
+    if(n.slaId && window.slaCases){
+      window.slaCases = window.slaCases.filter(x => x.id !== n.slaId);
+      try {
+        fetch('/api/sla-cases', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cases: window.slaCases })
+        }).catch(() => {});
+      } catch(e){}
+      GalaxyFeed.push('close', `Deleted SLA case “${title}”`);
+    } else if(n.source === 'case' && n.caseId){
       await deleteCaseApi(n.caseId);
       GalaxyFeed.push('close', `Deleted case “${title}”`);
     } else if(n.source === 'app' && n.noteId){
@@ -15529,6 +15575,11 @@ document.getElementById('star-open')?.addEventListener('click', () => {
   const n = starNode; 
   hideStar();
   if(!n) return;
+  if(n.slaId){
+    switchView('sla-hub');
+    if(window.SLAHub?.openCaseModal) window.SLAHub.openCaseModal(n.slaId);
+    return;
+  }
   if(n.source === 'tpl' && n.tpl) return openCompose(n.tpl, {});
   if(n.source === 'case' && n.caseId) return openModal(n.caseId);
   if(n.source === 'app' && n.noteId){
