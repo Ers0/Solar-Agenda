@@ -3,7 +3,7 @@ const path = require('path');
 const archiver = require('archiver');
 
 const output = fs.createWriteStream(path.join(__dirname, '..', 'public', 'tars-vision-bridge.zip'));
-const archive = archiver('zip', { zlib: { level: 9 } });
+const archive = new archiver.ZipArchive({ zlib: { level: 9 } });
 
 output.on('close', function () {
   console.log('Successfully zipped ' + archive.pointer() + ' bytes into public/tars-vision-bridge.zip');
