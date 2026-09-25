@@ -17,34 +17,102 @@
   (function() {
     const origError = console.error;
     const origWarn = console.warn;
+    const origLog = console.log;
+    const origInfo = console.info;
+
+    function isViteWsMessage(args) {
+      return args.some(function(a) {
+        const msg = (a && typeof a === 'object' && a.message) ? a.message : String(a || '');
+        const lower = msg.toLowerCase();
+        return lower.includes('websocket') ||
+               lower.includes('[vite]') ||
+               lower.includes('closed without opened') ||
+               lower.includes('failed to connect to websocket') ||
+               lower.includes('server connection lost');
+      });
+    }
+
     console.error = function(...args) {
-      const msg = args.map(a => (a && a.message) ? a.message : String(a)).join(' ');
-      if (msg.includes('WebSocket') || msg.includes('[vite]') || msg.includes('closed without opened')) return;
+      if (isViteWsMessage(args)) return;
       origError.apply(console, args);
     };
     console.warn = function(...args) {
-      const msg = args.map(a => (a && a.message) ? a.message : String(a)).join(' ');
-      if (msg.includes('WebSocket') || msg.includes('[vite]') || msg.includes('closed without opened')) return;
+      if (isViteWsMessage(args)) return;
       origWarn.apply(console, args);
     };
+    console.log = function(...args) {
+      if (isViteWsMessage(args)) return;
+      origLog.apply(console, args);
+    };
+    console.info = function(...args) {
+      if (isViteWsMessage(args)) return;
+      origInfo.apply(console, args);
+    };
+
     window.addEventListener('error', function(e) {
       const msg = e ? (e.message || (e.error && e.error.message) || String(e)) : '';
-      if (msg.includes('WebSocket') || msg.includes('[vite]') || msg.includes('closed without opened')) {
+      const lower = msg.toLowerCase();
+      if (lower.includes('websocket') || lower.includes('[vite]') || lower.includes('closed without opened')) {
         e.preventDefault?.();
         e.stopPropagation?.();
         e.stopImmediatePropagation?.();
         return false;
       }
     }, true);
+
     window.addEventListener('unhandledrejection', function(e) {
       const reason = e.reason ? (e.reason.message || String(e.reason)) : '';
-      if (reason.includes('WebSocket') || reason.includes('[vite]') || reason.includes('closed without opened')) {
+      const lower = reason.toLowerCase();
+      if (lower.includes('websocket') || lower.includes('[vite]') || lower.includes('closed without opened')) {
         e.preventDefault?.();
         e.stopPropagation?.();
         e.stopImmediatePropagation?.();
         return false;
       }
     }, true);
+
+    // Suppress Vite HMR WebSocket connection attempts when HMR is disabled
+    try {
+      const OriginalWebSocket = window.WebSocket;
+      if (OriginalWebSocket) {
+        window.WebSocket = function(url, protocols) {
+          const urlStr = typeof url === 'string' ? url : (url && url.href ? url.href : '');
+          const isViteHmr = urlStr.includes('vite-hmr') ||
+                            (typeof protocols === 'string' && protocols.includes('vite-hmr')) ||
+                            (Array.isArray(protocols) && protocols.includes('vite-hmr'));
+          if (isViteHmr) {
+            const dummyTarget = new EventTarget();
+            return {
+              CONNECTING: 0,
+              OPEN: 1,
+              CLOSING: 2,
+              CLOSED: 3,
+              readyState: 3, // CLOSED
+              bufferedAmount: 0,
+              extensions: '',
+              protocol: Array.isArray(protocols) ? protocols.join(',') : (protocols || ''),
+              url: urlStr,
+              binaryType: 'blob',
+              onopen: null,
+              onmessage: null,
+              onerror: null,
+              onclose: null,
+              send: function() {},
+              close: function() {},
+              addEventListener: dummyTarget.addEventListener.bind(dummyTarget),
+              removeEventListener: dummyTarget.removeEventListener.bind(dummyTarget),
+              dispatchEvent: dummyTarget.dispatchEvent.bind(dummyTarget),
+            };
+          }
+          return new OriginalWebSocket(url, protocols);
+        };
+        window.WebSocket.CONNECTING = 0;
+        window.WebSocket.OPEN = 1;
+        window.WebSocket.CLOSING = 2;
+        window.WebSocket.CLOSED = 3;
+        window.WebSocket.prototype = OriginalWebSocket.prototype;
+      }
+    } catch (_) {}
   })();
 </script>
 <link rel="stylesheet" href="/app.css">
