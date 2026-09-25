@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "cleanUrls": false,
+  "rewrites": [
+    {
+      "source": "/agenda-:path*",
+      "destination": "/api/agenda-:path*"
+    },
+    {
+      "source": "/agenda/:path*",
+      "destination": "/api/agenda/:path*"
+    },
+    {
+      "source": "/jira-webhook",
+      "destination": "/api/jira-webhook"
+    },
+    {
+      "source": "/send-email",
+      "destination": "/api/send-email"
+    },
+    {
+      "source": "/smtp-status",
+      "destination": "/api/smtp-status"
+    },
+    {
+      "source": "/test-smtp",
+      "destination": "/api/test-smtp"
+    },
+    {
+      "source": "/ml-export-dataset",
+      "destination": "/api/ml-export-dataset"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/((?!api/|agenda-|_next|favicon\\.ico|.*\\.[\\w]+$).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
