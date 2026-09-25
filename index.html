@@ -768,6 +768,19 @@
           <div class="field" style="flex:2"><label>Sender Display Name</label><input type="text" id="smtp-from-name" placeholder="Solar Operations AI"></div>
           <div class="field" style="flex:2"><label>Test Recipient</label><input type="email" id="smtp-test-to" placeholder="yourpersonal@email.com"></div>
         </div>
+
+        <div class="field" style="margin-top:4px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="margin:0; font-weight:600; font-size:0.82rem;">HTML Email Signature (Assinatura HTML)</label>
+            <button type="button" class="btn-ghost" id="smtp-sig-preview-btn" style="padding:2px 8px; font-size:0.75rem; border-radius:6px;">👁️ Pré-visualizar Assinatura</button>
+          </div>
+          <textarea id="smtp-signature" rows="4" placeholder="Cole aqui sua assinatura em HTML (ex: <table><tr><td><img src='...'></td><td><b>Nome</b><br>Belenergy</td></tr></table>)..." style="width:100%; border-radius:8px; padding:8px 10px; font-family:monospace; font-size:0.78rem; resize:vertical; line-height:1.4; background:var(--bg); border:1px solid var(--line); color:var(--text);"></textarea>
+          <div id="smtp-sig-preview-container" style="display:none; margin-top:8px; padding:12px; border:1px solid var(--line); border-radius:8px; background:#ffffff; color:#1f2937; max-height:220px; overflow-y:auto; box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+            <div style="font-size:0.7rem; text-transform:uppercase; color:#6b7280; font-weight:700; margin-bottom:6px; border-bottom:1px solid #e5e7eb; padding-bottom:4px;">Preview da Assinatura Renderizada:</div>
+            <div id="smtp-sig-preview-content"></div>
+          </div>
+        </div>
+
         <div class="set-actions" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
           <button class="btn-primary" id="smtp-save-btn">Save Credentials</button>
           <button class="btn-ghost" id="smtp-test-btn">Verify Connection</button>
@@ -2653,6 +2666,15 @@
 
     <div class="field"><label>Subject</label><input type="text" id="compose-subject" placeholder="Solar Agenda Diagnostics Summary"></div>
     <div class="field"><label>Message</label><textarea id="compose-body" style="min-height:200px" placeholder="Write or review your technical message..."></textarea></div>
+    
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+      <label style="display:inline-flex; align-items:center; gap:6px; font-size:0.78rem; cursor:pointer; color:var(--text-muted,#8b949e);">
+        <input type="checkbox" id="compose-include-sig-chk" checked style="accent-color:var(--amber);">
+        <span>Anexar Assinatura HTML no envio</span>
+      </label>
+      <span id="compose-sig-status-badge" style="font-size:0.72rem; color:var(--teal); font-weight:600; display:none;">✓ Assinatura ativa</span>
+    </div>
+
     <div id="compose-status" style="font-size:0.8rem; margin:6px 0 10px; font-weight:600; min-height:18px;"></div>
     <div class="modal-actions" style="flex-wrap:wrap; gap:8px;">
       <button class="btn-ghost" id="compose-copy">Copy</button>

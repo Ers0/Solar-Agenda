@@ -13892,6 +13892,9 @@ document.getElementById('compose-copy')?.addEventListener('click', () => {
 
 async function sendEmailViaApi(to, subject, text, cc, attachments){
   const cfg = typeof SmtpDispatcher !== 'undefined' ? SmtpDispatcher.get() : JSON.parse(localStorage.getItem('solar-agenda-smtp-config') || '{}');
+  const includeSig = document.getElementById('compose-include-sig-chk') ? document.getElementById('compose-include-sig-chk').checked : true;
+  const signature = (includeSig && cfg.signature) ? cfg.signature : undefined;
+
   const res = await fetch('/api/send-email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -13900,6 +13903,7 @@ async function sendEmailViaApi(to, subject, text, cc, attachments){
       subject,
       text,
       cc: cc || undefined,
+      signature,
       smtpConfig: (cfg.user && cfg.pass) ? cfg : undefined,
       attachments: (attachments && attachments.length > 0) ? attachments : undefined
     })
@@ -14173,6 +14177,18 @@ function loadMailcorpSettings(){
     document.getElementById('smtp-secure').value = String(cfg.secure);
   }
   if(fromInput && cfg.from !== undefined) fromInput.value = cfg.from;
+  const sigInput = document.getElementById('smtp-signature');
+  if(sigInput && cfg.signature !== undefined) sigInput.value = cfg.signature;
+
+  const sigBadge = document.getElementById('compose-sig-status-badge');
+  if(sigBadge){
+    if(cfg.signature && cfg.signature.trim()){
+      sigBadge.style.display = 'inline-block';
+      sigBadge.textContent = '✓ Assinatura ativa';
+    } else {
+      sigBadge.style.display = 'none';
+    }
+  }
 
   fetch('/api/send-email')
     .then(r => r.json())
@@ -14211,8 +14227,9 @@ function autoSaveSmtpFields(){
     const port = document.getElementById('smtp-port')?.value.trim() || (provider === 'gmail' ? '465' : '587');
     const secure = document.getElementById('smtp-secure')?.value === 'true';
     const from = document.getElementById('smtp-from-name')?.value.trim() || '';
+    const signature = document.getElementById('smtp-signature')?.value || '';
 
-    const cfg = { provider, user, pass, host, port, secure, from };
+    const cfg = { provider, user, pass, host, port, secure, from, signature };
     SmtpDispatcher.save(cfg);
 
     const badge = document.getElementById('smtp-status-badge');
@@ -14220,11 +14237,21 @@ function autoSaveSmtpFields(){
       badge.textContent = `Ready: ${user.toLowerCase().endsWith('@gmail.com') ? 'Gmail' : 'Connected'} (${user}) [Auto-Saved]`;
       badge.style.color = 'var(--teal)';
     }
+
+    const sigBadge = document.getElementById('compose-sig-status-badge');
+    if(sigBadge){
+      if(signature.trim()){
+        sigBadge.style.display = 'inline-block';
+        sigBadge.textContent = '✓ Assinatura ativa';
+      } else {
+        sigBadge.style.display = 'none';
+      }
+    }
   }, 400);
 }
 
 // Bind auto-save listeners on all SMTP inputs
-['smtp-email', 'smtp-pass', 'smtp-host', 'smtp-port', 'smtp-from-name'].forEach(id => {
+['smtp-email', 'smtp-pass', 'smtp-host', 'smtp-port', 'smtp-from-name', 'smtp-signature'].forEach(id => {
   const el = document.getElementById(id);
   if(el){
     el.addEventListener('input', autoSaveSmtpFields);
@@ -14234,6 +14261,20 @@ function autoSaveSmtpFields(){
 document.getElementById('smtp-provider')?.addEventListener('change', autoSaveSmtpFields);
 document.getElementById('smtp-provider-preset')?.addEventListener('change', autoSaveSmtpFields);
 document.getElementById('smtp-secure')?.addEventListener('change', autoSaveSmtpFields);
+
+// Signature live preview toggle
+document.getElementById('smtp-sig-preview-btn')?.addEventListener('click', () => {
+  const container = document.getElementById('smtp-sig-preview-container');
+  const preview = document.getElementById('smtp-sig-preview-content');
+  const sig = document.getElementById('smtp-signature')?.value || '';
+  if(!container) return;
+  if(container.style.display === 'none' || !container.style.display){
+    preview.innerHTML = sig || '<i style="color:#6b7280;">Nenhuma assinatura digitada. Cole seu código HTML acima.</i>';
+    container.style.display = 'block';
+  } else {
+    container.style.display = 'none';
+  }
+});
 
 document.getElementById('goto-connections-email')?.addEventListener('click', () => {
   const connTab = document.querySelector('.sub-tab[data-sub="integrations"]') || document.querySelector('.sub-tab[data-sub="connections"]');
@@ -14254,9 +14295,10 @@ document.getElementById('smtp-save-btn')?.addEventListener('click', () => {
   const port = document.getElementById('smtp-port')?.value.trim() || (provider === 'gmail' ? '465' : '587');
   const secure = document.getElementById('smtp-secure')?.value === 'true';
   const from = document.getElementById('smtp-from-name')?.value.trim() || '';
+  const signature = document.getElementById('smtp-signature')?.value || '';
   const feedback = document.getElementById('smtp-feedback');
 
-  const cfg = { provider, user, pass, host, port, secure, from };
+  const cfg = { provider, user, pass, host, port, secure, from, signature };
   SmtpDispatcher.save(cfg, true);
   loadMailcorpSettings();
 

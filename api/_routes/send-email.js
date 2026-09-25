@@ -49,7 +49,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const { to, cc, subject, text, html, smtpConfig } = body || {};
+    const { to, cc, subject, text, html, signature, smtpConfig, attachments } = body || {};
     userEmail = smtpConfig?.user || "";
 
     if (!to) {
@@ -62,13 +62,22 @@ export default async function handler(req, res) {
     const transporter = getTransporter(smtpConfig);
     const fromAddr = smtpConfig?.from || smtpConfig?.user || process.env.SMTP_FROM || process.env.SMTP_USER;
 
+    const sig = signature || smtpConfig?.signature || process.env.SMTP_SIGNATURE || "";
+    let finalHtml = html;
+    if (!finalHtml) {
+      const bodyHtml = text ? `<div style="font-family: sans-serif; line-height: 1.6; color: #1f2937;">${String(text).replace(/\n/g, "<br/>")}</div>` : "";
+      finalHtml = sig ? `${bodyHtml}<br/><br/><div class="email-signature" style="margin-top:20px;border-top:1px solid #e5e7eb;padding-top:15px;">${sig}</div>` : (bodyHtml || undefined);
+    } else if (sig && !finalHtml.includes(sig)) {
+      finalHtml = `${finalHtml}<br/><br/><div class="email-signature" style="margin-top:20px;border-top:1px solid #e5e7eb;padding-top:15px;">${sig}</div>`;
+    }
+
     const mailOptions = {
       from: fromAddr ? `Solar Agenda <${fromAddr}>` : undefined,
       to,
       cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc) : undefined,
       subject,
       text: text || undefined,
-      html: html || (text ? `<div style="font-family: sans-serif; line-height: 1.6; color: #1f2937;">${String(text).replace(/\n/g, "<br/>")}</div>` : undefined),
+      html: finalHtml,
     };
 
     const sendPromise = transporter.sendMail(mailOptions);

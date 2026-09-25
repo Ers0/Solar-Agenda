@@ -253,7 +253,7 @@ app.post(["/api/send-email", "/api/test-smtp"], async (req, res) => {
       return res.json({ ok: true, message: "Connection to email server verified successfully! Ready to dispatch messages." });
     }
 
-    const { to, cc, subject, text, html, smtpConfig, attachments } = req.body;
+    const { to, cc, subject, text, html, signature, smtpConfig, attachments } = req.body;
 
     if (!to) {
       return res.status(400).json({ ok: false, error: "Recipient ('to') email address is required." });
@@ -265,13 +265,22 @@ app.post(["/api/send-email", "/api/test-smtp"], async (req, res) => {
     const transporter = getTransporter(smtpConfig);
     const fromAddr = smtpConfig?.from || smtpConfig?.user || process.env.SMTP_FROM || process.env.SMTP_USER;
 
+    const sig = signature || smtpConfig?.signature || process.env.SMTP_SIGNATURE || "";
+    let finalHtml = html;
+    if (!finalHtml) {
+      const bodyHtml = text ? `<div style="font-family: sans-serif; line-height: 1.6; color: #1f2937;">${String(text).replace(/\n/g, "<br/>")}</div>` : "";
+      finalHtml = sig ? `${bodyHtml}<br/><br/><div class="email-signature" style="margin-top:20px;border-top:1px solid #e5e7eb;padding-top:15px;">${sig}</div>` : (bodyHtml || undefined);
+    } else if (sig && !finalHtml.includes(sig)) {
+      finalHtml = `${finalHtml}<br/><br/><div class="email-signature" style="margin-top:20px;border-top:1px solid #e5e7eb;padding-top:15px;">${sig}</div>`;
+    }
+
     const mailOptions: any = {
       from: fromAddr ? `Solar Agenda <${fromAddr}>` : undefined,
       to,
       cc: cc ? (Array.isArray(cc) ? cc.join(', ') : cc) : undefined,
       subject,
       text: text || undefined,
-      html: html || (text ? `<div style="font-family: sans-serif; line-height: 1.6; color: #1f2937;">${String(text).replace(/\n/g, "<br/>")}</div>` : undefined),
+      html: finalHtml,
     };
 
     if (Array.isArray(attachments) && attachments.length > 0) {
