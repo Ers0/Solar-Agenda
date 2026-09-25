@@ -270,6 +270,8 @@
       try {
         const res = await fetch('/api/tars/assistant/monitor-stream');
         if (res.ok) {
+          const ct = res.headers.get('content-type') || '';
+          if (!ct.includes('application/json')) return;
           const data = await res.json();
           if (data.protocol) {
             this.protocolContext = data.protocol;
@@ -1224,6 +1226,8 @@
       try {
         const res = await fetch('/api/tars/assistant/workflow-learning');
         if (res.ok) {
+          const ct = res.headers.get('content-type') || '';
+          if (!ct.includes('application/json')) return;
           const data = await res.json();
           this.workflowLearnings = data.workflows || [];
           this.saveOfflineCache();

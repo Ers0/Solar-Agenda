@@ -319,6 +319,15 @@
     try {
       const resp = await fetch('/api/sla-cases');
       if (resp.ok) {
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+          slaCases = loadLocalSLACases();
+          if (!Array.isArray(slaCases)) slaCases = generateSeedSLACases();
+          window.slaCases = slaCases;
+          updateSLAStats();
+          renderSLACasesGrid();
+          return slaCases;
+        }
         const raw = await resp.json();
         let loaded = null;
         if (Array.isArray(raw)) {

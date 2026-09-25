@@ -535,6 +535,10 @@ async function loadCases(){
     if(!resp.ok) {
       throw new Error("HTTP " + resp.status);
     }
+    const ct = resp.headers.get("content-type") || "";
+    if(!ct.includes("application/json")){
+      throw new Error("Invalid response format (non-JSON): " + ct);
+    }
     const raw = await resp.json();
     cases = await Promise.all((raw || []).map(openCase));
     try { localStorage.setItem(userStorageKey, JSON.stringify(raw)); } catch(e){}
@@ -2173,6 +2177,8 @@ const Background = {
         body: JSON.stringify(scanNow ? { scanNow:true } : {}),
       });
       if(!r.ok) return [];
+      const ct = r.headers.get('content-type') || '';
+      if(!ct.includes('application/json')) return [];
       const d = await r.json();
       this.items = d.notifications || [];
       return this.items;
@@ -14223,6 +14229,8 @@ async function loadJiraSettings() {
   try {
     const res = await fetch('/api/jira/status');
     if (!res.ok) return;
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) return;
     const data = await res.json();
     if (!data.ok) return;
 
@@ -17440,7 +17448,8 @@ async function providerStatus(force){
     const r = await fetch(FN_URL + "/agenda-ai", {
       method:'POST', headers: authHeaders(), body: JSON.stringify({ probe:true }),
     });
-    providerCache = r.ok ? await r.json() : null;
+    const ct = r.headers.get('content-type') || '';
+    providerCache = (r.ok && ct.includes('application/json')) ? await r.json() : null;
   }catch(e){ providerCache = null; }
   return providerCache || { label:'unknown', model:'unknown', providers:[], unconfigured:[] };
 }
@@ -18942,6 +18951,8 @@ async function fetchVaultKey(){
   try{
     const r = await fetch(FN_URL + "/agenda-vault", { method: "POST", headers: authHeaders() });
     if(!r.ok) return false;
+    const ct = r.headers.get('content-type') || '';
+    if(!ct.includes('application/json')) return false;
     const { key } = await r.json();
     if(!key) return false;
     cryptoKey = await crypto.subtle.importKey('raw', b64Buf(key),
@@ -19334,6 +19345,12 @@ const UserMgmt = {
     try {
       const res = await fetch('/api/auth/users');
       if (!res.ok) {
+        this.users = this.getLocalUsers();
+        this.render();
+        return;
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
         this.users = this.getLocalUsers();
         this.render();
         return;
