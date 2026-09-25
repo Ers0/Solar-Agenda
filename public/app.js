@@ -4086,6 +4086,7 @@ async function callAiAgent(messages, tools, opts){
   lastLatency = data.latency_ms ?? null;
   lastModel = data.model || null;
   lastReasoner = !!data.reasoner;
+  lastAgentSources = Array.isArray(data.sources) ? data.sources : (Array.isArray(data.grounding_chunks) ? data.grounding_chunks : []);
   if(data.recovered) console.info('[assistant] recovered:', data.recovered);
   return data.message || { content: data.reply || '' };
 }
@@ -4112,17 +4113,27 @@ const ToolAudit = {
 
 // Search sits behind a provider so the backend can change without touching
 // the tool, and so a failure is reported as a failure.
+let lastAgentSources = [];
+
 const WebSearch = {
   async run(query, lang){
     try{
       const r = await fetch(FN_URL + "/agenda-search", {
         method:'POST', headers: authHeaders(),
-        body: JSON.stringify({ query, lang: lang || VOICE.lang }),
+        body: JSON.stringify({ query, mode: 'web', lang: lang || VOICE.lang }),
       });
       const out = await readJson(r);
-      if(!out.ok) return { ok:false, error: out.json.error || 'search service returned an error', results:[] };
-      return { ok:true, results: out.json.results || [], via: out.json.via, tried: out.json.tried };
-    }catch(e){ return { ok:false, error:'search service unreachable', results:[] }; }
+      if(!out.ok) return { ok:false, error: out.json.error || 'search service returned an error', results:[], sources:[] };
+      return {
+        ok:true,
+        answer: out.json.answer || '',
+        results: out.json.results || [],
+        sources: out.json.sources || out.json.webSources || [],
+        searchQueries: out.json.searchQueries || [],
+        via: out.json.engine || 'Google Search Grounding (Gemini)',
+        tried: out.json.searchQueries
+      };
+    }catch(e){ return { ok:false, error:'search service unreachable', results:[], sources:[] }; }
   },
 };
 
@@ -4130,15 +4141,25 @@ const TOOLS = [
   {
     name: 'web_search',
     permission: PERM.READ,
-    description: "Search the public web for current information, news, product specs or error codes not present in the user's own data. Never for the user's cases, notes or schedule.",
-    schema: { type:'object', properties:{ query:{ type:'string', description:'A short search query.' } }, required:['query'] },
+    description: "Search the public web for current technical solar inverter information, datasheets, error codes, firmware, or grid regulations using Google Search Grounding. Always returns grounded facts and verified source links.",
+    schema: { type:'object', properties:{ query:{ type:'string', description:'A short technical search query.' } }, required:['query'] },
     async execute(args){
       const res = await WebSearch.run(args.query);
       if(!res.ok) return `SEARCH FAILED (${res.error}). Say plainly that you could not reach the web — do not answer from memory as though you had searched.`;
-      if(!res.results.length)
+      if(!res.results.length && !res.answer)
         return `No results for "${args.query}"${res.tried ? ' (tried ' + res.tried.join(', ') + ')' : ''}. `
              + 'Say you found nothing — do not substitute your own knowledge as though it were a search result.';
-      return res.results.map(x => `- ${x.title}: ${x.snippet}`).join('\n').slice(0, 1800);
+      
+      let out = "";
+      if(res.answer) {
+        out += res.answer + "\n\n";
+      }
+      if(res.sources && res.sources.length) {
+        out += "Fontes verificadas (Google Search Grounding):\n" + res.sources.map(s => `- [${s.title}](${s.url}) (${s.domain || 'web'})`).join('\n');
+      } else if(res.results && res.results.length) {
+        out += res.results.map(x => `- ${x.title}: ${x.snippet}${x.url ? ' (' + x.url + ')' : ''}`).join('\n');
+      }
+      return out.slice(0, 2400);
     },
   },
   {
@@ -16906,6 +16927,21 @@ async function runAssistantTurn(text, spoken){
       sources.push({ type:'mem', label: String(m.content).slice(0, 60), id: 'MEM' });
   });
 
+  // Blend Google Search Grounding sources returned from server
+  if (Array.isArray(lastAgentSources) && lastAgentSources.length > 0) {
+    lastAgentSources.forEach(s => {
+      const uri = s.url || s.web?.uri || '';
+      const title = s.title || s.web?.title || s.domain || 'Google Search';
+      let domain = s.domain || '';
+      if (!domain && uri) {
+        try { domain = new URL(uri).hostname.replace(/^www\./, ''); } catch (e) {}
+      }
+      if (uri && !sources.some(existing => existing.url === uri)) {
+        sources.push({ type: 'web', label: title, url: uri, domain, id: 'GOOGLE' });
+      }
+    });
+  }
+
   const res = {
     spoken: toSpoken(display),
     display,
@@ -16926,10 +16962,10 @@ function renderTurn(res){
   if(res.sources.length){
     const s = document.createElement('div');
     s.className = 'msg-sources';
-    s.innerHTML = '<div class="src-head">Sources</div>' + res.sources.map(x => `
+    s.innerHTML = '<div class="src-head">📚 Fontes & Citações Verificadas</div>' + res.sources.map(x => `
       <div class="src-card ${x.type}">
-        <span class="src-kind">${x.type === 'web' ? 'WEB' : x.type === 'mem' ? 'MEMORY' : x.type === 'rule' ? 'LEARNED' : (x.id || 'KB')}</span>
-        ${x.url ? `<a class="src-label" href="${x.url}" target="_blank" rel="noopener">${escapeHtml(x.label || '')}</a>`
+        <span class="src-kind">${x.type === 'web' ? '🌐 GOOGLE SEARCH' : x.type === 'mem' ? 'MEMORY' : x.type === 'rule' ? 'LEARNED' : (x.id || 'KB')}</span>
+        ${x.url ? `<a class="src-label" href="${x.url}" target="_blank" rel="noopener" title="${escapeHtml(x.url)}">${escapeHtml(x.label || '')}${x.domain ? ' <span style="opacity:0.75;font-size:0.72rem;">(' + escapeHtml(x.domain) + ')</span>' : ''} ↗</a>`
                 : `<span class="src-label">${escapeHtml(x.label || '')}</span>`}
       </div>`).join('');
     bubble.appendChild(s);

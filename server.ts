@@ -37,6 +37,7 @@ import {
   ChatbotProblemAlert
 } from "./server/tars-alerts";
 import { SolarRAGEngine, chunkTechnicalDocument, normalizeOcrText, extractTechnicalTokens } from "./server/rag-engine";
+import { performGroundedWebSearch, performUnifiedSearch, GroundedWebSource, GroundedSearchResult } from "./server/tars-search";
 
 dotenv.config();
 
@@ -3982,8 +3983,10 @@ app.all(["/agenda-ai", "/api/agenda-ai"], async (req, res) => {
         }
       }
 
-      // Format tools for Gemini API
-      let geminiTools: any[] | undefined = undefined;
+      // Format tools for Gemini API with Google Search Grounding
+      let geminiTools: any[] = [{ googleSearch: {} }];
+      let toolConfig: any = undefined;
+
       if (Array.isArray(tools) && tools.length > 0) {
         const functionDeclarations = tools.map((t: any) => {
           const fn = t.function || t;
@@ -3993,24 +3996,30 @@ app.all(["/agenda-ai", "/api/agenda-ai"], async (req, res) => {
             parameters: fn.parameters || fn.schema || { type: "object", properties: {} }
           };
         });
-        geminiTools = [{ functionDeclarations }];
+        geminiTools.push({ functionDeclarations });
+        toolConfig = { includeServerSideToolInvocations: true };
       }
 
-      // Try candidate models in order of stability (preferring gemini-2.5-flash)
-      const candidateModels = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.0-flash", "gemini-flash-latest"];
+      // Try candidate models in order of stability (preferring gemini-3.8-flash with Google Search Grounding)
+      const candidateModels = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash"];
       let response: any = null;
-      let usedModel = "gemini-2.5-flash";
+      let usedModel = "gemini-3.8-flash";
 
       for (const modelCandidate of candidateModels) {
         try {
+          const config: any = {
+            systemInstruction: systemMsg ? (systemInstruction + "\n\n" + systemMsg) : systemInstruction,
+            tools: geminiTools,
+            temperature: 0.3
+          };
+          if (toolConfig) {
+            config.toolConfig = toolConfig;
+          }
+
           response = await ai.models.generateContent({
             model: modelCandidate,
             contents,
-            config: {
-              systemInstruction: systemMsg ? (systemInstruction + "\n\n" + systemMsg) : systemInstruction,
-              tools: geminiTools,
-              temperature: 0.4
-            }
+            config
           });
           if (response) {
             usedModel = modelCandidate;
@@ -4042,6 +4051,27 @@ app.all(["/agenda-ai", "/api/agenda-ai"], async (req, res) => {
           }
         }));
 
+        // Extract Google Search Grounding metadata
+        const candidate = response.candidates?.[0];
+        const groundingMeta = candidate?.groundingMetadata;
+        const rawChunks = groundingMeta?.groundingChunks || [];
+        const webSearchQueries = groundingMeta?.webSearchQueries || [];
+        const searchEntryPoint = groundingMeta?.searchEntryPoint?.renderedContent || undefined;
+
+        const sources = rawChunks
+          .filter((c: any) => c.web && c.web.uri)
+          .map((c: any) => {
+            let domain = "web";
+            try { domain = new URL(c.web.uri).hostname.replace(/^www\./, ""); } catch (e) {}
+            return {
+              title: c.web.title || domain,
+              url: c.web.uri,
+              snippet: c.web.title || c.web.uri,
+              domain,
+              source: "Google Search Grounding"
+            };
+          });
+
         const replyText = response.text || "";
         const latencyMs = Date.now() - startTime;
 
@@ -4050,8 +4080,12 @@ app.all(["/agenda-ai", "/api/agenda-ai"], async (req, res) => {
           liveThinkingStream.unshift({
             id: "th-agent-" + Date.now(),
             phase: "TARS Neural Agent",
-            title: tool_calls.length > 0 ? `Executando ${tool_calls.map(tc => tc.function.name).join(", ")}` : "Resposta contextual gerada",
-            detail: tool_calls.length > 0 ? `Argumentos: ${tool_calls.map(tc => tc.function.arguments).join("; ")}` : replyText.slice(0, 120),
+            title: tool_calls.length > 0
+              ? `Executando ${tool_calls.map(tc => tc.function.name).join(", ")}`
+              : (sources.length > 0 ? `Google Search Grounding (${sources.length} fontes)` : "Resposta contextual gerada"),
+            detail: tool_calls.length > 0
+              ? `Argumentos: ${tool_calls.map(tc => tc.function.arguments).join("; ")}`
+              : (sources.length > 0 ? `Fontes: ${sources.map(s => s.domain).join(", ")}` : replyText.slice(0, 120)),
             timestamp: new Date().toISOString(),
             type: "ai_inference",
             latency: `${latencyMs}ms`
@@ -4069,6 +4103,10 @@ app.all(["/agenda-ai", "/api/agenda-ai"], async (req, res) => {
             content: replyText,
             tool_calls: tool_calls.length > 0 ? tool_calls : undefined
           },
+          sources: sources.length > 0 ? sources : undefined,
+          grounding_chunks: rawChunks.length > 0 ? rawChunks : undefined,
+          web_search_queries: webSearchQueries.length > 0 ? webSearchQueries : undefined,
+          search_entry_point: searchEntryPoint,
           reply: replyText
         });
       }
@@ -5087,7 +5125,7 @@ app.all(["/agenda-handwriting", "/api/agenda-handwriting"], (req, res) => {
 app.all(["/agenda-memory", "/api/agenda-memory"], (req, res) => {
   res.json({ ok: true, memory: {} });
 });
-app.all(["/agenda-search-kb", "/api/agenda-search-kb", "/agenda-search", "/api/agenda-search"], async (req, res) => {
+app.all(["/agenda-search-kb", "/api/agenda-search-kb"], async (req, res) => {
   try {
     const q = String(req.query?.q || req.body?.q || req.query?.query || req.body?.query || req.query?.term || req.body?.term || "").trim();
     if (!q) {
@@ -5120,6 +5158,72 @@ app.all(["/agenda-search-kb", "/api/agenda-search-kb", "/agenda-search", "/api/a
     res.json({ ok: false, error: err?.message || String(err), results: [] });
   }
 });
+
+// --- Enhanced Search Grounding & Unified Search API ---
+app.all(["/agenda-search", "/api/agenda-search", "/api/tars/search", "/api/tars/web-search"], async (req, res) => {
+  try {
+    const q = String(req.query?.q || req.body?.q || req.query?.query || req.body?.query || req.query?.term || req.body?.term || "").trim();
+    const mode = String(req.query?.mode || req.body?.mode || "all").toLowerCase() as "all" | "web" | "kb";
+    const lang = String(req.query?.lang || req.body?.lang || "pt");
+
+    if (!q) {
+      return res.json({ ok: true, results: [], webSources: [], message: "Query vazia." });
+    }
+
+    if (mode === "web") {
+      const grounded = await performGroundedWebSearch(q, { lang });
+      return res.json({
+        ok: grounded.ok,
+        query: q,
+        mode: "web",
+        engine: "Google Search Grounding (Gemini)",
+        model: grounded.model,
+        answer: grounded.answer,
+        webSources: grounded.sources,
+        sources: grounded.sources,
+        searchQueries: grounded.searchQueries,
+        searchEntryPoint: grounded.searchEntryPoint,
+        results: grounded.results,
+        latency_ms: grounded.latency_ms,
+        error: grounded.error
+      });
+    }
+
+    const unified = await performUnifiedSearch(q, { mode, lang, topK: 6 });
+    
+    // Combine web results and KB results into unified results array for tools/UI
+    const formattedWeb = (unified.webSources || []).map(s => ({
+      title: s.title,
+      content: s.title,
+      snippet: s.title + (s.domain ? ` — ${s.domain}` : ""),
+      url: s.url,
+      domain: s.domain,
+      source: `Google Search Grounding (${s.domain || "web"})`,
+      isWebGrounded: true
+    }));
+
+    const allResults = [...formattedWeb, ...unified.kbResults];
+
+    return res.json({
+      ok: true,
+      query: q,
+      mode: unified.mode,
+      engine: "TARS Grounded Multi-Source Search",
+      answer: unified.answer,
+      webSources: unified.webSources,
+      sources: unified.webSources,
+      webSearchQueries: unified.webSearchQueries,
+      kbResults: unified.kbResults,
+      results: allResults,
+      total: allResults.length,
+      latency_ms: unified.latency_ms
+    });
+  } catch (err: any) {
+    console.warn("[TARS Search API] Error:", err);
+    res.json({ ok: false, error: err?.message || String(err), results: [], webSources: [] });
+  }
+});
+
 app.all(["/agenda-vision", "/api/agenda-vision"], (req, res) => {
   res.json({ ok: true, analysis: "Processamento de visão computacional ativo." });
 });

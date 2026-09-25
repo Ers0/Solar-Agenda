@@ -1432,6 +1432,10 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 0-4 4v2H6a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h2v4a4 4 0 0 0 8 0v-4h2a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-2V6a4 4 0 0 0-4-4z"/><circle cx="9" cy="9" r="1"/><circle cx="15" cy="9" r="1"/></svg>
           RAG Debug &amp; Noise Inspector (Owner)
         </button>
+        <button class="ai-sub-tab" id="ai-subtab-btn-web-search" data-aisub="web-search">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#38bdf8" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M11 8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+          Google Search Grounding (Web Inteligente)
+        </button>
       </div>
 
       <!-- Sub-panel 1: Copilot Live Monitor (Interactions & Thinking Stream) -->
@@ -1887,8 +1891,75 @@
           </div>
         </div>
       </div>
+
+      <!-- Sub-panel 5: Google Search Grounding (Web Inteligente & Pesquisa Técnica) -->
+      <div id="ai-subpanel-web-search" class="ai-subpanel hidden">
+        <div style="display:flex;flex-direction:column;gap:18px;">
+          <!-- Header Card -->
+          <div class="ai-assistant-header" style="background:var(--panel,#161b22);border-radius:10px;padding:16px 20px;border:1px solid var(--line,#30363d);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+            <div>
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+                <h3 style="margin:0;font-size:1.2rem;color:var(--text-primary,#f0f6fc);display:flex;align-items:center;gap:8px;">
+                  <span style="color:#38bdf8;">🌐</span> TARS Grounded Web Intelligence &amp; Google Search
+                </h3>
+                <span class="chip mono" style="background:rgba(56,189,248,0.15);color:#38bdf8;font-weight:700;font-size:0.75rem;">GEMINI 3.8 FLASH GROUNDED</span>
+              </div>
+              <p style="margin:0;font-size:0.83rem;color:var(--text-muted,#8b949e);">
+                Pesquisa técnica em tempo real com Google Search Grounding: Obtenha manuais oficiais, datasheets, procedimentos de firmware, normas elétricas e códigos de erro de inversores com fontes citadas.
+              </p>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span id="tars-web-grounding-badge" style="font-size:0.75rem;font-weight:600;color:#38bdf8;padding:5px 12px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.3);border-radius:20px;display:inline-flex;align-items:center;gap:6px;">
+                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#38bdf8;box-shadow:0 0 0 2px rgba(56,189,248,0.25);"></span>
+                <span>Google Search Tool Ativa</span>
+              </span>
+            </div>
+          </div>
+
+          <!-- Search Bar & Controls -->
+          <div style="background:var(--panel,#161b22);border:1px solid var(--line,#30363d);border-radius:10px;padding:16px;">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+              <div style="flex:1;min-width:280px;position:relative;display:flex;align-items:center;">
+                <span style="position:absolute;left:12px;color:var(--text-muted,#8b949e);font-size:1rem;">🔍</span>
+                <input type="text" id="tars-grounded-search-input" class="obs-input" placeholder="Pesquisar inversor, manual, alarme (ex: Deye F18 alarme isolamento, Hoymiles HMT DTU red LED)..." style="width:100%;padding:10px 12px 10px 38px;font-size:0.9rem;border-radius:8px;">
+              </div>
+              <select id="tars-grounded-search-mode" class="obs-input" style="padding:10px 14px;font-size:0.85rem;border-radius:8px;width:auto;background:var(--bg,#0d1117);">
+                <option value="web">🌐 Google Search Grounding (Web em Tempo Real)</option>
+                <option value="all">⚡ Busca Unificada (Web + Base Belenergy RAG)</option>
+                <option value="kb">📚 Base Interna RAG Belenergy</option>
+              </select>
+              <button type="button" class="btn-primary" id="tars-grounded-search-btn" style="padding:10px 20px;font-weight:600;display:inline-flex;align-items:center;gap:8px;">
+                <span>Pesquisar</span>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+
+            <!-- Suggestion Quick Chips -->
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="font-size:0.75rem;color:var(--text-muted,#8b949e);font-weight:600;margin-right:4px;">Exemplos rápidos:</span>
+              <button type="button" class="tars-grounded-chip" data-query="Deye SUN-8K-SG04LP3 alarme F18 falha de isolamento megometro" style="background:rgba(255,255,255,0.04);border:1px solid var(--line,#30363d);border-radius:16px;padding:4px 10px;font-size:0.75rem;color:var(--text-primary,#f0f6fc);cursor:pointer;">⚡ Deye F18 Isolamento</button>
+              <button type="button" class="tars-grounded-chip" data-query="Hoymiles HMT-2250 LED vermelho piscando DTU-Pro procedimento" style="background:rgba(255,255,255,0.04);border:1px solid var(--line,#30363d);border-radius:16px;padding:4px 10px;font-size:0.75rem;color:var(--text-primary,#f0f6fc);cursor:pointer;">🔴 Hoymiles DTU LED Vermelho</button>
+              <button type="button" class="tars-grounded-chip" data-query="Growatt MIN 5000TL-X erro 102 falha de isolamento PV" style="background:rgba(255,255,255,0.04);border:1px solid var(--line,#30363d);border-radius:16px;padding:4px 10px;font-size:0.75rem;color:var(--text-primary,#f0f6fc);cursor:pointer;">⚠️ Growatt Erro 102</button>
+              <button type="button" class="tars-grounded-chip" data-query="Norma ABNT NBR 16149 limites de sobretensão e subtensão inversor solar" style="background:rgba(255,255,255,0.04);border:1px solid var(--line,#30363d);border-radius:16px;padding:4px 10px;font-size:0.75rem;color:var(--text-primary,#f0f6fc);cursor:pointer;">📐 ABNT NBR 16149 Sobretensão</button>
+              <button type="button" class="tars-grounded-chip" data-query="FoxESS T Series error code 21 grid fault checklist" style="background:rgba(255,255,255,0.04);border:1px solid var(--line,#30363d);border-radius:16px;padding:4px 10px;font-size:0.75rem;color:var(--text-primary,#f0f6fc);cursor:pointer;">🛡️ FoxESS Error 21</button>
+            </div>
+          </div>
+
+          <!-- Grounded Search Results Container -->
+          <div id="tars-grounded-results-container" style="display:flex;flex-direction:column;gap:14px;">
+            <div style="background:var(--panel,#161b22);border:1px dashed var(--line,#30363d);border-radius:10px;padding:32px 20px;text-align:center;color:var(--text-muted,#8b949e);">
+              <div style="font-size:2rem;margin-bottom:8px;">🌐</div>
+              <div style="font-size:0.95rem;font-weight:600;color:var(--text-primary,#f0f6fc);margin-bottom:4px;">Pesquisa Técnica Grounded Pronta</div>
+              <div style="font-size:0.82rem;max-width:520px;margin:0 auto;">
+                Digite uma consulta acima ou clique em um dos exemplos rápidos para pesquisar com a inteligência do TARS conectada ao Google Search Grounding.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
+
 
   <!-- TARS Observer Hub View -->
   <div id="view-observer" class="hidden">

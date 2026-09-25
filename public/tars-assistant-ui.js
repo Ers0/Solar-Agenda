@@ -80,6 +80,7 @@
     init() {
       this.bindEvents();
       this.bindRagDebugEvents();
+      this.bindWebSearchEvents();
       this.restoreOfflineCache();
       this.fetchMonitorStream();
       this.refreshWorkflowLearning();
@@ -671,7 +672,7 @@
         btn.classList.toggle('active', btn.dataset.aisub === tabName);
       });
 
-      const panels = ['chat', 'rag', 'observer', 'rag-debug'];
+      const panels = ['chat', 'rag', 'observer', 'rag-debug', 'web-search'];
       panels.forEach(p => {
         const el = document.getElementById('ai-subpanel-' + p);
         if (el) el.classList.toggle('hidden', p !== tabName);
@@ -1638,6 +1639,205 @@
       raw = raw.replace(/\n/g, '<br>');
 
       return raw;
+    },
+
+    // --- Google Search Grounding & Technical Research Engine ---
+    bindWebSearchEvents() {
+      const input = document.getElementById('tars-grounded-search-input');
+      const btn = document.getElementById('tars-grounded-search-btn');
+      const modeSelect = document.getElementById('tars-grounded-search-mode');
+
+      if (btn && input) {
+        btn.addEventListener('click', () => {
+          const q = input.value.trim();
+          const mode = modeSelect ? modeSelect.value : 'web';
+          if (q) this.executeWebSearch(q, mode);
+        });
+
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const q = input.value.trim();
+            const mode = modeSelect ? modeSelect.value : 'web';
+            if (q) this.executeWebSearch(q, mode);
+          }
+        });
+      }
+
+      // Quick chip clicks
+      document.querySelectorAll('.tars-grounded-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          const q = chip.dataset.query;
+          if (input) input.value = q;
+          const mode = modeSelect ? modeSelect.value : 'web';
+          if (q) this.executeWebSearch(q, mode);
+        });
+      });
+    },
+
+    async executeWebSearch(query, mode = 'web') {
+      const container = document.getElementById('tars-grounded-results-container');
+      if (!container) return;
+
+      container.innerHTML = `
+        <div style="background:var(--panel,#161b22);border:1px solid var(--line,#30363d);border-radius:10px;padding:28px 20px;text-align:center;">
+          <div style="display:inline-block;width:24px;height:24px;border:3px solid rgba(56,189,248,0.2);border-top-color:#38bdf8;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:12px;"></div>
+          <div style="font-size:0.92rem;font-weight:700;color:var(--text-primary,#f0f6fc);margin-bottom:4px;">
+            Consultando Google Search Grounding com TARS...
+          </div>
+          <div style="font-size:0.78rem;color:var(--text-muted,#8b949e);">
+            Pesquisando na web por: <i>"${this.escapeHtml(query)}"</i> (${mode === 'web' ? 'Google Search Real-Time' : 'Busca Híbrida'})
+          </div>
+        </div>
+      `;
+
+      try {
+        const res = await fetch('/api/tars/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, mode, lang: 'pt' })
+        });
+
+        const data = await res.json();
+        this.renderWebSearchResults(data);
+      } catch (err) {
+        container.innerHTML = `
+          <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:20px;color:#ef4444;font-size:0.85rem;">
+            <b>Falha na Pesquisa Grounded:</b> ${this.escapeHtml(err.message || String(err))}
+          </div>
+        `;
+      }
+    },
+
+    renderWebSearchResults(data) {
+      const container = document.getElementById('tars-grounded-results-container');
+      if (!container) return;
+
+      if (!data || !data.ok) {
+        container.innerHTML = `
+          <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:20px;color:#ef4444;font-size:0.85rem;">
+            <b>Aviso de Pesquisa:</b> ${this.escapeHtml(data?.error || 'Nenhum resultado retornado pelo serviço de busca.')}
+          </div>
+        `;
+        return;
+      }
+
+      const sources = Array.isArray(data.sources || data.webSources) ? (data.sources || data.webSources) : [];
+      const queries = Array.isArray(data.searchQueries || data.webSearchQueries) ? (data.searchQueries || data.webSearchQueries) : [];
+      const answer = data.answer || '';
+      const kbResults = Array.isArray(data.kbResults) ? data.kbResults : [];
+
+      let html = '';
+
+      // 1. Meta / Telemetry Bar
+      html += `
+        <div style="display:flex;justify-content:space-between;align-items:center;background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.2);border-radius:8px;padding:8px 14px;font-size:0.75rem;flex-wrap:wrap;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#38bdf8;"></span>
+            <span style="color:#38bdf8;font-weight:700;">Google Search Grounding</span>
+            <span style="color:var(--text-muted,#8b949e);">· ${data.model || 'gemini-3.8-flash'} · ${data.latency_ms || 0}ms</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="color:#10b981;font-weight:600;">${sources.length} fonte(s) web citada(s)</span>
+            ${kbResults.length ? `<span style="color:#f59e0b;font-weight:600;">· ${kbResults.length} do RAG Belenergy</span>` : ''}
+          </div>
+        </div>
+      `;
+
+      // 2. Synthesized Grounded Technical Answer
+      if (answer) {
+        html += `
+          <div style="background:var(--panel,#161b22);border:1px solid var(--line,#30363d);border-radius:10px;padding:18px 20px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;border-bottom:1px solid var(--line,#30363d);padding-bottom:8px;">
+              <div style="font-size:0.85rem;font-weight:700;color:var(--text-primary,#f0f6fc);display:flex;align-items:center;gap:6px;">
+                <span>⚡ Parecer &amp; Síntese Técnica Grounded</span>
+              </div>
+              <span class="chip mono" style="background:rgba(16,185,129,0.15);color:#10b981;font-size:0.7rem;font-weight:700;">VERIFICADO NA WEB</span>
+            </div>
+            <div style="font-size:0.86rem;line-height:1.6;color:var(--text-primary,#f0f6fc);">
+              ${this.formatMarkdownSnippet(answer)}
+            </div>
+          </div>
+        `;
+      }
+
+      // 3. Search Queries Executed Under the Hood
+      if (queries.length > 0) {
+        html += `
+          <div style="background:rgba(0,0,0,0.2);border:1px solid var(--line,#30363d);border-radius:8px;padding:10px 14px;">
+            <div style="font-size:0.72rem;text-transform:uppercase;color:var(--text-muted,#8b949e);font-weight:700;margin-bottom:6px;">
+              🔍 Consultas Disparadas no Google Search:
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              ${queries.map(q => `
+                <span style="font-size:0.75rem;background:rgba(255,255,255,0.05);color:#93c5fd;padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);font-family:monospace;">
+                  ${this.escapeHtml(q)}
+                </span>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      // 4. Verified Web Source Cards Grid
+      if (sources.length > 0) {
+        html += `
+          <div>
+            <div style="font-size:0.82rem;font-weight:700;color:var(--text-primary,#f0f6fc);margin-bottom:8px;display:flex;align-items:center;gap:6px;">
+              <span>📚 Fontes Verificadas &amp; Links Diretos (${sources.length})</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:10px;">
+              ${sources.map((s, idx) => `
+                <div style="background:var(--panel,#161b22);border:1px solid var(--line,#30363d);border-radius:8px;padding:12px;display:flex;flex-direction:column;justify-content:space-between;gap:8px;">
+                  <div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
+                      <span style="font-size:0.68rem;text-transform:uppercase;background:rgba(56,189,248,0.12);color:#38bdf8;padding:2px 6px;border-radius:4px;font-weight:700;">
+                        ${this.escapeHtml(s.domain || 'web')}
+                      </span>
+                      <span style="font-size:0.7rem;color:var(--text-muted,#8b949e);">#${idx + 1}</span>
+                    </div>
+                    <div style="font-size:0.82rem;font-weight:600;color:var(--text-primary,#f0f6fc);line-height:1.4;margin-bottom:4px;">
+                      ${this.escapeHtml(s.title || s.url)}
+                    </div>
+                  </div>
+                  <div style="display:flex;justify-content:flex-end;">
+                    <a href="${s.url}" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;color:#38bdf8;text-decoration:none;display:inline-flex;align-items:center;gap:4px;font-weight:600;" title="Abrir página original">
+                      <span>Acessar Fonte</span>
+                      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+                    </a>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      // 5. Internal RAG Belenergy Results (if unified search was used)
+      if (kbResults.length > 0) {
+        html += `
+          <div style="margin-top:10px;">
+            <div style="font-size:0.82rem;font-weight:700;color:#f59e0b;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
+              <span>📁 Documentos e Regras Internas Belenergy (${kbResults.length})</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              ${kbResults.map(k => `
+                <div style="background:rgba(245,158,11,0.04);border:1px solid rgba(245,158,11,0.25);border-radius:8px;padding:12px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                    <b style="font-size:0.82rem;color:var(--text-primary,#f0f6fc);">${this.escapeHtml(k.title)}</b>
+                    <span style="font-size:0.7rem;color:#f59e0b;font-weight:600;">${this.escapeHtml(k.source || 'Base Local')}</span>
+                  </div>
+                  <div style="font-size:0.78rem;color:var(--text-muted,#8b949e);line-height:1.45;">
+                    ${this.escapeHtml(k.snippet)}
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      container.innerHTML = html;
     }
   };
 
