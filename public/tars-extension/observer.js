@@ -4,7 +4,7 @@
 (() => {
   if (window.__tarsObserver) return;
   window.__tarsObserver = true;
-  const VERSION = '1.2.88';
+  const VERSION = '1.2.90';
   const MAX_LABEL = 180;
   const MAX_EVENTS_PER_MINUTE = 180;
   let eventCount = 0;
@@ -15,13 +15,17 @@
   const clean = v => String(v || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
   const enabled = async () => {
     try {
+      if (typeof chrome === 'undefined' || !chrome.storage?.local) return false;
       const r = await chrome.storage.local.get(['tarsObserverMode','tarsLearningMode']);
       return r.tarsObserverMode === true || r.tarsLearningMode === true;
     } catch (_) { return false; }
   };
   const learningEnabled = async () => {
-    try { const r = await chrome.storage.local.get(['tarsLearningMode']); return r.tarsLearningMode === true; }
-    catch (_) { return false; }
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage?.local) return false;
+      const r = await chrome.storage.local.get(['tarsLearningMode']);
+      return r.tarsLearningMode === true;
+    } catch (_) { return false; }
   };
   const safePath = () => {
     try {
@@ -45,15 +49,22 @@
     if (eventCount >= MAX_EVENTS_PER_MINUTE) return;
     eventCount++;
     try {
-      chrome.runtime.sendMessage({
-        type: 'TARS_OBSERVER_EVENT',
-        event: {
-          eventId: crypto.randomUUID(), eventType: type,
-          observedAt: new Date().toISOString(), version: VERSION,
-          origin: location.origin, page: safePath(),
-          title: clean(document.title).slice(0,180), ...data
+      if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+        const p = chrome.runtime.sendMessage({
+          type: 'TARS_OBSERVER_EVENT',
+          event: {
+            eventId: crypto.randomUUID(), eventType: type,
+            observedAt: new Date().toISOString(), version: VERSION,
+            origin: location.origin, page: safePath(),
+            title: clean(document.title).slice(0,180), ...data
+          }
+        }, () => {
+          if (chrome.runtime.lastError) { /* ignore background sleep */ }
+        });
+        if (p && typeof p.catch === 'function') {
+          p.catch(() => { /* suppress unhandled rejection */ });
         }
-      });
+      }
     } catch (_) {}
   };
 

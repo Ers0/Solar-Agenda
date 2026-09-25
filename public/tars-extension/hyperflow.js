@@ -109,7 +109,7 @@
     return new Promise(resolve => {
       if (!extensionContextIsAlive()) return resolve({ ok: false, error: 'extension_context_invalidated' });
       try {
-        chrome.runtime.sendMessage(message, response => {
+        const p = chrome.runtime.sendMessage(message, response => {
           let lastError = null;
           try { lastError = chrome.runtime.lastError || null; } catch (_) { lastError = null; }
           if (lastError) {
@@ -119,6 +119,13 @@
           }
           resolve(response === undefined ? { ok: true } : response);
         });
+        if (p && typeof p.catch === 'function') {
+          p.catch(error => {
+            const text = String(error?.message || error);
+            if (/context invalidated|extension context/i.test(text)) markExtensionContextInvalidated(error);
+            resolve({ ok: false, error: text });
+          });
+        }
       } catch (error) {
         if (/context invalidated|extension context/i.test(String(error?.message || error))) markExtensionContextInvalidated(error);
         resolve({ ok: false, error: String(error?.message || error) });

@@ -11,6 +11,29 @@ const CHANNEL = 'tars-bridge';
 // can never be confused for one another.
 const waiting = new Map();
 
+function safeRuntimeSendMessage(message) {
+  return new Promise(resolve => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+        return resolve({ ok: false, error: 'no_chrome_runtime' });
+      }
+      const p = chrome.runtime.sendMessage(message, response => {
+        const lastErr = chrome.runtime.lastError;
+        if (lastErr) {
+          resolve({ ok: false, error: lastErr.message || 'runtime_error' });
+        } else {
+          resolve(response !== undefined ? response : { ok: true });
+        }
+      });
+      if (p && typeof p.catch === 'function') {
+        p.catch(err => resolve({ ok: false, error: err?.message || String(err) }));
+      }
+    } catch (e) {
+      resolve({ ok: false, error: String(e?.message || e) });
+    }
+  });
+}
+
 // ------------------------------------------------- extension -> page ---
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
@@ -76,9 +99,7 @@ window.addEventListener('message', ev => {
 
 // Tell the service worker this tab is a live Solar Agenda, so tab discovery
 // can prefer a tab that has actually finished loading its script.
-try {
-  chrome.runtime.sendMessage({ type: 'RELAY_READY', url: window.location.href });
-} catch (e) { /* the worker may be asleep; discovery still works without this */ }
+safeRuntimeSendMessage({ type: 'RELAY_READY', url: window.location.href });
 
 // Solar Agenda page can request a live Hyperflow sync without knowing anything
 // about Chrome extension APIs. The page sends a request over postMessage; this
@@ -90,7 +111,7 @@ window.addEventListener('message', async ev => {
   if (!m || m.channel !== CHANNEL || m.dir !== 'to-ext' || m.payload?.type !== 'TARS_SLA_SYNC_REQUEST') return;
   const id = m.payload?.id || crypto.randomUUID();
   try {
-    const result = await chrome.runtime.sendMessage({ type: 'TARS_SLA_SYNC_HYPERFLOW', tabId: null });
+    const result = await safeRuntimeSendMessage({ type: 'TARS_SLA_SYNC_HYPERFLOW', tabId: null });
     window.postMessage({ channel: CHANNEL, dir: 'to-page', payload: { type: 'TARS_SLA_SYNC_RESULT', id, ...result } }, window.location.origin);
   } catch (error) {
     window.postMessage({ channel: CHANNEL, dir: 'to-page', payload: { type: 'TARS_SLA_SYNC_RESULT', id, ok: false, error: String(error?.message || error) } }, window.location.origin);

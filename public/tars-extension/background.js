@@ -5,12 +5,8 @@
 
 const PROTOCOL = 1;
 const APP_ORIGIN = 'https://solar-agenda.vercel.app';
-const APP_URL_MATCH = 'https://solar-agenda.vercel.app/*';
 const HANDSHAKE_TIMEOUT_MS = 5000;
 
-// Standing host access is limited to Solar Agenda + Hyperflow. Hyperflow
-// needs this because its capture layer must start automatically and remain
-// alive in the SPA, rather than waiting for a TARS Vision click.
 let appTabId = null;
 
 const AUTOMATION_ENABLED_KEY = 'tarsAutomationEnabled';
@@ -28,8 +24,49 @@ let observerBackendPaused = false;
 const windowActiveCases = new Map();
 const injectedLearningTabs = new Set();
 
+function safeRuntimeSendMessage(msg) {
+  try {
+    const p = chrome.runtime.sendMessage(msg, () => {
+      if (chrome.runtime.lastError) { /* ignore disconnected popup/listeners */ }
+    });
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => { /* suppress unhandled rejection */ });
+    }
+  } catch (_) {}
+}
+
+function safeTabsSendMessage(tabId, message, timeoutMs = 8000) {
+  return new Promise(resolve => {
+    if (!Number.isInteger(tabId)) return resolve({ ok: false, error: 'invalid_tab_id' });
+    let settled = false;
+    const finish = val => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(val);
+      }
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: 'tabs_message_timeout' }), timeoutMs);
+    try {
+      const p = chrome.tabs.sendMessage(tabId, message, response => {
+        const lastErr = chrome.runtime.lastError;
+        if (lastErr) {
+          finish({ ok: false, error: lastErr.message || 'receiving_end_missing' });
+        } else {
+          finish(response !== undefined ? response : { ok: true });
+        }
+      });
+      if (p && typeof p.catch === 'function') {
+        p.catch(err => finish({ ok: false, error: err?.message || String(err) }));
+      }
+    } catch (e) {
+      finish({ ok: false, error: String(e?.message || e) });
+    }
+  });
+}
+
 function notifyPopup(scope, message, data = null) {
-  try { chrome.runtime.sendMessage({ type: 'TARS_DIAGNOSTIC', scope, message, data }); } catch (_) {}
+  safeRuntimeSendMessage({ type: 'TARS_DIAGNOSTIC', scope, message, data });
 }
 
 async function ensureObserverDefaults() {
@@ -68,11 +105,16 @@ async function broadcastEmergencyStop() {
   for (const tab of tabs) {
     if (!Number.isInteger(tab.id)) continue;
     const url = String(tab.url || '');
-    if (!/^https:\/\/(conversas\.hyperflow\.global|global\.hoymiles\.com|solar-agenda\.vercel\.app)\//i.test(url)) continue;
+    if (!/^https?:\/\/(conversas\.hyperflow\.global|global\.hoymiles\.com|solar-agenda\.vercel\.app|[a-z0-9-]+\.run\.app|localhost)/i.test(url)) continue;
     try {
-      const response = await new Promise(resolve => chrome.tabs.sendMessage(tab.id, { type: 'TARS_EMERGENCY_STOP' }, r => resolve(chrome.runtime.lastError ? { ok:false, error:chrome.runtime.lastError.message } : (r || {ok:true}))));
+      const response = await new Promise(resolve => {
+        chrome.tabs.sendMessage(tab.id, { type: 'TARS_EMERGENCY_STOP' }, r => {
+          if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+          else resolve(r || { ok: true });
+        });
+      });
       results.push({ tabId: tab.id, ok: response?.ok !== false, error: response?.error || null });
-    } catch (error) { results.push({ tabId: tab.id, ok:false, error:String(error?.message || error) }); }
+    } catch (error) { results.push({ tabId: tab.id, ok: false, error: String(error?.message || error) }); }
   }
   return results;
 }
@@ -80,9 +122,40 @@ async function broadcastEmergencyStop() {
 // ---------------------------------------------------------------- app tab ---
 
 async function findAppTab() {
-  const tabs = await chrome.tabs.query({ url: APP_URL_MATCH });
-  const live = tabs.find(t => t.status === 'complete') || tabs[0];
-  return live || null;
+  if (Number.isInteger(appTabId)) {
+    try {
+      const tab = await chrome.tabs.get(appTabId);
+      if (tab?.id && tab.url && !tab.url.startsWith('chrome://')) return tab;
+    } catch (_) { appTabId = null; }
+  }
+  const patterns = [
+    'https://solar-agenda.vercel.app/*',
+    'https://*.run.app/*',
+    'http://localhost:3000/*',
+    'http://127.0.0.1:3000/*'
+  ];
+  for (const pattern of patterns) {
+    try {
+      const tabs = await chrome.tabs.query({ url: pattern });
+      if (tabs.length) {
+        const live = tabs.find(t => t.status === 'complete') || tabs[0];
+        if (live) {
+          appTabId = live.id;
+          return live;
+        }
+      }
+    } catch (_) {}
+  }
+  try {
+    const allTabs = await chrome.tabs.query({});
+    for (const tab of allTabs) {
+      if (tab.title && (tab.title.includes('Solar Agenda') || tab.title.includes('TARS')) && tab.url && !tab.url.startsWith('chrome://')) {
+        appTabId = tab.id;
+        return tab;
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 
 async function openAppTab() {
@@ -434,8 +507,18 @@ const TARS_SLA_WEBHOOK_STORAGE_KEY = 'tarsSlaWebhookUrl';
 const DEFAULT_SLA_WEBHOOK_URL = 'https://solar-agenda.vercel.app/api/sla/webhook';
 
 async function getSlaWebhookUrl() {
-  const stored = await chrome.storage.local.get([TARS_SLA_WEBHOOK_STORAGE_KEY]);
-  return String(stored[TARS_SLA_WEBHOOK_STORAGE_KEY] || DEFAULT_SLA_WEBHOOK_URL).trim();
+  const stored = await chrome.storage.local.get([TARS_SLA_WEBHOOK_STORAGE_KEY, 'tarsAppOrigin']);
+  if (stored[TARS_SLA_WEBHOOK_STORAGE_KEY]) return String(stored[TARS_SLA_WEBHOOK_STORAGE_KEY]).trim();
+  if (stored.tarsAppOrigin) return `${stored.tarsAppOrigin}/api/sla/webhook`;
+  const appTab = await findAppTab();
+  if (appTab?.url && /^https?:\/\//.test(appTab.url)) {
+    try {
+      const origin = new URL(appTab.url).origin;
+      chrome.storage.local.set({ tarsAppOrigin: origin }).catch(() => {});
+      return `${origin}/api/sla/webhook`;
+    } catch (_) {}
+  }
+  return DEFAULT_SLA_WEBHOOK_URL;
 }
 
 async function findHyperflowTab(preferredTabId = null) {
@@ -459,7 +542,7 @@ async function reportHyperflowConversationToSlaWebhook(snapshot) {
     event: 'hyperflow.conversation.synced',
     version: '1.0',
     source: 'tars-vision-bridge',
-    bridgeVersion: '1.2.61',
+    bridgeVersion: '1.2.89',
     occurredAt: new Date().toISOString(),
     status: 'SYNCED',
     protocol: snapshot?.protocol || null,
@@ -484,15 +567,15 @@ async function reportHyperflowConversationToSlaWebhook(snapshot) {
   }
 }
 
-async function reportHyperflowConversationToObserver(snapshot, tabId = null) {
+async function reportHyperflowConversationToObserver(snapshot, tabId = null, isManualSync = false) {
   const modes = await chrome.storage.local.get([OBSERVER_MODE_KEY, LEARNING_MODE_KEY]);
-  if (modes[OBSERVER_MODE_KEY] !== true && modes[LEARNING_MODE_KEY] !== true) {
+  if (!isManualSync && modes[OBSERVER_MODE_KEY] !== true && modes[LEARNING_MODE_KEY] !== true) {
     console.info('[TARS Observer] full Hyperflow sync skipped because Observer Mode and Workflow Learning are OFF');
     return { ok: false, skipped: true, error: 'observation_disabled' };
   }
   const url = await getObserverBackendUrl();
   if (!url) return { ok: false, skipped: true, error: 'observer_backend_not_configured' };
-  if (!/^https:\/\//i.test(url)) return { ok: false, error: 'observer_backend_requires_https', url };
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'observer_backend_requires_valid_url', url };
 
   const conversation = snapshot || {};
   const timeline = Array.isArray(conversation.timeline) ? conversation.timeline : [];
@@ -506,7 +589,7 @@ async function reportHyperflowConversationToObserver(snapshot, tabId = null) {
       eventType: 'HYPERFLOW_MESSAGE',
       observedAt: m?.capturedAt || m?.timestamp || new Date().toISOString(),
       source: 'tars-vision-bridge',
-      bridgeVersion: '1.2.88',
+      bridgeVersion: '1.2.89',
       tabId,
       case: {
         conversationId,
@@ -536,7 +619,7 @@ async function reportHyperflowConversationToObserver(snapshot, tabId = null) {
       eventType: 'HYPERFLOW_CONVERSATION_SYNCED',
       observedAt: new Date().toISOString(),
       source: 'tars-vision-bridge',
-      bridgeVersion: '1.2.88',
+      bridgeVersion: '1.2.89',
       tabId,
       case: {
         conversationId,
@@ -558,7 +641,7 @@ async function reportHyperflowConversationToObserver(snapshot, tabId = null) {
   const payload = {
     version: '1.0',
     source: 'tars-vision-bridge',
-    bridgeVersion: '1.2.88',
+    bridgeVersion: '1.2.89',
     events
   };
 
@@ -591,6 +674,9 @@ async function reportHyperflowConversationToObserver(snapshot, tabId = null) {
       messageCount: events.length,
       response: responseText.slice(0, 1000)
     };
+    if (!response.ok) {
+      result.error = `HTTP ${response.status}: ${responseText.slice(0, 200) || 'Falha na resposta do servidor'}`;
+    }
     console.info('[TARS Observer] Hyperflow FULL SYNC POST RESULT', result);
     return result;
   } catch (error) {
@@ -610,25 +696,22 @@ async function reportHyperflowConversationToObserver(snapshot, tabId = null) {
 
 async function syncHyperflowToObserver(preferredTabId = null) {
   const tab = await findHyperflowTab(preferredTabId);
-  if (!tab?.id) return { ok: false, error: 'no_hyperflow_tab' };
-
-  const ready = await ensureHyperflowCapture(tab.id);
-  if (!ready.ok) return { ok: false, error: ready.error };
-
-  const snapshotResult = await new Promise(resolve => {
-    chrome.tabs.sendMessage(tab.id, { type: 'HYPERFLOW_GET_SLA_SNAPSHOT' }, response => {
-      if (chrome.runtime.lastError) {
-        return resolve({ ok: false, error: chrome.runtime.lastError.message || 'hyperflow_snapshot_failed' });
-      }
-      resolve(response || { ok: false, error: 'empty_hyperflow_snapshot' });
-    });
-  });
-
-  if (!snapshotResult?.ok || !snapshotResult.snapshot) {
-    return { ok: false, error: snapshotResult?.error || 'hyperflow_snapshot_failed' };
+  if (!tab?.id) {
+    return { ok: false, error: 'Nenhuma aba do Hyperflow encontrada. Abra https://conversas.hyperflow.global/ e selecione um atendimento.' };
   }
 
-  const observer = await reportHyperflowConversationToObserver(snapshotResult.snapshot, tab.id);
+  const ready = await ensureHyperflowCapture(tab.id);
+  if (!ready.ok) {
+    return { ok: false, error: `Falha ao conectar no Hyperflow: ${ready.error || 'Aba não respondeu'}` };
+  }
+
+  const snapshotResult = await safeTabsSendMessage(tab.id, { type: 'HYPERFLOW_GET_SLA_SNAPSHOT' });
+
+  if (!snapshotResult?.ok || !snapshotResult.snapshot) {
+    return { ok: false, error: snapshotResult?.error || 'Não foi possível capturar a conversa ativa no Hyperflow.' };
+  }
+
+  const observer = await reportHyperflowConversationToObserver(snapshotResult.snapshot, tab.id, true);
   console.info('[TARS Observer] Hyperflow conversation sync', {
     tabId: tab.id,
     protocol: snapshotResult.snapshot.protocol,
@@ -640,21 +723,15 @@ async function syncHyperflowToObserver(preferredTabId = null) {
     ok: observer.ok,
     tabId: tab.id,
     snapshot: snapshotResult.snapshot,
-    observer
+    observer,
+    error: observer.ok ? null : (typeof observer.error === 'object' ? (observer.error.message || JSON.stringify(observer.error)) : (observer.error || `Servidor respondeu com status ${observer.status || 'erro'}`))
   };
 }
 
 async function ensureHyperflowCapture(tabId) {
   if (!Number.isInteger(tabId)) return { ok: false, error: 'invalid_hyperflow_tab' };
 
-  const sendStatus = () => new Promise(resolve => {
-    chrome.tabs.sendMessage(tabId, { type: 'HYPERFLOW_STATUS' }, response => {
-      if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'no_receiver' });
-      resolve(response || { ok: false, error: 'empty_status_response' });
-    });
-  });
-
-  let status = await sendStatus();
+  let status = await safeTabsSendMessage(tabId, { type: 'HYPERFLOW_STATUS' }, 2000);
   if (status?.ok && status?.active !== undefined) return { ok: true, status, injected: false };
 
   try {
@@ -664,7 +741,7 @@ async function ensureHyperflowCapture(tabId) {
   }
 
   await new Promise(r => setTimeout(r, 150));
-  status = await sendStatus();
+  status = await safeTabsSendMessage(tabId, { type: 'HYPERFLOW_STATUS' }, 2000);
   if (status?.ok) return { ok: true, status, injected: true };
   return { ok: false, error: status?.error || 'hyperflow_capture_not_ready' };
 }
@@ -676,12 +753,7 @@ async function syncHyperflowToSla(preferredTabId = null) {
   const ready = await ensureHyperflowCapture(tab.id);
   if (!ready.ok) return { ok: false, error: ready.error };
 
-  const snapshotResult = await new Promise(resolve => {
-    chrome.tabs.sendMessage(tab.id, { type: 'HYPERFLOW_GET_SLA_SNAPSHOT' }, response => {
-      if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'hyperflow_snapshot_failed' });
-      resolve(response || { ok: false, error: 'empty_hyperflow_snapshot' });
-    });
-  });
+  const snapshotResult = await safeTabsSendMessage(tab.id, { type: 'HYPERFLOW_GET_SLA_SNAPSHOT' });
   if (!snapshotResult?.ok || !snapshotResult.snapshot) return { ok: false, error: snapshotResult?.error || 'hyperflow_snapshot_failed' };
   const webhook = await reportHyperflowConversationToSlaWebhook(snapshotResult.snapshot);
   console.info('[TARS SLA] Hyperflow conversation sync', {
@@ -730,7 +802,7 @@ async function syncHyperflowDirtyConversations() {
       const last = state[cid] || '';
       if (last && String(snapshot.updatedAt || '') <= last) continue;
       seen.add(cid);
-      const webhook = await reportHyperflowConversationToObserver(snapshot, tab.id);
+      const webhook = await reportHyperflowConversationToObserver(snapshot, tab.id, false);
       if (webhook.ok) {
         state[cid] = snapshot.updatedAt || snapshot.capturedAt || new Date().toISOString();
         synced++;
@@ -804,7 +876,7 @@ async function reportHoymilesAccountToSlaWebhook({ data, conversationId, reporti
     event: 'hoymiles.account.created',
     version: '1.0',
     source: 'tars-vision-bridge',
-    bridgeVersion: '1.2.59',
+    bridgeVersion: '1.2.89',
     occurredAt: new Date().toISOString(),
     status: reporting?.ok ? 'COMPLETED' : 'ACCOUNT_CREATED',
     conversationId: conversationId || null,
@@ -974,8 +1046,19 @@ async function observeTab(tabId, reason='tab') {
 }
 
 async function getObserverBackendUrl() {
-  const r = await chrome.storage.local.get([TARS_OBSERVER_BACKEND_KEY]);
-  return String(r[TARS_OBSERVER_BACKEND_KEY] || DEFAULT_TARS_OBSERVER_BACKEND).trim();
+  const r = await chrome.storage.local.get([TARS_OBSERVER_BACKEND_KEY, 'tarsAppOrigin']);
+  if (r[TARS_OBSERVER_BACKEND_KEY]) return String(r[TARS_OBSERVER_BACKEND_KEY]).trim();
+  if (r.tarsAppOrigin) return `${r.tarsAppOrigin}/api/tars/observer/events`;
+  
+  const appTab = await findAppTab();
+  if (appTab && appTab.url && /^https?:\/\//.test(appTab.url)) {
+    try {
+      const origin = new URL(appTab.url).origin;
+      chrome.storage.local.set({ tarsAppOrigin: origin }).catch(() => {});
+      return `${origin}/api/tars/observer/events`;
+    } catch (_) {}
+  }
+  return DEFAULT_TARS_OBSERVER_BACKEND;
 }
 
 async function observerEnabled() {
@@ -999,7 +1082,7 @@ async function queueObserverEvent(event, senderTabId = null, conversation = null
     eventType: event.eventType || 'OBSERVER_EVENT',
     observedAt: event.observedAt || new Date().toISOString(),
     source: 'tars-vision-bridge',
-    bridgeVersion: '1.2.88',
+    bridgeVersion: '1.2.89',
     tabId: senderTabId,
     case: active ? {
       conversationId: active.conversationId || null,
@@ -1023,7 +1106,7 @@ async function flushObserverQueue() {
   if (observerBackendPaused) return;
   if (!observerQueue.length) return;
   const url = await getObserverBackendUrl();
-  if (!/^https:\/\//i.test(url)) return;
+  if (!/^https?:\/\//i.test(url)) return;
   const batch = observerQueue.splice(0, 25);
   console.info('[TARS Observer] preparing backend POST', { count: batch.length, observerBackendPaused });
   notifyPopup('Observer', 'sending observation batch to Solar Agenda', { count: batch.length });
@@ -1032,14 +1115,14 @@ async function flushObserverQueue() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-TARS-Event': 'observer' },
       credentials: 'omit', cache: 'no-store',
-      body: JSON.stringify({ version: '1.0', source: 'tars-vision-bridge', bridgeVersion: '1.2.88', events: batch })
+      body: JSON.stringify({ version: '1.0', source: 'tars-vision-bridge', bridgeVersion: '1.2.89', events: batch })
     });
     if (!response.ok) {
       if (response.status === 404) {
         observerBackendPaused = true;
         await chrome.storage.local.set({ [OBSERVER_404_PAUSE_KEY]: true });
         observerQueue.unshift(...batch);
-        console.warn('[TARS Observer] backend endpoint returned 404; delivery paused until backend URL is changed or extension is reloaded after the route is deployed');
+        console.warn('[TARS Observer] backend endpoint returned 404; delivery paused until backend URL is changed or extension is reloaded after route is deployed');
         return;
       }
       throw new Error(`observer_backend_http_${response.status}`);
@@ -1055,6 +1138,20 @@ async function flushObserverQueue() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+
+  if (msg && msg.type === 'RELAY_READY') {
+    if (sender?.tab?.id) {
+      appTabId = sender.tab.id;
+      if (sender.tab.url) {
+        try {
+          const appOrigin = new URL(sender.tab.url).origin;
+          chrome.storage.local.set({ tarsAppOrigin: appOrigin }).catch(() => {});
+        } catch (_) {}
+      }
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
 
   if (msg && msg.type === 'TARS_OBSERVER_CASE_ACTIVE') {
     if (Number.isInteger(sender?.tab?.id)) {
@@ -1189,7 +1286,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'TARS_SLA_WEBHOOK_SET') {
     (async () => {
       const url = String(msg.url || '').trim();
-      if (url && !/^https:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_https' };
+      if (url && !/^https?:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_valid_url' };
       await chrome.storage.local.set({ [TARS_SLA_WEBHOOK_STORAGE_KEY]: url });
       return { ok: true, url: url || DEFAULT_SLA_WEBHOOK_URL };
     })().then(sendResponse).catch(error => sendResponse({ ok: false, error: String(error?.message || error) }));
@@ -1205,10 +1302,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const url = String(msg.url || await getSlaWebhookUrl()).trim();
       if (!url) return { ok: false, error: 'sla_webhook_not_configured' };
-      if (!/^https:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_https', url };
+      if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'sla_webhook_requires_valid_url', url };
       const payload = {
         event: 'hoymiles.account.created', version: '1.0', source: 'tars-vision-bridge',
-        bridgeVersion: '1.2.59', occurredAt: new Date().toISOString(), status: 'COMPLETED', test: true,
+        bridgeVersion: '1.2.89', occurredAt: new Date().toISOString(), status: 'COMPLETED', test: true,
         conversationId: 'TEST-WEBHOOK-' + Date.now(),
         customer: { name: 'TARS Webhook Test', email: 'webhook-test@example.invalid', phone: '', state: 'São Paulo' },
         organization: { name: 'TARS Webhook Test Org', parentOrganization: 'APItest', type: 'Installer', role: 'Installer' },
@@ -1402,7 +1499,7 @@ function friendlyHoymilesError(result) {
 async function publishHoymilesAutomationStatus(result, extra = {}) {
   const status = { ...result, ...extra, friendlyError: result?.ok ? null : friendlyHoymilesError(result), updatedAt: new Date().toISOString() };
   await chrome.storage.local.set({ tarsHoymilesAutomationStatus: status });
-  try { await chrome.runtime.sendMessage({ type: 'TARS_AUTOMATION_STATUS', result: status }); } catch (_) {}
+  safeRuntimeSendMessage({ type: 'TARS_AUTOMATION_STATUS', result: status });
   console.info('[TARS Hoymiles BG] automation status published', status);
   return status;
 }
@@ -1630,7 +1727,7 @@ async function publishHoymilesAutomationStatus(result, extra = {}) {
 });
 
 function onStatusBroadcast(status) {
-  try { chrome.runtime.sendMessage({ type: 'BRIDGE_STATUS', status }); } catch (e) {}
+  safeRuntimeSendMessage({ type: 'BRIDGE_STATUS', status });
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -1648,7 +1745,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg && msg.type === 'BRIDGE_VISION_LEGACY') {
     requestVision(msg.payload || {}, status => {
-      try { chrome.runtime.sendMessage({ type: 'BRIDGE_STATUS', status }); } catch (e) {}
+      safeRuntimeSendMessage({ type: 'BRIDGE_STATUS', status });
     }).then(sendResponse);
     return true;
   }

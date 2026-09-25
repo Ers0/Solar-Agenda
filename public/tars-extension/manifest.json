@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TARS Vision Bridge",
-  "version": "1.2.88",
+  "version": "1.2.90",
   "description": "Solar Agenda TARS Vision Bridge with passive Observer Mode, cross-site workflow learning, Hyperflow memory, Hoymiles automation, page vision, and safety controls.",
   "permissions": [
     "activeTab",
@@ -14,6 +14,9 @@
     "https://conversas.hyperflow.global/*",
     "https://global.hoymiles.com/*",
     "https://solar-agenda.vercel.app/*",
+    "https://*.run.app/*",
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*",
     "<all_urls>"
   ],
   "background": {
@@ -22,7 +25,10 @@
   "content_scripts": [
     {
       "matches": [
-        "https://solar-agenda.vercel.app/*"
+        "https://solar-agenda.vercel.app/*",
+        "https://*.run.app/*",
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*"
       ],
       "js": [
         "content.js"

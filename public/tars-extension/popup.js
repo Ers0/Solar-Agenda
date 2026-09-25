@@ -38,6 +38,40 @@ function popupWarn(scope, message, data) {
   console.warn(`[TARS Popup] ${scope}: ${message}`, data ?? '');
 }
 
+function formatPopupError(err) {
+  if (!err) return 'erro desconhecido';
+  if (typeof err === 'string') return err;
+  if (err.message && typeof err.message === 'string') return err.message;
+  if (err.error) return formatPopupError(err.error);
+  if (err.observer && err.observer.error) return formatPopupError(err.observer.error);
+  if (err.status) return `HTTP ${err.status}`;
+  try {
+    const s = JSON.stringify(err);
+    return s === '{}' ? String(err) : s;
+  } catch (_) {
+    return String(err);
+  }
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise(resolve => {
+    try {
+      const p = chrome.runtime.sendMessage(message, response => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message || 'connection_error' });
+        } else {
+          resolve(response !== undefined ? response : { ok: false, error: 'empty_response' });
+        }
+      });
+      if (p && typeof p.catch === 'function') {
+        p.catch(e => resolve({ ok: false, error: e?.message || String(e) }));
+      }
+    } catch (e) {
+      resolve({ ok: false, error: String(e?.message || e) });
+    }
+  });
+}
+
 async function loadObserverState() {
   popupLog('Observer', 'checking current state');
   try {
@@ -59,13 +93,9 @@ if (observerToggle) {
     const enabled = !!observerToggle.checked;
     popupLog('Observer', enabled ? 'switching ON' : 'switching OFF');
     try {
-      let result;
-      try {
-        result = await chrome.runtime.sendMessage({ type: 'TARS_OBSERVER_SET_MODE', enabled });
-        if (!result?.ok) throw new Error(result?.error || 'observer_switch_failed');
-        popupLog('Observer', 'background acknowledged switch', result);
-      } catch (backgroundError) {
-        popupWarn('Observer', 'background switch failed; using direct storage', backgroundError);
+      let result = await sendRuntimeMessage({ type: 'TARS_OBSERVER_SET_MODE', enabled });
+      if (!result?.ok) {
+        popupWarn('Observer', 'background switch returned error; writing storage directly', result);
         await chrome.storage.local.set({ [OBSERVER_MODE_KEY]: enabled });
       }
       const verify = await chrome.storage.local.get([OBSERVER_MODE_KEY, LEARNING_MODE_KEY]);
@@ -78,7 +108,7 @@ if (observerToggle) {
     } catch (error) {
       observerToggle.checked = !enabled;
       popupWarn('Observer', 'switch failed', error);
-      show('Observer Mode could not be changed. Check the extension permissions.', true);
+      show('Observer Mode could not be changed. Check extension permissions.', true);
     }
   });
   loadObserverState();
@@ -101,10 +131,12 @@ if (learningToggle) {
   learningToggle.addEventListener('change', async () => {
     const enabled = !!learningToggle.checked;
     try {
-      const result = await chrome.runtime.sendMessage({ type:'TARS_OBSERVER_SET_LEARNING', enabled });
-      if (!result?.ok) throw new Error(result?.error || 'learning_toggle_failed');
+      const result = await sendRuntimeMessage({ type:'TARS_OBSERVER_SET_LEARNING', enabled });
+      if (!result?.ok) {
+        popupWarn('Workflow Learning', 'background handler unavailable; using local storage fallback', result);
+        await chrome.storage.local.set({ [LEARNING_MODE_KEY]: enabled });
+      }
     } catch (error) {
-      popupWarn('Workflow Learning', 'background handler unavailable; using local storage fallback', error);
       await chrome.storage.local.set({ [LEARNING_MODE_KEY]: enabled });
     }
     const verify = await chrome.storage.local.get([LEARNING_MODE_KEY]);
@@ -122,9 +154,9 @@ async function loadSafetyState() {
   try {
     const r = await chrome.storage.local.get([AUTOMATION_ENABLED_KEY, 'tarsEmergencyStop', OBSERVER_MODE_KEY]);
     const enabled = r[AUTOMATION_ENABLED_KEY] !== false;
-    safetyToggle.checked = enabled;
+    if (safetyToggle) safetyToggle.checked = enabled;
     popupLog('Automation Safety', enabled ? 'currently ON' : 'currently OFF', r);
-    safetyText.textContent = enabled
+    if (safetyText) safetyText.textContent = enabled
       ? 'Automatic replies and workflows are ON'
       : 'Automatic replies and workflows are OFF';
     updateEmergencyButton(r.tarsEmergencyStop === true);
@@ -148,7 +180,7 @@ async function loadAiState() {
     const r = await chrome.storage.local.get([AI_ENABLED_KEY]);
     const enabled = r[AI_ENABLED_KEY] === true;
     if (aiToggle) aiToggle.checked = enabled;
-    popupLog('AI Assistant', enabled ? 'currently ON' : 'currently OFF — assistant engine is dormant by design', r);
+    popupLog('AI Assistant', enabled ? 'currently ON' : 'currently OFF', r);
     if (aiText) aiText.textContent = enabled ? 'AI features are ON' : 'AI features are OFF';
   } catch (_) {}
 }
@@ -178,14 +210,16 @@ if (safetyToggle) {
     const enabled = !!safetyToggle.checked;
     popupLog('Automation Safety', enabled ? 'switching ON' : 'switching OFF');
     try {
-      const result = await chrome.runtime.sendMessage({ type: 'TARS_AUTOMATION_SET', enabled });
+      const result = await sendRuntimeMessage({ type: 'TARS_AUTOMATION_SET', enabled });
       popupLog('Automation Safety', 'background acknowledged switch', result);
-      if (!result?.ok) throw new Error(result?.error || 'automation_switch_failed');
+      if (!result?.ok) {
+        popupWarn('Automation Safety', 'background switch failed; using local storage fallback', result);
+        await chrome.storage.local.set({ [AUTOMATION_ENABLED_KEY]: enabled });
+      }
     } catch (error) {
-      popupWarn('Automation Safety', 'background switch failed; using local storage fallback', error);
       await chrome.storage.local.set({ [AUTOMATION_ENABLED_KEY]: enabled });
     }
-    safetyText.textContent = enabled
+    if (safetyText) safetyText.textContent = enabled
       ? 'Automatic replies and workflows are ON'
       : 'Automatic replies and workflows are OFF';
     show(enabled ? 'Automation enabled.' : 'Automation disabled.', false);
@@ -202,7 +236,7 @@ if (emergencyStopBtn) emergencyStopBtn.addEventListener('click', async () => {
     ? 'RELEASING EMERGENCY STOP'
     : 'STOPPING AUTOMATION…';
   try {
-    const result = await chrome.runtime.sendMessage({
+    const result = await sendRuntimeMessage({
       type: active ? 'TARS_EMERGENCY_RESUME' : 'TARS_EMERGENCY_STOP'
     });
     if (result?.ok) {
@@ -266,6 +300,7 @@ function showAutomationResult(result) {
 }
 
 function show(text, isError) {
+  if (!statusEl) return;
   statusEl.textContent = text;
   statusEl.className = isError ? 'err' : '';
 }
@@ -289,30 +324,34 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 popupLog('Popup', 'loaded — diagnostics active');
 
-btn.addEventListener('click', async () => {
-  btn.disabled = true;
-  show('Capturing…', false);
+if (btn) {
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    show('Capturing…', false);
 
-  const slow = setTimeout(() => show('Still analyzing — this can take a moment…', false), 6000);
+    const slow = setTimeout(() => show('Still analyzing — this can take a moment…', false), 6000);
 
-  let res;
-  try {
-    res = await chrome.runtime.sendMessage({
-      type: 'BRIDGE_VISION',
-      question: (qEl.value || '').trim() || null,
-    });
-  } catch (e) {
-    res = null;
-  }
-  clearTimeout(slow);
-  btn.disabled = false;
+    let res;
+    try {
+      res = await sendRuntimeMessage({
+        type: 'BRIDGE_VISION',
+        question: (qEl?.value || '').trim() || null,
+      });
+    } catch (e) {
+      res = null;
+    }
+    clearTimeout(slow);
+    btn.disabled = false;
 
-  if (!res) { show(ERRORS.timeout, true); return; }
-  if (res.ok) { show('Done — see Solar Agenda.', false); setTimeout(() => window.close(), 700); return; }
-  show(ERRORS[res.error] || res.error || 'Something went wrong.', true);
-});
+    if (!res) { show(ERRORS.timeout, true); return; }
+    if (res.ok) { show('Done — see Solar Agenda.', false); setTimeout(() => window.close(), 700); return; }
+    show(ERRORS[res.error] || res.error || 'Something went wrong.', true);
+  });
+}
 
-qEl.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+if (qEl) {
+  qEl.addEventListener('keydown', e => { if (e.key === 'Enter') btn?.click(); });
+}
 
 (async () => {
   try {
@@ -329,18 +368,20 @@ if (syncBtn) syncBtn.addEventListener('click', async () => {
   syncBtn.disabled = true;
   show('Sincronizando conversa…', false);
   try {
-    const result = await chrome.runtime.sendMessage({ type: 'TARS_OBSERVER_SYNC_HYPERFLOW', tabId: null });
+    const result = await sendRuntimeMessage({ type: 'TARS_OBSERVER_SYNC_HYPERFLOW', tabId: null });
     if (result?.ok) {
-      const protocol = result.snapshot?.protocol || 'sem protocolo';
-      const count = result.snapshot?.messageCount ?? 0;
+      const protocol = result.snapshot?.protocol || result.protocol || 'sem protocolo';
+      const count = result.snapshot?.messageCount ?? result.messageCount ?? 0;
       show(`Sincronizado — ${protocol} · ${count} interações`, false);
       console.info('[TARS Observer] Hyperflow sync result', result);
     } else {
-      show(`Falha na sincronização — ${result?.error || 'erro desconhecido'}`, true);
+      const errStr = formatPopupError(result?.error || result?.observer?.error || result?.observer || result);
+      show(`Falha na sincronização — ${errStr}`, true);
       console.warn('[TARS Observer] Hyperflow sync failed', result);
     }
   } catch (error) {
-    show('Falha na sincronização.', true);
+    const msg = formatPopupError(error);
+    show(`Falha na sincronização — ${msg}`, true);
     console.error('[TARS Observer] Hyperflow sync error', error);
   } finally {
     syncBtn.disabled = false;
@@ -351,10 +392,18 @@ const webhookBtn = document.getElementById('webhook');
 if (webhookBtn) webhookBtn.addEventListener('click', async () => {
   webhookBtn.disabled = true; show('Testing Solar Agenda SLA webhook…', false);
   try {
-    const result = await chrome.runtime.sendMessage({ type: 'TARS_SLA_WEBHOOK_TEST' });
+    const result = await sendRuntimeMessage({ type: 'TARS_SLA_WEBHOOK_TEST' });
     if (result?.ok) show(`Webhook OK — HTTP ${result.status}`, false);
-    else show(`Webhook failed — ${result?.error || ('HTTP ' + (result?.status || '?'))}`, true);
+    else {
+      const errStr = formatPopupError(result?.error || ('HTTP ' + (result?.status || '?')));
+      show(`Webhook failed — ${errStr}`, true);
+    }
     console.info('[TARS SLA] webhook test result', result);
-  } catch (error) { show('Webhook test failed.', true); console.error('[TARS SLA] webhook test error', error); }
-  finally { webhookBtn.disabled = false; }
+  } catch (error) {
+    const msg = formatPopupError(error);
+    show(`Webhook test failed: ${msg}`, true);
+    console.error('[TARS SLA] webhook test error', error);
+  } finally {
+    webhookBtn.disabled = false;
+  }
 });
