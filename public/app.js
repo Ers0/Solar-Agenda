@@ -2888,8 +2888,10 @@ const AudioOut = {
     if(!r.ok || cType.includes('application/json')){
       const out = await readJson(r);
       const code = out.json?.code || (r.status === 401 || r.status === 400 ? 'tts_auth' : 'unknown');
-      const err = new Error(TARS.errorFor(code) || out.json?.error || 'TTS unavailable');
+      const detail = out.json?.detail || out.json?.error || '';
+      const err = new Error(detail || TARS.errorFor(code) || 'TTS unavailable');
       err.code = code;
+      err.detail = detail;
       throw err;
     }
 
@@ -3129,10 +3131,10 @@ async function speak(text, lang){
         return;
       }catch(e2){ /* fall through */ }
     }
-    ttsLastError = code === 'tts_auth' ? 'key rejected'
+    ttsLastError = err.detail || (code === 'tts_auth' ? 'key rejected'
                  : code === 'tts_voice' ? 'voice invalid'
                  : code === 'rate_limit' ? 'quota or rate limit'
-                 : code === 'tts_unconfigured' ? 'no key' : code;
+                 : code === 'tts_unconfigured' ? 'no key' : code);
     ttsLastEngine = 'browser (fallback)';
     renderTtsStatus();
     showHeard(`Neural voice unavailable (${ttsLastError}) — using browser voice.`);

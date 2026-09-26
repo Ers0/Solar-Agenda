@@ -82,6 +82,27 @@ export async function parseJsonBody(req) {
     }
   }
 
+  if (req.rawBody) {
+    try {
+      const str = typeof req.rawBody === "string" ? req.rawBody : req.rawBody.toString("utf-8");
+      return JSON.parse(str);
+    } catch {
+      return {};
+    }
+  }
+
+  // If stream already completed/ended, try reading any buffered chunk or return empty
+  if (req.readableEnded || req.complete) {
+    try {
+      const chunk = typeof req.read === "function" ? req.read() : null;
+      if (chunk) {
+        const str = Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
+        return JSON.parse(str);
+      }
+    } catch (_) {}
+    return {};
+  }
+
   // If stream hasn't been read, read with a 400ms timeout
   return new Promise((resolve) => {
     let resolved = false;

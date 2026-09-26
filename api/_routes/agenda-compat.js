@@ -72,7 +72,16 @@ export async function agendaCompatHandler(req, res, subRoute) {
       (typeof body?.deepgramKey === "string" && body.deepgramKey.trim()) ||
       (typeof body?.deepgramToken === "string" && body.deepgramToken.trim()) ||
       (typeof req.headers?.["x-deepgram-key"] === "string" && req.headers["x-deepgram-key"].trim()) ||
+      (typeof req.headers?.["x-deepgram-api-key"] === "string" && req.headers["x-deepgram-api-key"].trim()) ||
       (typeof req.headers?.["x-deepgram-token"] === "string" && req.headers["x-deepgram-token"].trim());
+
+    if (!reqDeepgramKey && typeof req.headers?.authorization === "string") {
+      const authHeader = req.headers.authorization.trim();
+      const match = authHeader.match(/^(?:Token|Bearer)\s+([a-f0-9]{32,64})/i);
+      if (match) {
+        reqDeepgramKey = match[1];
+      }
+    }
 
     let rawDeepgramKey = "";
     let deepgramSource = "none";
@@ -96,15 +105,18 @@ export async function agendaCompatHandler(req, res, subRoute) {
         process.env.DG_KEY ||
         process.env.VERCEL_DEEPGRAM_API_KEY ||
         process.env.VITE_DEEPGRAM_API_KEY ||
+        process.env.VITE_DEEPGRAM_KEY ||
         process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY ||
+        process.env.DEEPGRAM ||
+        process.env.AURA_API_KEY ||
         "";
       if (envDeepgramKey && typeof envDeepgramKey === "string" && envDeepgramKey.trim()) {
         rawDeepgramKey = envDeepgramKey;
         deepgramSource = "server environment";
       } else {
-        // Fallback: search process.env for any key matching /deepgram|dg_api/i
+        // Fallback: search process.env for any key matching /deepgram|dg_api|aura_api/i
         for (const [k, v] of Object.entries(process.env)) {
-          if (/^(deep_?gram|dg_api)/i.test(k) && typeof v === "string" && v.trim()) {
+          if (/^(deep_?gram|dg_api|aura_api)/i.test(k) && typeof v === "string" && v.trim()) {
             rawDeepgramKey = v;
             deepgramSource = `server environment (${k})`;
             break;
@@ -113,10 +125,11 @@ export async function agendaCompatHandler(req, res, subRoute) {
       }
     }
 
-    // Clean Deepgram key (strip quotes, leading "Token " or "Bearer ")
+    // Clean Deepgram key (strip quotes, leading "Token " or "Bearer ", internal spaces/newlines)
     const deepgramKey = rawDeepgramKey
       .replace(/^["']|["']$/g, "")
       .replace(/^(?:Token|Bearer)\s+/i, "")
+      .replace(/\s+/g, "")
       .trim();
 
     // Extract ElevenLabs key and strictly validate format (must start with "sk_" and length >= 32)
@@ -165,7 +178,11 @@ export async function agendaCompatHandler(req, res, subRoute) {
     // Helper to synthesize with Deepgram Aura
     const synthesizeDeepgramAura = async (textToSpeak, voiceModel, dKey) => {
       const v = voiceModel || defaultDeepgramVoice || "aura-orion-en";
-      const cleanKey = String(dKey || "").replace(/^["']|["']$/g, "").replace(/^(?:Token|Bearer)\s+/i, "").trim();
+      const cleanKey = String(dKey || "")
+        .replace(/^["']|["']$/g, "")
+        .replace(/^(?:Token|Bearer)\s+/i, "")
+        .replace(/\s+/g, "")
+        .trim();
       if (!cleanKey) return { ok: false, error: "Deepgram API key missing" };
 
       // Clean text for speech synthesis (strip markdown, links, emoji, code blocks)
@@ -182,34 +199,53 @@ export async function agendaCompatHandler(req, res, subRoute) {
         .slice(0, 3000);
 
       const textPayload = cleanText || String(textToSpeak).slice(0, 1000);
+      const normalizedPayload = textPayload.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-      // Attempt 1: Target voice model
-      let dgUrl = `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(v)}&encoding=mp3`;
-      let dgRes = await fetch(dgUrl, {
-        method: "POST",
-        headers: {
-          "Authorization": `Token ${cleanKey}`,
-          "Content-Type": "application/json",
-          "Accept": "audio/mpeg"
-        },
-        body: JSON.stringify({ text: textPayload })
-      });
+      const executeSpeak = async (authScheme, modelName, payload, withEncoding = true) => {
+        const queryParams = new URLSearchParams();
+        if (modelName) queryParams.set("model", modelName);
+        if (withEncoding) queryParams.set("encoding", "mp3");
+        const url = `https://api.deepgram.com/v1/speak?${queryParams.toString()}`;
+        return await fetch(url, {
+          method: "POST",
+          headers: {
+            "Authorization": `${authScheme} ${cleanKey}`,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg"
+          },
+          body: JSON.stringify({ text: payload })
+        });
+      };
 
-      // If voice model was rejected (400 / 404), retry with default voice
-      if (!dgRes.ok && (dgRes.status === 400 || dgRes.status === 404) && v !== "aura-asteria-en") {
+      // 1. Try Token auth with selected voice
+      let dgRes = await executeSpeak("Token", v, textPayload, true);
+
+      // 2. If 401, retry with Bearer auth
+      if (dgRes.status === 401) {
+        const bearerRes = await executeSpeak("Bearer", v, textPayload, true);
+        if (bearerRes.ok) dgRes = bearerRes;
+      }
+
+      // 3. If 400 (Bad request e.g. non-ASCII or unsupported model), retry with ASCII normalized text
+      if (!dgRes.ok && dgRes.status === 400 && normalizedPayload !== textPayload) {
+        const normRes = await executeSpeak("Token", v, normalizedPayload, true);
+        if (normRes.ok) {
+          dgRes = normRes;
+        } else if (normRes.status === 401) {
+          const normBearer = await executeSpeak("Bearer", v, normalizedPayload, true);
+          if (normBearer.ok) dgRes = normBearer;
+        }
+      }
+
+      // 4. If voice rejected (400 / 404), retry with standard default aura-asteria-en
+      if (!dgRes.ok && (dgRes.status === 400 || dgRes.status === 404)) {
         try {
-          const retryUrl = `https://api.deepgram.com/v1/speak?encoding=mp3`;
-          const retryRes = await fetch(retryUrl, {
-            method: "POST",
-            headers: {
-              "Authorization": `Token ${cleanKey}`,
-              "Content-Type": "application/json",
-              "Accept": "audio/mpeg"
-            },
-            body: JSON.stringify({ text: textPayload })
-          });
-          if (retryRes.ok) {
-            dgRes = retryRes;
+          const fallbackRes = await executeSpeak("Token", "aura-asteria-en", normalizedPayload || textPayload, false);
+          if (fallbackRes.ok) {
+            dgRes = fallbackRes;
+          } else if (fallbackRes.status === 401) {
+            const fbBearer = await executeSpeak("Bearer", "aura-asteria-en", normalizedPayload || textPayload, false);
+            if (fbBearer.ok) dgRes = fbBearer;
           }
         } catch (_) {}
       }
@@ -230,10 +266,6 @@ export async function agendaCompatHandler(req, res, subRoute) {
         res.setHeader("X-TTS-Engine", "deepgram");
         res.setHeader("X-TTS-Voice", v);
       } catch (_) {}
-      if (typeof res.status === "function" && typeof res.send === "function") {
-        res.status(200).send(Buffer.from(aBuf));
-        return { ok: true };
-      }
       res.statusCode = 200;
       res.end(Buffer.from(aBuf));
       return { ok: true };
@@ -245,27 +277,43 @@ export async function agendaCompatHandler(req, res, subRoute) {
       let deepgramMsg = "";
       if (deepgramKey) {
         try {
-          // Check Deepgram authentication
-          const dgRes = await fetch("https://api.deepgram.com/v1/projects", {
-            headers: { "Authorization": `Token ${deepgramKey}` }
+          // Direct lightweight Speak endpoint verification (does not require admin/project management scopes)
+          let testRes = await fetch("https://api.deepgram.com/v1/speak?model=aura-asteria-en", {
+            method: "POST",
+            headers: {
+              "Authorization": `Token ${deepgramKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ text: "." })
           });
-          // Status 200 (admin) or 403 (member/scoped token) confirms valid authentication
-          if (dgRes.ok || dgRes.status === 403 || dgRes.status === 200) {
+          if (testRes.status === 401) {
+            const bearerRes = await fetch("https://api.deepgram.com/v1/speak?model=aura-asteria-en", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${deepgramKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({ text: "." })
+            });
+            if (bearerRes.ok || bearerRes.status === 200) {
+              testRes = bearerRes;
+            }
+          }
+
+          if (testRes.ok || testRes.status === 200) {
             deepgramValid = true;
             deepgramMsg = `Deepgram Aura active (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
-          } else if (dgRes.status === 401) {
-            deepgramMsg = `Deepgram key rejected (HTTP 401 Unauthorized). Verify token in Vercel settings.`;
+          } else if (testRes.status === 401) {
+            deepgramValid = false;
+            deepgramMsg = `Deepgram key rejected (HTTP 401 Invalid credentials). Verify API key in Vercel settings.`;
           } else {
-            deepgramValid = true;
+            // Any other status (429, temporary network): treat as configured if key format plausible
+            deepgramValid = deepgramKey.length >= 16;
             deepgramMsg = `Deepgram Aura active (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
           }
         } catch (err) {
-          if (deepgramKey.length >= 16) {
-            deepgramValid = true;
-            deepgramMsg = `Deepgram Aura configured (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
-          } else {
-            deepgramMsg = `Deepgram probe error: ${err.message}`;
-          }
+          deepgramValid = deepgramKey.length >= 16;
+          deepgramMsg = `Deepgram Aura configured (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
         }
       }
 
@@ -352,10 +400,13 @@ export async function agendaCompatHandler(req, res, subRoute) {
       return sendResponse(res, 400, { ok: false, code: "bad_request", error: "Text is required for TTS." });
     }
 
+    let lastErrorDetail = "";
+
     // 1. Primary Deepgram request (when explicitly selected OR in 'auto' when Deepgram key is present)
     if (deepgramKey && (preferredProvider === "deepgram" || preferredProvider === "auto" || !elevenValidSecret)) {
       const dgResult = await synthesizeDeepgramAura(text, defaultDeepgramVoice, deepgramKey);
       if (dgResult.ok) return;
+      lastErrorDetail = dgResult.error || "Deepgram synthesis failed";
       console.warn("[Deepgram primary TTS failed, checking fallback]", dgResult.error);
     }
 
@@ -393,17 +444,16 @@ export async function agendaCompatHandler(req, res, subRoute) {
             res.setHeader("Content-Length", audioBuffer.byteLength);
             res.setHeader("X-TTS-Engine", "elevenlabs");
           } catch (_) {}
-          if (typeof res.status === "function" && typeof res.send === "function") {
-            return res.status(200).send(Buffer.from(audioBuffer));
-          }
           res.statusCode = 200;
           res.end(Buffer.from(audioBuffer));
           return;
         } else {
           const errBody = await response.text();
+          lastErrorDetail = `ElevenLabs ${response.status}: ${errBody.slice(0, 160)}`;
           console.warn(`[ElevenLabs TTS error ${response.status}]`, errBody.slice(0, 160));
         }
       } catch (err) {
+        lastErrorDetail = `ElevenLabs error: ${err.message}`;
         console.warn("[ElevenLabs TTS attempt failed]", err);
       }
     }
@@ -412,6 +462,7 @@ export async function agendaCompatHandler(req, res, subRoute) {
     if (deepgramKey && preferredProvider !== "deepgram" && preferredProvider !== "auto") {
       const fallbackRes = await synthesizeDeepgramAura(text, defaultDeepgramVoice, deepgramKey);
       if (fallbackRes.ok) return;
+      lastErrorDetail = fallbackRes.error || lastErrorDetail;
     }
 
     // 4. Fall back to browser speech synthesis
@@ -419,7 +470,8 @@ export async function agendaCompatHandler(req, res, subRoute) {
       ok: false,
       code: "tts_fallback_browser",
       configured: false,
-      error: "Neural TTS keys unavailable or rejected. Falling back to browser speech synthesis."
+      detail: lastErrorDetail || "Neural TTS keys unavailable or rejected",
+      error: `Neural TTS fallback: ${lastErrorDetail || "keys unavailable"}. Falling back to browser speech synthesis.`
     });
   }
 
