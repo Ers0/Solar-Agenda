@@ -4,38 +4,46 @@
   "rewrites": [
     {
       "source": "/agenda-:path*",
-      "destination": "/api/agenda-:path*"
+      "destination": "/api?__route=/agenda-:path*"
     },
     {
       "source": "/agenda/:path*",
-      "destination": "/api/agenda/:path*"
+      "destination": "/api?__route=/agenda/:path*"
     },
     {
       "source": "/jira-webhook",
-      "destination": "/api/jira-webhook"
+      "destination": "/api?__route=/jira-webhook"
     },
     {
       "source": "/send-email",
-      "destination": "/api/send-email"
+      "destination": "/api?__route=/send-email"
     },
     {
       "source": "/smtp-status",
-      "destination": "/api/smtp-status"
+      "destination": "/api?__route=/smtp-status"
     },
     {
       "source": "/test-smtp",
-      "destination": "/api/test-smtp"
+      "destination": "/api?__route=/test-smtp"
     },
     {
       "source": "/ml-export-dataset",
-      "destination": "/api/ml-export-dataset"
+      "destination": "/api?__route=/ml-export-dataset"
     },
     {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "source": "/health",
+      "destination": "/api?__route=/health"
     },
     {
-      "source": "/((?!api/|agenda-|_next|favicon\\.ico|.*\\.[\\w]+$).*)",
+      "source": "/api/:match*",
+      "destination": "/api?__route=/:match*"
+    },
+    {
+      "source": "/api",
+      "destination": "/api?__route=/"
+    },
+    {
+      "source": "/((?!api|agenda-|_next|favicon\\.ico|.*\\.[\\w]+$).*)",
       "destination": "/index.html"
     }
   ]

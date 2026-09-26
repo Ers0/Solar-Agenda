@@ -28,14 +28,15 @@ export default async function handler(req, res) {
     urlObj = new URL(req.url || "/", "http://localhost");
   }
 
-  // Extract route either from rewrite query __route, or slug, or url pathname
-  let routePath = urlObj.searchParams.get("__route") || "";
+  // Extract route either from rewrite query __route, or slug, or x-matched-path, or url pathname
+  let routePath = urlObj.searchParams.get("__route") || req.query?.__route || req.query?.route || "";
   if (!routePath && req.query?.slug) {
     const slugParts = Array.isArray(req.query.slug) ? req.query.slug : [req.query.slug];
     routePath = "/" + slugParts.join("/");
   }
   if (!routePath) {
-    routePath = urlObj.pathname;
+    const rawPath = req.headers?.["x-matched-path"] || urlObj.pathname;
+    routePath = rawPath;
   }
   // Strip leading /api if present: e.g. /api/sla-cases -> /sla-cases, /api/agenda-vault -> /agenda-vault
   routePath = routePath.replace(/^\/?api(\/|$)/, "/");
