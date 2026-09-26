@@ -66,39 +66,88 @@ export async function agendaCompatHandler(req, res, subRoute) {
       body = await parseJsonBody(req);
     } catch (_) {}
 
+    // Extract Deepgram API key from body, headers, or any server environment variable
+    let reqDeepgramKey =
+      (typeof body?.deepgramApiKey === "string" && body.deepgramApiKey.trim()) ||
+      (typeof body?.deepgramKey === "string" && body.deepgramKey.trim()) ||
+      (typeof body?.deepgramToken === "string" && body.deepgramToken.trim()) ||
+      (typeof req.headers?.["x-deepgram-key"] === "string" && req.headers["x-deepgram-key"].trim()) ||
+      (typeof req.headers?.["x-deepgram-token"] === "string" && req.headers["x-deepgram-token"].trim());
+
+    let rawDeepgramKey = "";
+    let deepgramSource = "none";
+    if (reqDeepgramKey) {
+      rawDeepgramKey = reqDeepgramKey;
+      deepgramSource = "app settings";
+    } else {
+      const envDeepgramKey =
+        process.env.DEEPGRAM_API_KEY ||
+        process.env.DEEPGRAM_KEY ||
+        process.env.DEEPGRAM_TOKEN ||
+        process.env.DEEPGRAM_SECRET ||
+        process.env.DEEPGRAM_APIKEY ||
+        process.env.DEEPGRAM_API ||
+        process.env.DEEPGRAM_VOICE_KEY ||
+        process.env.DEEPGRAM_AUTH_TOKEN ||
+        process.env.DEEPGRAM_SECRET_KEY ||
+        process.env.DEEP_GRAM_API_KEY ||
+        process.env.DEEP_GRAM_KEY ||
+        process.env.DG_API_KEY ||
+        process.env.DG_KEY ||
+        process.env.VERCEL_DEEPGRAM_API_KEY ||
+        process.env.VITE_DEEPGRAM_API_KEY ||
+        process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY ||
+        "";
+      if (envDeepgramKey && typeof envDeepgramKey === "string" && envDeepgramKey.trim()) {
+        rawDeepgramKey = envDeepgramKey;
+        deepgramSource = "server environment";
+      } else {
+        // Fallback: search process.env for any key matching /deepgram|dg_api/i
+        for (const [k, v] of Object.entries(process.env)) {
+          if (/^(deep_?gram|dg_api)/i.test(k) && typeof v === "string" && v.trim()) {
+            rawDeepgramKey = v;
+            deepgramSource = `server environment (${k})`;
+            break;
+          }
+        }
+      }
+    }
+
+    // Clean Deepgram key (strip quotes, leading "Token " or "Bearer ")
+    const deepgramKey = rawDeepgramKey
+      .replace(/^["']|["']$/g, "")
+      .replace(/^(?:Token|Bearer)\s+/i, "")
+      .trim();
+
+    // Extract ElevenLabs key and strictly validate format (must start with "sk_" and length >= 32)
     const reqElevenKey =
       (typeof body?.apiKey === "string" && body.apiKey.trim()) ||
       (typeof req.headers?.["x-elevenlabs-key"] === "string" && req.headers["x-elevenlabs-key"].trim());
-    const envElevenKey =
-      process.env.ELEVENLABS_API_KEY ||
-      process.env.ELEVEN_LABS_API_KEY ||
-      process.env.XI_API_KEY ||
-      process.env.ELEVENLABS_KEY ||
-      process.env.ELEVEN_API_KEY ||
-      process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY ||
-      process.env.VITE_ELEVENLABS_API_KEY ||
-      "";
+    let rawElevenKey = "";
+    let elevenSource = "none";
+    if (reqElevenKey) {
+      rawElevenKey = reqElevenKey.replace(/^["']|["']$/g, "").trim();
+      elevenSource = "app settings";
+    } else {
+      const envElevenKey =
+        process.env.ELEVENLABS_API_KEY ||
+        process.env.ELEVEN_LABS_API_KEY ||
+        process.env.XI_API_KEY ||
+        process.env.ELEVENLABS_KEY ||
+        process.env.ELEVEN_API_KEY ||
+        process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY ||
+        process.env.VITE_ELEVENLABS_API_KEY ||
+        "";
+      if (envElevenKey && typeof envElevenKey === "string" && envElevenKey.trim()) {
+        rawElevenKey = envElevenKey.replace(/^["']|["']$/g, "").trim();
+        elevenSource = "server environment";
+      }
+    }
 
-    const elevenKey = reqElevenKey ? reqElevenKey.replace(/^["']|["']$/g, "").trim() : (envElevenKey ? envElevenKey.replace(/^["']|["']$/g, "").trim() : "");
-    const elevenSource = reqElevenKey ? "app settings" : (envElevenKey ? "server environment" : "none");
-
-    const reqDeepgramKey =
-      (typeof body?.deepgramApiKey === "string" && body.deepgramApiKey.trim()) ||
-      (typeof req.headers?.["x-deepgram-key"] === "string" && req.headers["x-deepgram-key"].trim());
-    const envDeepgramKey =
-      process.env.DEEPGRAM_API_KEY ||
-      process.env.DEEPGRAM_KEY ||
-      process.env.DEEPGRAM_TOKEN ||
-      process.env.DEEPGRAM_SECRET ||
-      process.env.DEEP_GRAM_API_KEY ||
-      process.env.DEEP_GRAM_KEY ||
-      process.env.VITE_DEEPGRAM_API_KEY ||
-      process.env.VITE_DEEPGRAM_KEY ||
-      process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY ||
-      "";
-
-    const deepgramKey = reqDeepgramKey ? reqDeepgramKey.replace(/^["']|["']$/g, "").trim() : (envDeepgramKey ? envDeepgramKey.replace(/^["']|["']$/g, "").trim() : "");
-    const deepgramSource = reqDeepgramKey ? "app settings" : (envDeepgramKey ? "server environment" : "none");
+    // ElevenLabs secret API keys start with "sk_". 64-hex strings are API key IDs and rejected by TTS.
+    const isElevenKeyId = Boolean(rawElevenKey && !rawElevenKey.startsWith("sk_"));
+    const elevenValidSecret = Boolean(rawElevenKey && rawElevenKey.startsWith("sk_") && rawElevenKey.length >= 32);
+    const elevenKey = elevenValidSecret ? rawElevenKey : "";
 
     const preferredProvider = body?.provider || "auto"; // 'auto' | 'deepgram' | 'elevenlabs' | 'browser'
     const defaultDeepgramVoice = body?.deepgramVoice || process.env.DEEPGRAM_VOICE || "aura-orion-en";
@@ -116,23 +165,66 @@ export async function agendaCompatHandler(req, res, subRoute) {
     // Helper to synthesize with Deepgram Aura
     const synthesizeDeepgramAura = async (textToSpeak, voiceModel, dKey) => {
       const v = voiceModel || defaultDeepgramVoice || "aura-orion-en";
-      const dgUrl = `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(v)}&encoding=mp3`;
-      const dgRes = await fetch(dgUrl, {
+      const cleanKey = String(dKey || "").replace(/^["']|["']$/g, "").replace(/^(?:Token|Bearer)\s+/i, "").trim();
+      if (!cleanKey) return { ok: false, error: "Deepgram API key missing" };
+
+      // Clean text for speech synthesis (strip markdown, links, emoji, code blocks)
+      const cleanText = String(textToSpeak || "")
+        .replace(/```[\s\S]*?```/g, "")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+        .replace(/https?:\/\/\S+/g, "")
+        .replace(/[^\p{L}\p{N}\p{P}\p{Z}\n]/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 3000);
+
+      const textPayload = cleanText || String(textToSpeak).slice(0, 1000);
+
+      // Attempt 1: Target voice model
+      let dgUrl = `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(v)}&encoding=mp3`;
+      let dgRes = await fetch(dgUrl, {
         method: "POST",
         headers: {
-          "Authorization": `Token ${dKey}`,
-          "Content-Type": "application/json"
+          "Authorization": `Token ${cleanKey}`,
+          "Content-Type": "application/json",
+          "Accept": "audio/mpeg"
         },
-        body: JSON.stringify({ text: String(textToSpeak).slice(0, 4000) })
+        body: JSON.stringify({ text: textPayload })
       });
+
+      // If voice model was rejected (400 / 404), retry with default voice
+      if (!dgRes.ok && (dgRes.status === 400 || dgRes.status === 404) && v !== "aura-asteria-en") {
+        try {
+          const retryUrl = `https://api.deepgram.com/v1/speak?encoding=mp3`;
+          const retryRes = await fetch(retryUrl, {
+            method: "POST",
+            headers: {
+              "Authorization": `Token ${cleanKey}`,
+              "Content-Type": "application/json",
+              "Accept": "audio/mpeg"
+            },
+            body: JSON.stringify({ text: textPayload })
+          });
+          if (retryRes.ok) {
+            dgRes = retryRes;
+          }
+        } catch (_) {}
+      }
+
       if (!dgRes.ok) {
         let errB = "";
         try { errB = await dgRes.text(); } catch (_) {}
+        console.warn(`[Deepgram TTS error ${dgRes.status}]`, errB);
         return { ok: false, status: dgRes.status, error: errB || `Deepgram returned HTTP ${dgRes.status}` };
       }
+
       const aBuf = await dgRes.arrayBuffer();
       try {
         res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Expose-Headers", "Content-Type, Content-Length, X-TTS-Engine, X-TTS-Voice");
         res.setHeader("Content-Type", "audio/mpeg");
         res.setHeader("Content-Length", aBuf.byteLength);
         res.setHeader("X-TTS-Engine", "deepgram");
@@ -149,9 +241,39 @@ export async function agendaCompatHandler(req, res, subRoute) {
 
     // Probe request for status and capability check
     if (body?.probe) {
+      let deepgramValid = false;
+      let deepgramMsg = "";
+      if (deepgramKey) {
+        try {
+          // Check Deepgram authentication
+          const dgRes = await fetch("https://api.deepgram.com/v1/projects", {
+            headers: { "Authorization": `Token ${deepgramKey}` }
+          });
+          // Status 200 (admin) or 403 (member/scoped token) confirms valid authentication
+          if (dgRes.ok || dgRes.status === 403 || dgRes.status === 200) {
+            deepgramValid = true;
+            deepgramMsg = `Deepgram Aura active (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
+          } else if (dgRes.status === 401) {
+            deepgramMsg = `Deepgram key rejected (HTTP 401 Unauthorized). Verify token in Vercel settings.`;
+          } else {
+            deepgramValid = true;
+            deepgramMsg = `Deepgram Aura active (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
+          }
+        } catch (err) {
+          if (deepgramKey.length >= 16) {
+            deepgramValid = true;
+            deepgramMsg = `Deepgram Aura configured (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
+          } else {
+            deepgramMsg = `Deepgram probe error: ${err.message}`;
+          }
+        }
+      }
+
       let elevenValid = false;
       let elevenMsg = "";
-      if (elevenKey) {
+      if (isElevenKeyId) {
+        elevenMsg = "ElevenLabs API Key ID was provided instead of secret key (starts with 'sk_').";
+      } else if (elevenKey) {
         try {
           const userRes = await fetch("https://api.elevenlabs.io/v1/user", {
             headers: { "xi-api-key": elevenKey }
@@ -164,57 +286,16 @@ export async function agendaCompatHandler(req, res, subRoute) {
             const errText = await userRes.text();
             let parsed = null;
             try { parsed = JSON.parse(errText); } catch (_) {}
-            const isIdUsed = parsed?.detail?.status === "api_key_id_used_as_api_key" || errText.includes("API key ID used as API key");
-            elevenMsg = isIdUsed
-              ? "ElevenLabs API Key ID was provided instead of secret key (starts with 'sk_')."
-              : `ElevenLabs key rejected: ${parsed?.detail?.message || "Invalid key"}.`;
+            elevenMsg = `ElevenLabs key rejected: ${parsed?.detail?.message || "Invalid key"}.`;
           }
         } catch (err) {
           elevenMsg = `ElevenLabs probe error: ${err.message}`;
         }
       }
 
-      let deepgramValid = false;
-      let deepgramMsg = "";
-      if (deepgramKey) {
-        try {
-          // Check Deepgram authentication
-          const dgRes = await fetch("https://api.deepgram.com/v1/projects", {
-            headers: { "Authorization": `Token ${deepgramKey}` }
-          });
-          // Status 200 (project admin) or 403 (member/scoped token) confirms valid authentication
-          if (dgRes.ok || dgRes.status === 403 || dgRes.status === 200) {
-            deepgramValid = true;
-            deepgramMsg = `Deepgram Aura active (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
-          } else if (dgRes.status === 401) {
-            // Attempt fallback verification
-            const tokenRes = await fetch("https://api.deepgram.com/v1/auth/token", {
-              headers: { "Authorization": `Token ${deepgramKey}` }
-            });
-            if (tokenRes.ok || tokenRes.status !== 401) {
-              deepgramValid = true;
-              deepgramMsg = `Deepgram Aura active (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
-            } else {
-              deepgramMsg = `Deepgram key rejected (HTTP 401 Unauthorized).`;
-            }
-          } else {
-            // Non-401 responses indicate valid authentication with endpoint-specific status
-            deepgramValid = true;
-            deepgramMsg = `Deepgram Aura active (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
-          }
-        } catch (err) {
-          // If network error during probe but key is present, assume valid to avoid blocking TTS
-          if (deepgramKey.length >= 16) {
-            deepgramValid = true;
-            deepgramMsg = `Deepgram Aura configured (${deepgramSource}, voice: ${defaultDeepgramVoice}).`;
-          } else {
-            deepgramMsg = `Deepgram probe error: ${err.message}`;
-          }
-        }
-      }
-
       // Determine active provider & status
-      if (preferredProvider === "deepgram" && deepgramValid) {
+      // When Deepgram is configured and valid, treat it as the primary engine for 'deepgram' and 'auto'
+      if (deepgramValid && preferredProvider !== "elevenlabs") {
         return sendResponse(res, 200, {
           ok: true,
           configured: true,
@@ -261,8 +342,8 @@ export async function agendaCompatHandler(req, res, subRoute) {
         voice: defaultVoiceId,
         model: defaultModelId,
         message: (elevenMsg || deepgramMsg)
-          ? `TTS notice: ${[elevenMsg, deepgramMsg].filter(Boolean).join(" ")} Browser voice active.`
-          : "No ElevenLabs or Deepgram API key configured. Browser voice is active."
+          ? `TTS notice: ${[deepgramMsg, elevenMsg].filter(Boolean).join(" ")} Browser voice active.`
+          : "No Deepgram or ElevenLabs API key configured. Browser voice is active."
       });
     }
 
@@ -271,14 +352,15 @@ export async function agendaCompatHandler(req, res, subRoute) {
       return sendResponse(res, 400, { ok: false, code: "bad_request", error: "Text is required for TTS." });
     }
 
-    // 1. Direct Deepgram request
-    if (preferredProvider === "deepgram" && deepgramKey) {
+    // 1. Primary Deepgram request (when explicitly selected OR in 'auto' when Deepgram key is present)
+    if (deepgramKey && (preferredProvider === "deepgram" || preferredProvider === "auto" || !elevenValidSecret)) {
       const dgResult = await synthesizeDeepgramAura(text, defaultDeepgramVoice, deepgramKey);
       if (dgResult.ok) return;
+      console.warn("[Deepgram primary TTS failed, checking fallback]", dgResult.error);
     }
 
-    // 2. ElevenLabs attempt
-    if (elevenKey && preferredProvider !== "deepgram") {
+    // 2. ElevenLabs attempt (only if a valid secret starting with sk_ exists)
+    if (elevenValidSecret && preferredProvider !== "deepgram") {
       try {
         const targetVoice = voiceId || defaultVoiceId;
         const targetModel = modelId || defaultModelId;
@@ -306,6 +388,7 @@ export async function agendaCompatHandler(req, res, subRoute) {
           const audioBuffer = await response.arrayBuffer();
           try {
             res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Expose-Headers", "Content-Type, Content-Length, X-TTS-Engine, X-TTS-Voice");
             res.setHeader("Content-Type", "audio/mpeg");
             res.setHeader("Content-Length", audioBuffer.byteLength);
             res.setHeader("X-TTS-Engine", "elevenlabs");
@@ -316,14 +399,17 @@ export async function agendaCompatHandler(req, res, subRoute) {
           res.statusCode = 200;
           res.end(Buffer.from(audioBuffer));
           return;
+        } else {
+          const errBody = await response.text();
+          console.warn(`[ElevenLabs TTS error ${response.status}]`, errBody.slice(0, 160));
         }
       } catch (err) {
         console.warn("[ElevenLabs TTS attempt failed]", err);
       }
     }
 
-    // 3. Fallback to Deepgram Aura if ElevenLabs was missing or failed
-    if (deepgramKey) {
+    // 3. Fallback to Deepgram Aura if ElevenLabs was chosen first but failed
+    if (deepgramKey && preferredProvider !== "deepgram" && preferredProvider !== "auto") {
       const fallbackRes = await synthesizeDeepgramAura(text, defaultDeepgramVoice, deepgramKey);
       if (fallbackRes.ok) return;
     }

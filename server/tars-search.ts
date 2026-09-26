@@ -185,6 +185,8 @@ Estruture sua resposta de forma clara, técnica e objetiva em português, citand
       title: `Resultado TARS para: ${cleanQuery}`,
       content: answerText,
       snippet: answerText.slice(0, 300),
+      url: "",
+      domain: "google.com",
       source: "Google Search Grounding (Gemini)",
       score: 0.95,
       isWebGrounded: true

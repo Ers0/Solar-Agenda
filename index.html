@@ -689,20 +689,39 @@
         <div class="set-card-head">
           <div>
             <h3 class="set-card-title">📖 Spoken Vocabulary &amp; Phonetics</h3>
-            <div class="set-card-sub">Technical terms, inverter manufacturer names and pronunciation training</div>
+            <div class="set-card-sub">Technical terms, foreign manufacturer names and context-aware pronunciation training</div>
+          </div>
+          <div style="display:inline-flex; align-items:center; gap:6px; font-size:0.75rem; padding:3px 8px; border-radius:12px; background:rgba(56,189,248,0.1); border:1px solid rgba(56,189,248,0.25); color:var(--accent,#38bdf8);">
+            🛡️ Context-Aware Phrase Guard Active
           </div>
         </div>
 
         <div class="set-row" style="display:block">
           <div class="set-info" style="margin-bottom:7px"><b>Custom vocabulary dictionary</b><span id="vocab-count"></span></div>
-          <p class="hint" style="margin:0 0 8px">Words that get misheard — "Deye" arriving as "D-E", for instance. These are handed to the recogniser before it listens.</p>
+          <p class="hint" style="margin:0 0 8px">Words that do not fit English or Portuguese phonetics (e.g. <i>Deye, Hoymiles, Growatt</i>). Type the term, click <b>Say it</b> to train acoustic variations, and TARS will recognize it using phrase-context gating to avoid false positives on everyday words.</p>
+          
           <div class="vocab-add">
-            <input id="vocab-input" placeholder="Add a word or model name (e.g. Deye, Hoymiles, Growatt)">
+            <input id="vocab-input" placeholder="Type technical term or brand (e.g. Deye, Hoymiles, Growatt)">
             <button class="btn-ghost" id="vocab-save">Add</button>
             <button class="btn-primary" id="vocab-train">Say it</button>
           </div>
+          
           <div class="vocab-train" id="vocab-train-box" style="display:none"></div>
-          <div class="vocab-list" id="vocab-list"></div>
+          
+          <!-- Context Simulation Tester -->
+          <div class="vocab-test-wrap" style="margin-top:12px; padding:10px 12px; background:rgba(30,41,59,0.3); border:1px solid rgba(148,163,184,0.15); border-radius:8px;">
+            <div style="font-size:0.78rem; font-weight:600; color:var(--text-muted, #94a3b8); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+              <span>🧪 Context-Aware Simulation Tester</span>
+              <span style="font-size:0.7rem; opacity:0.8;">Verifies phrase context gating</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <input id="vocab-test-input" placeholder="Test sentence (e.g. 'o inversor dei queimou' vs 'eu dei um recado')" style="flex:1; font-size:0.82rem; padding:6px 10px; background:var(--bg-elevated, rgba(15,23,42,0.6)); border:1px solid var(--border, rgba(148,163,184,0.2)); border-radius:6px; color:var(--text, #f8fafc);">
+              <button class="btn-ghost" id="vocab-test-btn" style="padding:6px 12px; font-size:0.82rem; cursor:pointer;">Simulate</button>
+            </div>
+            <div id="vocab-test-output" style="display:none; margin-top:8px;"></div>
+          </div>
+
+          <div class="vocab-list" id="vocab-list" style="margin-top:12px;"></div>
         </div>
       </div>
     </div>

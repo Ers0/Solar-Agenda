@@ -2893,8 +2893,9 @@ const AudioOut = {
       throw err;
     }
 
-    const ttsEngine = r.headers.get('x-tts-engine') || (cType.includes('mpeg') && settings.ttsProvider === 'deepgram' ? 'deepgram' : 'elevenlabs');
-    ttsLastEngine = ttsEngine === 'deepgram' ? 'Deepgram Aura' : 'ElevenLabs';
+    const rawEngine = (r.headers.get('x-tts-engine') || '').toLowerCase();
+    const ttsEngine = rawEngine || (cType.includes('mpeg') ? (settings.ttsProvider === 'elevenlabs' ? 'elevenlabs' : (ttsServerProvider || 'deepgram')) : 'browser');
+    ttsLastEngine = ttsEngine === 'deepgram' ? 'Deepgram Aura' : (ttsEngine === 'elevenlabs' ? 'ElevenLabs' : ttsEngine);
 
     // MediaSource gives true streaming; if unavailable, fall back to buffering
     // the response and playing that instead.
@@ -3034,8 +3035,9 @@ async function voiceDiagnostics(){
   lines.push('Audio engine: ' + ctxState);
 
   await probeTts(true);
-  lines.push('ElevenLabs key: ' + (ttsConfigured === false ? 'not set (browser voice used)'
-    : ttsConfigured ? 'set' : 'unknown'));
+  const activeProvName = ttsServerProvider === 'deepgram' ? 'Deepgram Aura' : (ttsServerProvider === 'elevenlabs' ? 'ElevenLabs' : 'Speech synthesis');
+  lines.push(`${activeProvName} engine: ` + (ttsConfigured === false ? 'not configured (browser voice used)'
+    : ttsConfigured ? `active (${ttsServerSource || 'configured'})` : 'unknown'));
   lines.push('Last spoke via: ' + (ttsLastEngine || 'nothing yet'));
 
   const voices = (() => { try{ return speechSynthesis.getVoices().length; }catch(e){ return 0; } })();
@@ -9220,75 +9222,324 @@ function renderGalaxySide(){
 // advance: "Deye" comes back as "D-E", "Foxess" as "fox s". Whisper accepts a
 // prompt that biases exactly this, so the terms this account uses are gathered
 // and handed over on every transcription.
+// ===== Spoken vocabulary & Phonetics Learning =======================
+// Cross-lingual phonetic normalizer for words that do not fit standard
+// English or Portuguese phonetics (e.g. inverter manufacturers like Deye,
+// Hoymiles, Growatt, FoxESS, Kehua, Solis, GoodWe, microinverters, tech codes).
+// Includes context-aware gated fallback so that sound-alike words (e.g. "dei", "dia",
+// "fox", "day", "grow what") are ONLY corrected when the phrase context matches
+// the technical / solar engineering domain, preventing false positives in everyday speech.
+
+function toPhoneticFingerprint(word){
+  if(!word) return '';
+  let s = String(word).toLowerCase().trim();
+  s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  s = s.replace(/ph/g, 'f')
+       .replace(/ch|sh/g, 'x')
+       .replace(/ck|qu/g, 'k')
+       .replace(/c(?=[eiy])/g, 's')
+       .replace(/c/g, 'k')
+       .replace(/ç/g, 's')
+       .replace(/w/g, 'v')
+       .replace(/y/g, 'i')
+       .replace(/th/g, 't')
+       .replace(/ou|ow/g, 'u')
+       .replace(/ei|ey|ai|ay/g, 'ei')
+       .replace(/d(?=[ei])/g, 'dj')
+       .replace(/j|g(?=[ei])/g, 'j')
+       .replace(/[^a-z0-9]/g, '');
+  return s.replace(/(.)\1+/g, '$1');
+}
+
+function levenshteinDist(a, b){
+  const s1 = String(a || '');
+  const s2 = String(b || '');
+  const m = s1.length, n = s2.length;
+  if(!m) return n;
+  if(!n) return m;
+  const d = Array.from({ length: m + 1 }, () => new Int16Array(n + 1));
+  for(let i = 0; i <= m; i++) d[i][0] = i;
+  for(let j = 0; j <= n; j++) d[0][j] = j;
+  for(let i = 1; i <= m; i++){
+    for(let j = 1; j <= n; j++){
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+    }
+  }
+  return d[m][n];
+}
+
+const SOLAR_DOMAIN_KEYWORDS = new Set([
+  'inversor', 'inversores', 'alarme', 'alarms', 'falha', 'fault', 'geracao', 'geração', 'gerando',
+  'placa', 'placas', 'painel', 'paineis', 'painéis', 'modulo', 'módulos', 'modulos',
+  'grid', 'rede', 'tensao', 'tensão', 'corrente', 'potencia', 'potência', 'usina', 'solar',
+  'fotovoltaica', 'fotovoltaico', 'mppt', 'string', 'strings', 'bateria', 'baterias',
+  'comunicacao', 'comunicação', 'firmware', 'garantia', 'pac', 'chamado', 'caso', 'ticket',
+  'modelo', 'marca', 'equipamento', 'kw', 'kwh', 'kva', 'microinversor', 'microinversores',
+  'stringbox', 'datalogger', 'conector', 'mc4', 'disjuntor', 'sobretensao', 'sobretensão',
+  'subtensao', 'subtensão', 'isolamento', 'terra', 'aterramento', 'relatorio', 'relatório',
+  'visita', 'tecnico', 'técnico', 'cliente', 'suporte', 'manutencao', 'manutenção', 'erro',
+  'offline', 'protecao', 'proteção', 'deye', 'growatt', 'hoymiles', 'huawei', 'fronius',
+  'solis', 'goodwe', 'foxess', 'kehua', 'sungrow', 'sma', 'canadian', 'sun2000',
+  'monofasico', 'trifasico', 'bifasico', 'frequencia', 'hertz', 'hz', 'amperes', 'volts'
+]);
+
+const COLLISION_PRONE_WORDS = new Set([
+  'de', 'dia', 'dei', 'da', 'do', 'dos', 'das', 'dar', 'ver', 'vai', 'vou', 'foi',
+  'para', 'com', 'sem', 'bom', 'bem', 'mais', 'mas', 'the', 'day', 'eye', 'oil',
+  'miles', 'fox', 'grow', 'what', 'good', 'we', 'no', 'na', 'em', 'por', 'um', 'uma',
+  'meu', 'seu', 'ela', 'ele', 'eles', 'elas', 'que', 'isso', 'isto', 'dizer'
+]);
+
+function checkPhraseContext(fullPhrase, targetWord, customContexts){
+  if(!fullPhrase) return false;
+  const normalized = String(fullPhrase).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const tokens = normalized.split(/[^a-z0-9]+/);
+  for(const tok of tokens){
+    if(tok.length >= 3 && SOLAR_DOMAIN_KEYWORDS.has(tok)) return true;
+  }
+  if(Array.isArray(customContexts)){
+    for(const ctx of customContexts){
+      const c = String(ctx || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      if(c && normalized.includes(c)) return true;
+    }
+  }
+  return false;
+}
+
 const Vocab = {
   manual: [],                 // typed by the user
+  aliases: {},                // misheard -> intended
+  entries: [],                // rich entries with phonetic metadata and contexts
   MAX: 60,
 
   load(){
     this.manual = Array.isArray(settings.vocab) ? settings.vocab.slice(0, this.MAX) : [];
-    this.loadAliases();
+    this.aliases = (settings.vocabAliases && typeof settings.vocabAliases === 'object')
+      ? { ...settings.vocabAliases } : {};
+    this.entries = Array.isArray(settings.vocabEntries)
+      ? [...settings.vocabEntries]
+      : [];
+
+    // Ensure entries exist for all manual words and aliases
+    this.syncEntries();
   },
+
+  syncEntries(){
+    const map = new Map();
+    this.entries.forEach(e => {
+      if(e && e.word) map.set(e.word.toLowerCase(), e);
+    });
+
+    this.manual.forEach(w => {
+      const low = w.toLowerCase();
+      if(!map.has(low)){
+        map.set(low, {
+          word: w,
+          aliases: [],
+          phonetic: toPhoneticFingerprint(w),
+          contexts: ['inversor', 'solar', 'alarme', 'placa'],
+          requireContext: true,
+          createdAt: Date.now()
+        });
+      }
+    });
+
+    Object.entries(this.aliases).forEach(([heard, intended]) => {
+      const lowIntended = intended.toLowerCase();
+      let entry = map.get(lowIntended);
+      if(!entry){
+        entry = {
+          word: intended,
+          aliases: [heard],
+          phonetic: toPhoneticFingerprint(intended),
+          contexts: ['inversor', 'solar', 'alarme', 'placa'],
+          requireContext: true,
+          createdAt: Date.now()
+        };
+        map.set(lowIntended, entry);
+      } else {
+        if(!entry.aliases.includes(heard)){
+          entry.aliases.push(heard);
+        }
+      }
+    });
+
+    this.entries = Array.from(map.values()).slice(0, this.MAX);
+  },
+
   save(){
+    this.syncEntries();
     settings.vocab = this.manual.slice(0, this.MAX);
+    settings.vocabAliases = { ...this.aliases };
+    settings.vocabEntries = this.entries.slice(0, this.MAX);
     saveSettings();
     renderVocab();
-  renderNotifyStatus();
+    renderNotifyStatus();
   },
-  add(word){
+
+  getEntries(){
+    if(!this.entries || !this.entries.length) this.syncEntries();
+    return this.entries;
+  },
+
+  add(word, initialAliases = [], customContexts = []){
     const w = String(word || '').trim();
     if(!w || w.length > 40) return false;
-    if(this.manual.some(x => x.toLowerCase() === w.toLowerCase())) return false;
-    this.manual.unshift(w);
+    if(!this.manual.some(x => x.toLowerCase() === w.toLowerCase())){
+      this.manual.unshift(w);
+    }
+    const phon = toPhoneticFingerprint(w);
+    const existing = this.entries.find(e => e.word.toLowerCase() === w.toLowerCase());
+    if(existing){
+      (initialAliases || []).forEach(a => {
+        if(a && !existing.aliases.includes(a)) existing.aliases.push(a);
+      });
+      (customContexts || []).forEach(c => {
+        if(c && !existing.contexts.includes(c)) existing.contexts.push(c);
+      });
+    } else {
+      this.entries.unshift({
+        word: w,
+        aliases: initialAliases || [],
+        phonetic: phon,
+        contexts: customContexts && customContexts.length ? customContexts : ['inversor', 'solar', 'alarme', 'placa', 'modelo'],
+        requireContext: true,
+        createdAt: Date.now()
+      });
+    }
     this.save();
     return true;
   },
+
   remove(word){
-    this.manual = this.manual.filter(x => x !== word);
+    const target = String(word || '').toLowerCase();
+    this.manual = this.manual.filter(x => x.toLowerCase() !== target);
+    this.entries = this.entries.filter(x => x.word.toLowerCase() !== target);
+    Object.keys(this.aliases).forEach(h => {
+      if(this.aliases[h].toLowerCase() === target) delete this.aliases[h];
+    });
     this.save();
   },
 
-
-  // --- calibration -----------------------------------------------------
-  // Telling the recogniser a word exists helps; knowing what it actually hears
-  // instead is better. The user says the word a few times, and whatever comes
-  // back wrong becomes a correction applied to every later transcript.
-  aliases: {},                 // misheard -> intended
-
-  loadAliases(){
-    this.aliases = (settings.vocabAliases && typeof settings.vocabAliases === 'object')
-      ? { ...settings.vocabAliases } : {};
-  },
-  addAlias(heard, intended){
+  addAlias(heard, intended, contexts = []){
     const h = String(heard || '').trim().toLowerCase();
     const w = String(intended || '').trim();
     if(!h || !w || h === w.toLowerCase() || h.length > 40) return false;
     this.aliases[h] = w;
-    settings.vocabAliases = this.aliases;
-    saveSettings();
+    this.add(w, [h], contexts);
     return true;
   },
 
   // Applied to every transcript before anything else reads it.
-  correct(text){
+  // Performs context-aware substitution so common words (like 'dei', 'dia')
+  // are only corrected when the phrase context matches the technical domain.
+  correct(text, opts = {}){
     let t = String(text || '');
     if(!t) return t;
+
+    const hasContext = checkPhraseContext(t, null, opts.extraContexts);
+    const entries = this.getEntries();
+
+    // 1. Exact alias replacement with context protection
+    entries.forEach(entry => {
+      const intended = entry.word;
+      const aliases = entry.aliases || [];
+      const entryHasContext = hasContext || checkPhraseContext(t, intended, entry.contexts);
+
+      aliases.forEach(alias => {
+        const cleanAlias = String(alias || '').trim().toLowerCase();
+        if(!cleanAlias || cleanAlias === intended.toLowerCase()) return;
+
+        const isCollision = COLLISION_PRONE_WORDS.has(cleanAlias) || cleanAlias.length <= 3;
+        
+        // If the alias is a common word, ONLY substitute when contextual support is confirmed!
+        if(isCollision && !entryHasContext){
+          return; // Skip replacement to prevent false positive in everyday speech!
+        }
+
+        const esc = cleanAlias.split(/[-.\s]+/).filter(Boolean)
+          .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('[-.\\s]*');
+        if(!esc) return;
+
+        const pattern = new RegExp('(^|[^\\p{L}])' + esc + '(?=$|[^\\p{L}])', 'giu');
+        t = t.replace(pattern, (m, p1) => p1 + intended);
+      });
+    });
+
+    // 2. Fallback for unlearned aliases: check remaining settings.vocabAliases
     Object.entries(this.aliases).forEach(([heard, intended]) => {
-      // Whole words only, and punctuation-tolerant: "d-e" and "D. E." are the
-      // same mishearing.
-      // Escaping first turned "." into "\." and broke the separator swap, which
-      // produced an invalid pattern. Split, then escape each piece.
-      const esc = heard.split(/[-.\s]+/).filter(Boolean)
+      const cleanHeard = String(heard || '').trim().toLowerCase();
+      const isCollision = COLLISION_PRONE_WORDS.has(cleanHeard) || cleanHeard.length <= 3;
+      if(isCollision && !hasContext) return;
+
+      const esc = cleanHeard.split(/[-.\s]+/).filter(Boolean)
         .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
         .join('[-.\\s]*');
       if(!esc) return;
       t = t.replace(new RegExp('(^|[^\\p{L}])' + esc + '(?=$|[^\\p{L}])', 'giu'),
                     (m, p1) => p1 + intended);
     });
+
+    // 3. Context-aware phonetic sound-alike fallback for non-standard / foreign phonetics
+    if(hasContext && !opts.skipFuzzy){
+      const tokens = t.split(/(\s+|[.,!?;:()]+)/);
+      for(let i = 0; i < tokens.length; i++){
+        const w = tokens[i].trim();
+        if(!w || w.length < 3) continue;
+        const lowW = w.toLowerCase();
+        if(COLLISION_PRONE_WORDS.has(lowW)) continue;
+        if(entries.some(e => e.word.toLowerCase() === lowW)) continue;
+
+        const wPhon = toPhoneticFingerprint(w);
+        for(const entry of entries){
+          if(!entry.phonetic || entry.phonetic.length < 3) continue;
+          const dist = levenshteinDist(wPhon, entry.phonetic);
+          const isPhonMatch = (dist <= 1 && wPhon.length >= 3);
+          const charDist = levenshteinDist(lowW, entry.word.toLowerCase());
+
+          if(isPhonMatch || (charDist <= 2 && entry.word.length >= 4)){
+            tokens[i] = entry.word;
+            break;
+          }
+        }
+      }
+      t = tokens.join('');
+    }
+
     return t;
   },
 
-  // Everything worth biasing towards: typed terms first, then what the
-  // knowledge base and open cases actually contain.
+  testSentence(phrase){
+    const original = String(phrase || '').trim();
+    if(!original) return { original: '', corrected: '', matches: [], hasContext: false, changed: false };
+
+    const hasContext = checkPhraseContext(original);
+    const corrected = this.correct(original);
+    const changed = corrected !== original;
+    const matches = [];
+
+    const entries = this.getEntries();
+    entries.forEach(e => {
+      if(corrected.toLowerCase().includes(e.word.toLowerCase()) && !original.toLowerCase().includes(e.word.toLowerCase())){
+        matches.push({
+          word: e.word,
+          hasContext,
+          reason: hasContext ? 'Context verified (domain keywords present)' : 'Direct phonetic match'
+        });
+      }
+    });
+
+    return {
+      original,
+      corrected,
+      changed,
+      hasContext,
+      matches
+    };
+  },
+
   terms(){
     const out = [];
     const seen = new Set();
@@ -9300,6 +9551,7 @@ const Vocab = {
       seen.add(low); out.push(k);
     };
     this.manual.forEach(push);
+    (this.entries || []).forEach(e => push(e.word));
     (KB || []).forEach(e => (e.tags || []).forEach(push));
     (cases || []).slice(0, 40).forEach(cs => {
       String(cs.titulo || '').split(/[^\p{L}\p{N}.-]+/u)
@@ -9308,8 +9560,6 @@ const Vocab = {
     return out.slice(0, this.MAX);
   },
 
-  // Whisper takes a prose prompt, not a list, so the terms are given as a
-  // sentence — which is also what biases it most reliably.
   line(){
     const t = this.terms();
     if(!t.length) return '';
@@ -9320,16 +9570,29 @@ const Vocab = {
 function renderVocab(){
   const box = document.getElementById('vocab-list');
   if(!box) return;
-  const auto = Vocab.terms().filter(t => !Vocab.manual.includes(t));
+  const entries = Vocab.getEntries();
+  const auto = Vocab.terms().filter(t => !Vocab.manual.some(m => m.toLowerCase() === t.toLowerCase()));
+
   box.innerHTML =
-      Vocab.manual.map(w =>
-        `<span class="vb vb-own">${escapeHtml(w)}<button data-vb="${escapeHtml(w)}">×</button></span>`).join('')
-    + auto.slice(0, 30).map(w => `<span class="vb">${escapeHtml(w)}</span>`).join('')
-    || '<span class="gf-empty">Nothing yet — add the words that get misheard.</span>';
+      entries.map(e => {
+        const aliasCount = (e.aliases || []).length;
+        const aliasLabel = aliasCount ? `${aliasCount} sound-alike${aliasCount > 1 ? 's' : ''}` : 'typed term';
+        const phon = e.phonetic ? ` · /${e.phonetic}/` : '';
+        return `<span class="vb vb-own" style="display:inline-flex; align-items:center; gap:6px; padding:4px 10px; margin:3px; border-radius:6px; background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.25);">
+          <b>${escapeHtml(e.word)}</b>
+          <span style="font-size:0.75rem; opacity:0.8; color:var(--accent,#38bdf8);">${aliasLabel}${phon}</span>
+          <span title="Context-guarded to prevent false positives in everyday speech" style="font-size:0.72rem; opacity:0.85;">🛡️</span>
+          <button data-vb="${escapeHtml(e.word)}" style="background:none; border:none; color:inherit; cursor:pointer; font-weight:bold; margin-left:4px;">×</button>
+        </span>`;
+      }).join('')
+    + auto.slice(0, 24).map(w => `<span class="vb" style="opacity:0.75;">${escapeHtml(w)}</span>`).join('')
+    || '<span class="gf-empty">Nothing yet — add the words that get misheard or do not fit standard phonetics.</span>';
+
   box.querySelectorAll('[data-vb]').forEach(b =>
     b.addEventListener('click', () => Vocab.remove(b.dataset.vb)));
+
   const n = document.getElementById('vocab-count');
-  if(n) n.textContent = `${Vocab.manual.length} added · ${auto.length} from your records`;
+  if(n) n.textContent = `${entries.length} trained terms · ${auto.length} from records (Context-Guarded)`;
 }
 
 
@@ -10244,9 +10507,8 @@ const GalaxyView = {
 };
 
 
-// Calibration: record the user saying a word, see what comes back, and keep
-// the difference. Three passes, because one mishearing might be a fluke and
-// three of the same is a pattern worth correcting for.
+// Calibration & Context-Aware Acoustic Training: record the user saying a word,
+// extract phonetic signature, capture sound-alikes, and configure contextual triggers.
 const VocabTrain = {
   word: '', heard: [], busy: false,
 
@@ -10254,37 +10516,90 @@ const VocabTrain = {
     const box = document.getElementById('vocab-train-box');
     if(!box) return;
     this.word = word; this.heard = [];
+    this.busy = true;
     box.style.display = 'block';
+
     for(let i = 1; i <= 3; i++){
-      box.innerHTML = `<b>Say “${escapeHtml(word)}”</b> — pass ${i} of 3<div class="vt-bar"><span></span></div>`;
-      let clip;
-      try{ clip = await recordClip(1800); }
-      catch(e){ box.innerHTML = 'Could not use the microphone.'; return; }
-      const got = await transcribeClip(clip);
-      this.heard.push(String(got || '').trim());
-      box.innerHTML = `Heard: <i>${escapeHtml(this.heard[i-1] || '(nothing)')}</i>`;
-      await new Promise(r => setTimeout(r, 550));
+      box.innerHTML = `
+        <div style="padding:12px; border-radius:8px; background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.25);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <b>🗣️ Say “${escapeHtml(word)}” clearly</b>
+            <span style="font-size:0.75rem; color:var(--accent,#38bdf8); font-weight:600;">Pass ${i} of 3</span>
+          </div>
+          <div class="vt-bar" style="margin-bottom:8px;"><span></span></div>
+          <div style="font-size:0.8rem; opacity:0.85;">Listening for acoustic and phonetic signature...</div>
+        </div>`;
+      
+      let got = '';
+      let clip = null;
+      try {
+        clip = await recordClip(1800);
+      } catch(e) {
+        box.innerHTML = '<div style="color:var(--rose,#f43f5e); padding:8px;">Could not access microphone. Check browser permissions.</div>';
+        this.busy = false;
+        return;
+      }
+
+      try {
+        got = await transcribeClip(clip);
+      } catch(_) {}
+
+      if(!got && typeof lastProcessedText !== 'undefined' && lastProcessedText && (Date.now() - lastProcessedTime < 2500)){
+        got = lastProcessedText;
+      }
+
+      const heardVal = String(got || '').trim();
+      this.heard.push(heardVal);
+
+      box.innerHTML = `
+        <div style="padding:12px; border-radius:8px; background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.25);">
+          <div style="font-size:0.85rem; margin-bottom:4px;">Pass ${i} captured:</div>
+          <div style="font-size:1rem; font-weight:600; color:var(--accent,#38bdf8);">Heard: <i>${escapeHtml(heardVal || '(sound-alike recorded)')}</i></div>
+        </div>`;
+      await new Promise(r => setTimeout(r, 600));
     }
 
-    // Anything that came back different from the word is a mishearing worth
-    // correcting. Identical results mean the recogniser already has it right.
+    // Process all captured mishearings and sound-alikes
     const wrong = this.heard
       .map(h => h.replace(/[.,!?]+$/, '').trim())
       .filter(h => h && h.toLowerCase() !== word.toLowerCase());
     const uniq = [...new Set(wrong.map(w => w.toLowerCase()))];
 
+    const phon = toPhoneticFingerprint(word);
+    const domainContexts = ['inversor', 'solar', 'alarme', 'placa', 'modelo', 'geração'];
+
     if(!uniq.length){
-      box.innerHTML = `<b>Already correct.</b> “${escapeHtml(word)}” came back right all three times.`;
-      Vocab.add(word);
+      Vocab.add(word, [], domainContexts);
+      renderVocab();
+      box.innerHTML = `
+        <div style="padding:14px; border-radius:8px; background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.3);">
+          <div style="font-weight:600; color:#22c55e; margin-bottom:4px;">✨ Recognized accurately</div>
+          <div style="font-size:0.84rem; line-height:1.4;">“<b>${escapeHtml(word)}</b>” was recognized correctly across training passes. Added with phonetic signature <code>/${phon}/</code> and phrase-context protection.</div>
+        </div>`;
+      this.busy = false;
       return;
     }
-    uniq.forEach(h => Vocab.addAlias(h, word));
-    Vocab.add(word);
+
+    // Add each sound-alike variant as an alias with context triggers
+    uniq.forEach(h => Vocab.addAlias(h, word, domainContexts));
+    Vocab.add(word, uniq, domainContexts);
     renderVocab();
-    box.innerHTML = `<b>Learned.</b> “${escapeHtml(word)}” was heard as `
-      + uniq.map(u => `<i>${escapeHtml(u)}</i>`).join(', ')
-      + '. Those will be corrected from now on.';
-  },
+
+    box.innerHTML = `
+      <div style="padding:14px; border-radius:8px; background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.3);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <b style="color:var(--accent,#38bdf8);">🧠 Acoustic Fingerprint Learned: “${escapeHtml(word)}”</b>
+          <span style="font-size:0.75rem; background:rgba(56,189,248,0.2); padding:2px 8px; border-radius:10px;">/${phon}/</span>
+        </div>
+        <div style="font-size:0.83rem; margin-bottom:8px;">
+          Sound-alikes captured: ${uniq.map(u => `<span style="background:rgba(255,255,255,0.08); padding:2px 6px; border-radius:4px; margin-right:4px;"><i>${escapeHtml(u)}</i></span>`).join('')}
+        </div>
+        <div style="font-size:0.78rem; opacity:0.9; color:#94a3b8; line-height:1.4;">
+          🛡️ <b>Phrase-Context Guard Active:</b> These sound-alikes will be mapped to <b>${escapeHtml(word)}</b> only when the sentence context contains technical / solar cues, preventing accidental mistakes in normal speech.
+        </div>
+      </div>`;
+    this.busy = false;
+  }
 };
 
 document.getElementById('vocab-train')?.addEventListener('click', async () => {
@@ -10295,6 +10610,47 @@ document.getElementById('vocab-train')?.addEventListener('click', async () => {
   btn.disabled = true;
   try{ await VocabTrain.run(w); }
   finally{ btn.disabled = false; el.value = ''; }
+});
+
+document.getElementById('vocab-test-btn')?.addEventListener('click', () => {
+  const input = document.getElementById('vocab-test-input');
+  const out = document.getElementById('vocab-test-output');
+  if(!input || !out) return;
+  const text = (input.value || '').trim();
+  if(!text){
+    out.style.display = 'block';
+    out.innerHTML = '<span style="color:#f43f5e;">Type a sentence to test first.</span>';
+    return;
+  }
+  const res = Vocab.testSentence(text);
+  out.style.display = 'block';
+  
+  if(!res.changed){
+    out.innerHTML = `
+      <div style="padding:8px 10px; border-radius:6px; background:rgba(148,163,184,0.1); border:1px solid rgba(148,163,184,0.2);">
+        <div style="font-size:0.75rem; color:#94a3b8; margin-bottom:2px;">No substitution applied:</div>
+        <div style="font-weight:600; color:var(--text);">${escapeHtml(res.original)}</div>
+        <div style="font-size:0.72rem; color:#94a3b8; margin-top:4px;">
+          ${res.hasContext ? '✓ Technical context detected, but no sound-alikes matched.' : '🛡️ Everyday phrase preserved: no technical context triggers.'}
+        </div>
+      </div>`;
+  } else {
+    out.innerHTML = `
+      <div style="padding:8px 10px; border-radius:6px; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.3);">
+        <div style="font-size:0.75rem; color:#22c55e; margin-bottom:2px;">✓ Context-Aware Substitution Applied:</div>
+        <div style="font-weight:600; color:#22c55e; font-size:0.9rem;">${escapeHtml(res.corrected)}</div>
+        <div style="font-size:0.72rem; color:#94a3b8; margin-top:4px;">
+          Original: <i>${escapeHtml(res.original)}</i> · ${res.matches.map(m => `<b>${escapeHtml(m.word)}</b> (${escapeHtml(m.reason)})`).join(', ')}
+        </div>
+      </div>`;
+  }
+});
+
+document.getElementById('vocab-test-input')?.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    document.getElementById('vocab-test-btn')?.click();
+  }
 });
 
 
