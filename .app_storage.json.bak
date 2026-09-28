@@ -1,0 +1,214 @@
+{
+  "slaCases": [
+    {
+      "id": "SLA-1001",
+      "customer": {
+        "name": "Roberto Dias de Souza",
+        "phone": "+55 11 98842-1920",
+        "email": "roberto.dias@solarenergy.com.br",
+        "site_location": "Campinas - SP"
+      },
+      "equipment": {
+        "manufacturer": "Deye",
+        "model": "SUN-8K-SG01LP1-EU",
+        "serial_numbers": [
+          "230819405231"
+        ],
+        "category": "Inverter Alarm / Fault",
+        "firmware": "HMI 1001-C037 / MAIN 2001-1140"
+      },
+      "status": "WAITING MANUFACTURER RESPONSE",
+      "priority": "alta",
+      "problem_summary": "Inversor travado com Alarme F30 (Falha de Acionamento IGBT) intermitente ao atingir 4.2kW de potência.",
+      "created_at": "2026-09-28T02:30:40.778Z",
+      "updated_at": "2026-09-28T14:30:40.778Z",
+      "sla_deadline": "2026-09-29T02:30:40.778Z",
+      "sla_limit_hours": 24,
+      "responsible_tech": "Suporte Solar",
+      "next_action": "Aguardando validação da Deye sobre envio de nova placa de controle para RMA",
+      "protocols": {
+        "hyperflow_id": "HF-8821",
+        "hyperflow_url": "https://app.hyperflow.com.br/chat/8821",
+        "jira": [
+          {
+            "board": "ADB",
+            "issue_key": "ADB-48912",
+            "summary": "Deye RMA - Placa SUN-8K F30",
+            "status": "In Review"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "id": "evt-1",
+          "type": "hyperflow_msg",
+          "title": "Conversa Importada via TARS Bridge",
+          "detail": "Cliente relatou falha F30 no display do inversor Deye SUN-8K. SN 230819405231 extraído com 98% de confiança.",
+          "author": "TARS Bridge",
+          "timestamp": "2026-09-28T02:30:40.778Z"
+        },
+        {
+          "id": "evt-2",
+          "type": "technical_action",
+          "title": "Diagnóstico Preliminar",
+          "detail": "Verificada tensão CA nos bornes: 224V fase-fase (dentro dos limites PRODIST). Isolamento CC > 50MΩ.",
+          "author": "Técnico Suporte",
+          "timestamp": "2026-09-28T08:30:40.778Z"
+        },
+        {
+          "id": "evt-3",
+          "type": "manufacturer_contact",
+          "title": "Protocolo Aberto com Deye (ADB-48912)",
+          "detail": "Chamado aberto via WhatsApp suporte técnico Deye com relatório de falha e logs.",
+          "author": "Técnico Suporte",
+          "timestamp": "2026-09-28T14:30:40.778Z"
+        }
+      ],
+      "conversation": {
+        "source": "Hyperflow",
+        "channel": "WhatsApp Cliente",
+        "messages": [
+          {
+            "sender": "customer",
+            "text": "Boa tarde, meu inversor Deye está apitando e com luz vermelha acesa.",
+            "time": "10:14"
+          },
+          {
+            "sender": "agent",
+            "text": "Olá Roberto! Pode nos enviar a foto do visor com o código de erro e a etiqueta lateral com o número de série?",
+            "time": "10:16"
+          },
+          {
+            "sender": "customer",
+            "text": "Segue a foto do display: Erro F30. O número de série na etiqueta é 230819405231.",
+            "time": "10:22"
+          }
+        ]
+      },
+      "files": [
+        {
+          "name": "display_f30_erro.jpg",
+          "type": "image/jpeg",
+          "size": "1.4 MB",
+          "url": "#"
+        },
+        {
+          "name": "etiqueta_sn_230819405231.jpg",
+          "type": "image/jpeg",
+          "size": "2.1 MB",
+          "url": "#"
+        }
+      ]
+    },
+    {
+      "id": "SLA-1002",
+      "customer": {
+        "name": "Fazenda Santa Maria (Eng. Carlos)",
+        "phone": "+55 19 97123-5544",
+        "email": "carlos@santamaria.agr.br",
+        "site_location": "Ribeirão Preto - SP"
+      },
+      "equipment": {
+        "manufacturer": "FoxESS",
+        "model": "T25-G3 Three-Phase",
+        "serial_numbers": [
+          "FA230911849201"
+        ],
+        "category": "Grid Overvoltage / AC Fault",
+        "firmware": "V1.42"
+      },
+      "status": "WAITING CUSTOMER INFO / TEST",
+      "priority": "alta",
+      "problem_summary": "Sobretensão na rede da concessionária (CPFL). Inversor desarmando com alarme Grid Volt Fault por volta das 12h30.",
+      "created_at": "2026-09-27T20:30:40.778Z",
+      "updated_at": "2026-09-28T12:30:40.778Z",
+      "sla_deadline": "2026-09-28T20:30:40.778Z",
+      "sla_limit_hours": 24,
+      "responsible_tech": "Engenharia de Campo",
+      "next_action": "Aguardando cliente enviar medições de tensão fase-neutro com multímetro durante o pico solar",
+      "protocols": {
+        "hyperflow_id": "HF-8835",
+        "jira": [
+          {
+            "board": "GABEF",
+            "issue_key": "GABEF-1044",
+            "summary": "FoxESS T25 Grid Overvoltage",
+            "status": "In Progress"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "id": "evt-11",
+          "type": "hyperflow_msg",
+          "title": "Caso Criado",
+          "detail": "Cliente relatou perdas de geração entre 11h e 13h todos os dias ensolarados.",
+          "author": "Hyperflow",
+          "timestamp": "2026-09-27T20:30:40.778Z"
+        },
+        {
+          "id": "evt-12",
+          "type": "technical_action",
+          "title": "Análise de Histórico FoxCloud",
+          "detail": "Tensão da fase A atinge 257V às 12h18, acionando a proteção de sobretensão nível 1 (253V configurado).",
+          "author": "Técnico Suporte",
+          "timestamp": "2026-09-28T06:30:40.778Z"
+        }
+      ],
+      "files": []
+    },
+    {
+      "id": "SLA-1003",
+      "customer": {
+        "name": "Condomínio Residencial Bougainville",
+        "phone": "+55 31 99812-4040",
+        "email": "sindico@bougainville.com.br",
+        "site_location": "Belo Horizonte - MG"
+      },
+      "equipment": {
+        "manufacturer": "Huawei",
+        "model": "SUN2000-50KTL-M3",
+        "serial_numbers": [
+          "2101073842100984"
+        ],
+        "category": "Hardware / Contactor Failure",
+        "firmware": "V500R001C00SPC145"
+      },
+      "status": "PENDING MANUFACTURER CONTACT",
+      "priority": "urgente",
+      "problem_summary": "Alarme 2064 (Falha no circuito do contator interno). Inversor não reconecta à rede elétrica.",
+      "created_at": "2026-09-28T11:30:40.778Z",
+      "updated_at": "2026-09-28T15:30:40.778Z",
+      "sla_deadline": "2026-09-28T23:30:40.778Z",
+      "sla_limit_hours": 12,
+      "responsible_tech": "Suporte Solar",
+      "next_action": "Abrir chamado formal de garantia no portal Huawei FusionSolar com logs de PAC exportados",
+      "protocols": {
+        "hyperflow_id": "HF-8902",
+        "jira": [
+          {
+            "board": "AGH",
+            "issue_key": "AGH-302",
+            "summary": "Huawei 50KTL Contactor Fault",
+            "status": "Open"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "id": "evt-21",
+          "type": "status_change",
+          "title": "Caso Aberto com Prioridade Urgente",
+          "detail": "Usina comercial parada, gerando perda financeira ao cliente.",
+          "author": "Suporte Solar",
+          "timestamp": "2026-09-28T11:30:40.778Z"
+        }
+      ],
+      "files": []
+    }
+  ],
+  "jiraWebhookLogs": [],
+  "slaWebhookLogs": [],
+  "tarsProcessedEvents": [],
+  "updatedAt": "2026-09-28T16:52:54.286Z"
+}

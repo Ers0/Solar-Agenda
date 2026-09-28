@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="sunGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffc332" />
+      <stop offset="100%" stop-color="#fba81b" />
+    </linearGradient>
+    <linearGradient id="panelGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#edf2f7" />
+    </linearGradient>
+  </defs>
+
+  <!-- Navy Squircle Background -->
+  <rect x="0" y="0" width="128" height="128" rx="26" ry="26" fill="#0c2f54" />
+
+  <!-- Sun Rays -->
+  <g fill="#fba81b">
+    <polygon points="38.4,32.8 30.2,29.1 32.7,24.4 40.8,28.2" />
+    <polygon points="44.2,21.8 38.0,14.6 42.6,11.2 48.4,18.5" />
+    <polygon points="53.8,14.6 50.8,6.0 56.4,4.2 59.2,12.8" />
+    <polygon points="65.3,12.3 66.2,3.3 72.0,3.6 70.8,12.6" />
+    <polygon points="76.5,15.1 81.3,7.2 86.4,10.0 81.4,17.9" />
+    <polygon points="85.4,22.8 93.3,18.1 96.6,22.9 88.5,27.5" />
+    <polygon points="90.5,34.0 99.4,33.1 100.2,38.8 91.1,39.6" />
+  </g>
+
+  <!-- Sun Disc -->
+  <circle cx="62" cy="44" r="21" fill="url(#sunGrad)" />
+
+  <!-- Solar Panels Array (Perspective Grid) -->
+  <g fill="url(#panelGrad)">
+    <!-- Column 1 -->
+    <polygon points="33,62 57,59 57,78 33,81" />
+    <polygon points="30,84 55,81 55,101 30,103" />
+
+    <!-- Column 2 -->
+    <polygon points="60,58 84,55 84,75 60,78" />
+    <polygon points="58,80 82,77 82,98 58,100" />
+
+    <!-- Column 3 -->
+    <polygon points="87,55 111,52 111,72 87,75" />
+    <polygon points="85,77 108,73 108,94 85,96" />
+  </g>
+
+  <!-- Accent Divider Line -->
+  <polygon points="58,93 93,87 93,90 58,96" fill="#0c2f54" />
+</svg>
